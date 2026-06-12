@@ -31,3 +31,21 @@ export function saveDocument(args: {
 }): Promise<SaveResult> {
   return invoke<SaveResult>("save_document", args);
 }
+
+export interface SessionFile {
+  path: string;
+  encoding: string;
+}
+
+export interface SessionData {
+  files: SessionFile[];
+  active: number;
+}
+
+export function loadSession(): Promise<SessionData | null> {
+  return invoke<SessionData | null>("load_session");
+}
+
+export function saveSession(session: SessionData): Promise<void> {
+  return invoke<void>("save_session", { session });
+}

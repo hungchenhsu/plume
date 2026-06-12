@@ -1,5 +1,6 @@
 mod encoding;
 mod menu;
+mod session;
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -68,7 +69,12 @@ pub fn run() {
         .on_menu_event(|app, event| {
             let _ = app.emit("plume://menu", event.id().0.as_str());
         })
-        .invoke_handler(tauri::generate_handler![open_document, save_document])
+        .invoke_handler(tauri::generate_handler![
+            open_document,
+            save_document,
+            session::load_session,
+            session::save_session
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
