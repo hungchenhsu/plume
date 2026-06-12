@@ -12,7 +12,7 @@ export type EditorBuffer = EditorState;
 
 export interface EditorHandle {
   /** Create a detached buffer, e.g. for a newly opened document. */
-  newBuffer(content: string): EditorBuffer;
+  newBuffer(content: string, readOnly?: boolean): EditorBuffer;
   /** Show the given buffer in the editor view. */
   swap(buffer: EditorBuffer): void;
   /** The live buffer currently in the view, including unsaved edits. */
@@ -55,8 +55,13 @@ export function createEditor(
       if (update.docChanged) onDocChanged();
     }),
   ];
-  const newBuffer = (content: string): EditorBuffer =>
-    EditorState.create({ doc: content, extensions });
+  const newBuffer = (content: string, readOnly = false): EditorBuffer =>
+    EditorState.create({
+      doc: content,
+      extensions: readOnly
+        ? [extensions, EditorState.readOnly.of(true), EditorView.editable.of(false)]
+        : extensions,
+    });
 
   const view = new EditorView({ state: newBuffer(""), parent });
 

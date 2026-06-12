@@ -9,6 +9,9 @@ export interface OpenedDocument {
   hadBom: boolean;
   malformed: boolean;
   lineEnding: string;
+  /** Only a leading slice of a large file was loaded; treat as read-only. */
+  truncated: boolean;
+  totalSize: number;
 }
 
 export interface SaveResult {

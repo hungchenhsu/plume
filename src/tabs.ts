@@ -9,6 +9,9 @@ export interface Doc {
   lineEnding: string;
   malformed: boolean;
   dirty: boolean;
+  /** Read-only preview of a large file; saving is disabled. */
+  truncated: boolean;
+  totalSize: number;
   buffer: EditorBuffer;
 }
 

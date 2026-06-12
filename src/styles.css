@@ -151,7 +151,8 @@ body {
   flex-shrink: 0;
 }
 
-#status-warning {
+#status-warning,
+#status-readonly {
   color: var(--warning-fg);
 }
 
