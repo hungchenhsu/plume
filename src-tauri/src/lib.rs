@@ -1,7 +1,9 @@
 mod encoding;
 mod menu;
 mod prefs;
+mod recent;
 mod session;
+mod store;
 mod watcher;
 
 use serde::Serialize;
@@ -125,7 +127,9 @@ pub fn run() {
             prefs::save_preferences,
             take_pending_files,
             watcher::watch_file,
-            watcher::unwatch_file
+            watcher::unwatch_file,
+            recent::load_recent_files,
+            recent::add_recent_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

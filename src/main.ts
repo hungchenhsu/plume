@@ -10,6 +10,8 @@ import {
 import { createEditor, isEmptyBuffer } from "./editor";
 import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
 import {
+  addRecentFile,
+  loadRecentFiles,
   loadSession,
   openDocument,
   saveDocument,
@@ -20,6 +22,7 @@ import {
   type OpenedDocument,
   type SessionData,
 } from "./ipc";
+import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import {
   initPreferences,
@@ -142,6 +145,19 @@ function docFromOpened(opened: OpenedDocument): Doc {
   };
 }
 
+/** Cached recent-files list, refreshed by the backend on every addition. */
+let recentFiles: string[] = [];
+
+function rememberRecent(path: string): void {
+  void addRecentFile(path)
+    .then((list) => {
+      recentFiles = list;
+    })
+    .catch(() => {
+      // Best-effort; quick open just shows a slightly stale list.
+    });
+}
+
 /** Timestamps of our own saves, to ignore the watcher echo they cause. */
 const recentSaves = new Map<string, number>();
 /** Paths with a reload-confirmation dialog currently open. */
@@ -201,6 +217,7 @@ async function openPath(path: string): Promise<void> {
     if (previous && isPristineUntitled(previous)) tabs.close(previous.id);
     showActive();
     persistSession();
+    rememberRecent(opened.path);
   } catch (error) {
     await messageDialog(String(error), { title: "Open failed", kind: "error" });
   }
@@ -234,6 +251,7 @@ async function saveFlow(saveAs: boolean): Promise<void> {
     if (oldPath !== path) {
       if (oldPath) void unwatchFile(oldPath).catch(() => {});
       void watchFile(path).catch(() => {});
+      rememberRecent(path);
     }
     const titleChanged = doc.title !== basename(path);
     doc.path = path;
@@ -404,6 +422,9 @@ void listen<string>("plume://menu", (event) => {
     case "preferences":
       showPreferencesDialog();
       break;
+    case "open_recent":
+      showQuickOpen(recentFiles, (path) => void openPath(path));
+      break;
   }
 });
 
@@ -475,6 +496,7 @@ void listen<string[]>("plume://file-changed", async (event) => {
 void (async () => {
   // Preferences first: the untitled fallback uses the default encoding.
   await initPreferences(editor);
+  recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused.
   const pending = await takePendingFiles().catch(() => [] as string[]);

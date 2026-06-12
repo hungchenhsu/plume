@@ -2,7 +2,7 @@
 //! the active tab, stored as JSON in the app config directory.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,30 +18,14 @@ pub struct Session {
     pub active: usize,
 }
 
-fn session_path<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("Cannot resolve config dir: {e}"))?;
-    Ok(dir.join("session.json"))
-}
-
 #[tauri::command]
 pub fn load_session<R: Runtime>(app: AppHandle<R>) -> Option<Session> {
-    let path = session_path(&app).ok()?;
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    crate::store::read_json(&app, "session.json")
 }
 
 #[tauri::command]
 pub fn save_session<R: Runtime>(app: AppHandle<R>, session: Session) -> Result<(), String> {
-    let path = session_path(&app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {e}"))?;
-    }
-    let json = serde_json::to_vec_pretty(&session).map_err(|e| format!("Cannot serialize: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write session: {e}"))?;
-    Ok(())
+    crate::store::write_json(&app, "session.json", &session)
 }
 
 #[cfg(test)]
