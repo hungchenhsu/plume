@@ -30,7 +30,7 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 - [x] macOS native menu bar with standard shortcuts
 - [x] Windows menu and Ctrl-based shortcuts
 - [ ] File association / "Open with" registration
-- [ ] Basic preferences (font, font size, theme, default encoding behavior)
+- [x] Basic preferences (font, font size, theme, default encoding behavior)
 
 ## Post-MVP candidates
 

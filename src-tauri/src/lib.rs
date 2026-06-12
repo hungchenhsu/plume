@@ -1,5 +1,6 @@
 mod encoding;
 mod menu;
+mod prefs;
 mod session;
 
 use serde::Serialize;
@@ -73,7 +74,9 @@ pub fn run() {
             open_document,
             save_document,
             session::load_session,
-            session::save_session
+            session::save_session,
+            prefs::load_preferences,
+            prefs::save_preferences
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,6 +17,11 @@ import {
   type SessionData,
 } from "./ipc";
 import { showMenu } from "./popup";
+import {
+  initPreferences,
+  preferences,
+  showPreferencesDialog,
+} from "./preferences";
 import { updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
@@ -51,8 +56,8 @@ function makeUntitled(): Doc {
     id: nextId++,
     path: null,
     title: untitledCounter === 1 ? "Untitled" : `Untitled-${untitledCounter}`,
-    encoding: "UTF-8",
-    withBom: false,
+    encoding: preferences().defaultEncoding,
+    withBom: preferences().defaultBom,
     lineEnding: defaultLineEnding,
     malformed: false,
     dirty: false,
@@ -332,6 +337,9 @@ void listen<string>("plume://menu", (event) => {
     case "find":
       editor.openSearch();
       break;
+    case "preferences":
+      showPreferencesDialog();
+      break;
   }
 });
 
@@ -378,4 +386,8 @@ async function restoreSession(): Promise<void> {
   showActive();
 }
 
-void restoreSession();
+void (async () => {
+  // Preferences first: the untitled fallback uses the default encoding.
+  await initPreferences(editor);
+  await restoreSession();
+})();
