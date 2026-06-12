@@ -2,6 +2,7 @@ mod encoding;
 mod menu;
 mod prefs;
 mod session;
+mod watcher;
 
 use serde::Serialize;
 use std::sync::Mutex;
@@ -105,6 +106,12 @@ pub fn run() {
         .manage(PendingFiles(Mutex::new(existing_paths_from_args(
             std::env::args(),
         ))))
+        .setup(|app| {
+            use tauri::Manager;
+            let state = watcher::init(app.handle().clone())?;
+            app.manage(state);
+            Ok(())
+        })
         .menu(menu::build)
         .on_menu_event(|app, event| {
             let _ = app.emit("plume://menu", event.id().0.as_str());
@@ -116,7 +123,9 @@ pub fn run() {
             session::save_session,
             prefs::load_preferences,
             prefs::save_preferences,
-            take_pending_files
+            take_pending_files,
+            watcher::watch_file,
+            watcher::unwatch_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

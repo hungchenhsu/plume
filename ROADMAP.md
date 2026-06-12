@@ -41,7 +41,7 @@ Ordered roughly by likelihood, not commitment:
 - Recent files / quick open
 - Column (rectangular) selection
 - ~~Drag-and-drop file opening~~ (done)
-- Auto-reload on external change (file watcher)
+- ~~Auto-reload on external change (file watcher)~~ (done)
 - Printing
 
 ## Explicit non-goals
