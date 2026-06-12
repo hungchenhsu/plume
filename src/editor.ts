@@ -22,6 +22,8 @@ export interface EditorHandle {
   focus(): void;
   /** Open the find/replace panel (regex, case and word toggles built in). */
   openSearch(): void;
+  /** Move the cursor to a 1-based line and scroll it into view. */
+  goToLine(line: number): void;
   /** Switch the editor between the light and dark color theme. */
   setDarkTheme(dark: boolean): void;
   /**
@@ -69,6 +71,15 @@ export function createEditor(
     focus: () => view.focus(),
     openSearch: () => {
       openSearchPanel(view);
+    },
+    goToLine: (line) => {
+      const clamped = Math.max(1, Math.min(line, view.state.doc.lines));
+      const info = view.state.doc.line(clamped);
+      view.dispatch({
+        selection: { anchor: info.from },
+        effects: EditorView.scrollIntoView(info.from, { y: "center" }),
+      });
+      view.focus();
     },
     setDarkTheme: (dark) => {
       currentTheme = dark ? oneDark : [];

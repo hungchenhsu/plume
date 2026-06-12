@@ -22,6 +22,7 @@ import {
   type OpenedDocument,
   type SessionData,
 } from "./ipc";
+import { showFindInFiles } from "./findinfiles";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import {
@@ -424,6 +425,11 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "open_recent":
       showQuickOpen(recentFiles, (path) => void openPath(path));
+      break;
+    case "find_in_files":
+      showFindInFiles((path, line) => {
+        void openPath(path).then(() => editor.goToLine(line));
+      });
       break;
   }
 });

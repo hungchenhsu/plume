@@ -37,9 +37,9 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 Ordered roughly by likelihood, not commitment:
 
 - Large-file mode (Rust-side chunked loading, read-only first)
-- Find in files (Rust search backend)
+- ~~Find in files (Rust search backend)~~ (done — encoding-aware, literal match; regex later)
 - ~~Recent files / quick open~~ (done)
-- Column (rectangular) selection
+- ~~Column (rectangular) selection~~ (built into the editor surface: Alt+drag)
 - ~~Drag-and-drop file opening~~ (done)
 - ~~Auto-reload on external change (file watcher)~~ (done)
 - Printing
