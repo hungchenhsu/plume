@@ -58,10 +58,10 @@ distribution) are tracked outside this list.
 - [x] Word wrap toggle (View menu, persisted in preferences)
 - [x] Editor zoom shortcuts (Mod+= / Mod+- / Mod+0 adjusting font size)
 - [x] Save option in the close-tab confirmation (Save / Don't Save / Cancel)
-- Large-file phase 2c-1: ~~seamless backward scrolling~~ (done — scrolling
-  near the top of a mid-file window prepends the previous chunk with
-  scroll anchoring). Phase 2c-2 (window trimming so both directions stay
-  unbounded) still open.
+- ~~Large-file phase 2c~~ (done — bidirectional continuous reading: the
+  window slides through the file with chunk prepend/append plus trimming
+  on the opposite edge, bounded at 8 chunks ≈ 16 MB; ◀ ▶ remain as jump
+  controls)
 
 ## Explicit non-goals
 
