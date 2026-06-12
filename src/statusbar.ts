@@ -22,7 +22,7 @@ export function updateCursor(line: number, column: number): void {
   cursorEl.textContent = `Ln ${line}, Col ${column}`;
 }
 
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024)
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;

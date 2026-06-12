@@ -6,6 +6,18 @@ function basename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
 }
 
+/** Case-insensitive substring filter over full paths, capped at `max`. */
+export function filterRecent(
+  recent: string[],
+  query: string,
+  max: number = MAX_VISIBLE,
+): string[] {
+  const needle = query.toLowerCase();
+  return recent
+    .filter((path) => path.toLowerCase().includes(needle))
+    .slice(0, max);
+}
+
 export function showQuickOpen(
   recent: string[],
   onPick: (path: string) => void,
@@ -38,10 +50,7 @@ export function showQuickOpen(
   };
 
   const render = (): void => {
-    const query = input.value.toLowerCase();
-    filtered = recent
-      .filter((path) => path.toLowerCase().includes(query))
-      .slice(0, MAX_VISIBLE);
+    filtered = filterRecent(recent, input.value);
     selected = Math.min(selected, Math.max(filtered.length - 1, 0));
     list.replaceChildren();
     if (filtered.length === 0) {
