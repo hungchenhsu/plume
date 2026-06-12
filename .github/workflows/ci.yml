@@ -38,6 +38,9 @@ jobs:
       - name: Build frontend (tsc + vite)
         run: npm run build
 
+      - name: Frontend tests
+        run: npm test
+
       - name: Rust format
         run: cargo fmt --check
         working-directory: src-tauri

@@ -9,6 +9,7 @@ Operational guidance for working in this repo. The task queue is
 ```sh
 npm run tauri dev    # run the app
 npm run build        # typecheck + bundle frontend
+npm test             # frontend unit tests (vitest, jsdom)
 cd src-tauri && cargo test                                   # Rust tests
 cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 ```
@@ -20,10 +21,11 @@ command — `tauri::generate_context!` requires `dist/` to exist.
 
 A change is complete only when all of these pass locally:
 
-1. `npm run build` (tsc strict + vite)
+1. `npm run build` (tsc strict + vite) and `npm test` (vitest)
 2. In `src-tauri`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
 3. New core logic in `src-tauri/src/` has unit tests; any encoding behavior
-   change has round-trip tests.
+   change has round-trip tests. Frontend logic that doesn't need the WebView
+   (tab store, pure helpers) gets vitest unit tests in `src/*.test.ts`.
 4. The relevant ROADMAP.md checkbox is updated in the same change.
 
 ## Workflow
