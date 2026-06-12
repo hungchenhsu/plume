@@ -185,6 +185,10 @@ pub fn run() {
         }
     }));
 
+    // Restores window size/position across launches (desktop only).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
