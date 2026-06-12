@@ -298,6 +298,9 @@ void listen<string>("plume://menu", (event) => {
     case "close_tab":
       if (tabs.activeId !== null) void closeTab(tabs.activeId);
       break;
+    case "find":
+      editor.openSearch();
+      break;
   }
 });
 

@@ -23,7 +23,7 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 
 **Editor basics**
 - [x] Syntax highlighting for common languages
-- [ ] Find / replace with regex
+- [x] Find / replace with regex
 - [ ] Session restore (reopen last files on launch)
 
 **Platform integration**

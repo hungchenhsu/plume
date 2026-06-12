@@ -5,6 +5,7 @@ import { basicSetup, EditorView } from "codemirror";
 import { Compartment, EditorState } from "@codemirror/state";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
+import { openSearchPanel } from "@codemirror/search";
 
 export type EditorBuffer = EditorState;
 
@@ -18,6 +19,8 @@ export interface EditorHandle {
   /** Text content of the live buffer. */
   content(): string;
   focus(): void;
+  /** Open the find/replace panel (regex, case and word toggles built in). */
+  openSearch(): void;
   /**
    * Pick a language for the live buffer by filename and load it lazily.
    * `stillWanted` guards against the user switching tabs while the language
@@ -53,6 +56,9 @@ export function createEditor(
     snapshot: () => view.state,
     content: () => view.state.doc.toString(),
     focus: () => view.focus(),
+    openSearch: () => {
+      openSearchPanel(view);
+    },
     async setLanguage(filename, stillWanted) {
       const description = filename
         ? LanguageDescription.matchFilename(languages, filename)
