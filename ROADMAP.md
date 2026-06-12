@@ -16,10 +16,10 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 **Encoding (the core identity)**
 - [x] Automatic detection: BOM sniffing + statistical detection (UTF-8, UTF-8 BOM, UTF-16 LE/BE, Big5, Shift_JIS, GB18030, …)
 - [x] Decode-error surfacing (never silently show mojibake as if it were fine)
-- [ ] Reopen with explicit encoding (UI)
-- [ ] Save with explicit encoding / BOM toggle (UI)
+- [x] Reopen with explicit encoding (UI)
+- [x] Save with explicit encoding / BOM toggle (UI)
 - [x] Line-ending detection (LF / CRLF / Mixed) and re-application on save
-- [ ] Line-ending conversion (UI)
+- [x] Line-ending conversion (UI)
 
 **Editor basics**
 - [ ] Syntax highlighting for common languages
