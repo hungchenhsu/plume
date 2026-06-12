@@ -30,6 +30,16 @@ fn take_pending_files(state: tauri::State<PendingFiles>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().unwrap())
 }
 
+/// Open the native print dialog for the main webview. The frontend fills
+/// its print-only view with the full document before calling this, because
+/// the editor's virtualized viewport only renders visible lines.
+#[tauri::command]
+fn print_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .print()
+        .map_err(|e| format!("Printing is not available: {e}"))
+}
+
 /// Files larger than this open as a read-only preview instead of loading
 /// fully into the WebView.
 const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024;
@@ -160,6 +170,7 @@ pub fn run() {
             prefs::load_preferences,
             prefs::save_preferences,
             take_pending_files,
+            print_window,
             watcher::watch_file,
             watcher::unwatch_file,
             recent::load_recent_files,

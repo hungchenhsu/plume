@@ -42,6 +42,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &MenuItemBuilder::with_id("close_tab", "Close Tab")
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?,
+        )
+        .separator()
+        .item(
+            // CmdOrCtrl+P belongs to quick open (modern editor convention).
+            &MenuItemBuilder::with_id("print", "Print…")
+                .accelerator("CmdOrCtrl+Alt+P")
+                .build(app)?,
         );
     #[cfg(not(target_os = "macos"))]
     let file = file.separator().item(
