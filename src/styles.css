@@ -497,6 +497,26 @@ body {
   color: #ffffff;
 }
 
+#print-view {
+  display: none;
+}
+
+@media print {
+  #app {
+    display: none;
+  }
+
+  #print-view {
+    display: block;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--editor-font-family, ui-monospace, monospace);
+    font-size: var(--editor-font-size, 13px);
+    color: #000000;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --statusbar-bg: #2a2a2a;

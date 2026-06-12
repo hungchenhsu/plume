@@ -14,6 +14,7 @@ import {
   loadRecentFiles,
   loadSession,
   openDocument,
+  printWindow,
   saveDocument,
   saveSession,
   takePendingFiles,
@@ -468,6 +469,20 @@ void listen<string>("plume://menu", (event) => {
     case "goto_line":
       showGoToLine((line) => editor.goToLine(line));
       break;
+    case "print": {
+      // The editor's viewport only renders visible lines, so printing goes
+      // through a print-only view holding the full document text.
+      const printView = document.querySelector<HTMLElement>("#print-view")!;
+      printView.textContent = editor.content();
+      void printWindow()
+        .catch((error) =>
+          messageDialog(String(error), { title: "Print", kind: "warning" }),
+        )
+        .finally(() => {
+          printView.textContent = "";
+        });
+      break;
+    }
   }
 });
 

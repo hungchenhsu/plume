@@ -44,7 +44,7 @@ Ordered roughly by likelihood, not commitment:
 - ~~Column (rectangular) selection~~ (built into the editor surface: Alt+drag)
 - ~~Drag-and-drop file opening~~ (done)
 - ~~Auto-reload on external change (file watcher)~~ (done)
-- Printing
+- ~~Printing~~ (done — native print dialog via a full-document print view; macOS/Windows)
 
 ## Explicit non-goals
 

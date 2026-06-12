@@ -114,3 +114,8 @@ export function searchInFolder(
 export function unwatchFile(path: string): Promise<void> {
   return invoke<void>("unwatch_file", { path });
 }
+
+/** Open the native print dialog (the print view must be filled first). */
+export function printWindow(): Promise<void> {
+  return invoke<void>("print_window");
+}
