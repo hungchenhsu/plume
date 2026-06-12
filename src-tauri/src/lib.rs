@@ -30,6 +30,12 @@ fn take_pending_files(state: tauri::State<PendingFiles>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().unwrap())
 }
 
+/// Files larger than this open as a read-only preview instead of loading
+/// fully into the WebView.
+const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024;
+/// How much of a large file the preview shows.
+const PREVIEW_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenedDocument {
@@ -39,6 +45,22 @@ pub struct OpenedDocument {
     had_bom: bool,
     malformed: bool,
     line_ending: String,
+    /// True when only a leading slice of the file was loaded (read-only).
+    truncated: bool,
+    total_size: u64,
+}
+
+/// Cut a preview slice at the last line boundary so the tail is not a
+/// half-loaded line (or a split multi-byte sequence) where avoidable.
+fn preview_slice(bytes: &[u8], max: usize) -> &[u8] {
+    if bytes.len() <= max {
+        return bytes;
+    }
+    let slice = &bytes[..max];
+    match slice.iter().rposition(|&b| b == b'\n') {
+        Some(pos) => &slice[..=pos],
+        None => slice,
+    }
 }
 
 #[derive(Serialize)]
@@ -52,10 +74,19 @@ pub struct SaveResult {
 /// LF-normalized; the original line ending is reported in `line_ending`.
 #[tauri::command]
 fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocument, String> {
+    let total_size = std::fs::metadata(&path)
+        .map_err(|e| format!("Failed to read {path}: {e}"))?
+        .len();
     let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let truncated = total_size > LARGE_FILE_THRESHOLD;
+    let bytes = if truncated {
+        preview_slice(&bytes, PREVIEW_BYTES)
+    } else {
+        &bytes[..]
+    };
     let decoded = match encoding {
-        Some(label) => encoding::decode_with(&bytes, &label)?,
-        None => encoding::decode_auto(&bytes),
+        Some(label) => encoding::decode_with(bytes, &label)?,
+        None => encoding::decode_auto(bytes),
     };
     let line_ending = encoding::detect_line_ending(&decoded.content).to_string();
     Ok(OpenedDocument {
@@ -65,6 +96,8 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
         had_bom: decoded.had_bom,
         malformed: decoded.malformed,
         line_ending,
+        truncated,
+        total_size,
     })
 }
 
@@ -161,7 +194,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::existing_paths_from_args;
+    use super::{existing_paths_from_args, preview_slice};
+
+    #[test]
+    fn preview_slice_cuts_at_line_boundary() {
+        let bytes = b"line one\nline two\nline three";
+        let slice = preview_slice(bytes, 12);
+        assert_eq!(slice, b"line one\n");
+        // No newline within the budget: keep the raw slice.
+        let slice = preview_slice(b"abcdefgh", 4);
+        assert_eq!(slice, b"abcd");
+        // Small files pass through whole.
+        let slice = preview_slice(b"tiny\n", 100);
+        assert_eq!(slice, b"tiny\n");
+    }
 
     #[test]
     fn filters_args_to_existing_files() {

@@ -69,6 +69,8 @@ function makeUntitled(): Doc {
     lineEnding: defaultLineEnding,
     malformed: false,
     dirty: false,
+    truncated: false,
+    totalSize: 0,
     buffer: editor.newBuffer(""),
   };
 }
@@ -142,7 +144,9 @@ function docFromOpened(opened: OpenedDocument): Doc {
     lineEnding: opened.lineEnding,
     malformed: opened.malformed,
     dirty: false,
-    buffer: editor.newBuffer(opened.content),
+    truncated: opened.truncated,
+    totalSize: opened.totalSize,
+    buffer: editor.newBuffer(opened.content, opened.truncated),
   };
 }
 
@@ -173,7 +177,9 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
-    doc.buffer = editor.newBuffer(opened.content);
+    doc.truncated = opened.truncated;
+    doc.totalSize = opened.totalSize;
+    doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     if (tabs.activeId === doc.id) showActive();
     else tabs.render();
   } catch {
@@ -234,6 +240,14 @@ async function openFileFlow(): Promise<void> {
 async function saveFlow(saveAs: boolean): Promise<void> {
   const doc = tabs.active;
   if (!doc) return;
+  if (doc.truncated) {
+    // Writing the preview slice back would destroy the rest of the file.
+    await messageDialog(
+      `"${doc.title}" is a read-only preview of a large file; saving is disabled.`,
+      { title: "Read-only preview", kind: "warning" },
+    );
+    return;
+  }
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
@@ -295,7 +309,9 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
-    doc.buffer = editor.newBuffer(opened.content);
+    doc.truncated = opened.truncated;
+    doc.totalSize = opened.totalSize;
+    doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     showActive();
     persistSession();
   } catch (error) {

@@ -36,7 +36,9 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 
 Ordered roughly by likelihood, not commitment:
 
-- Large-file mode (Rust-side chunked loading, read-only first)
+- Large-file mode — phase 1 done: files over 10 MB open as a read-only
+  2 MB preview with saving disabled (no more WebView freeze). Phase 2
+  (chunked scrolling through the whole file) still open.
 - ~~Find in files (Rust search backend)~~ (done — encoding-aware, literal match; regex later)
 - ~~Recent files / quick open~~ (done)
 - ~~Column (rectangular) selection~~ (built into the editor surface: Alt+drag)
