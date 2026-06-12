@@ -23,6 +23,7 @@ import {
   type SessionData,
 } from "./ipc";
 import { showFindInFiles } from "./findinfiles";
+import { showGoToLine } from "./goto";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import {
@@ -30,7 +31,7 @@ import {
   preferences,
   showPreferencesDialog,
 } from "./preferences";
-import { updateStatusBar } from "./statusbar";
+import { updateCursor, updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
 const defaultLineEnding = navigator.userAgent.includes("Windows")
@@ -46,13 +47,28 @@ const tabs = new TabStore(document.querySelector<HTMLElement>("#tabbar")!, {
   onNew: () => newTab(),
 });
 
-const editor = createEditor(document.querySelector("#editor")!, () => {
+const editor = createEditor(
+  document.querySelector("#editor")!,
+  () => {
+    const doc = tabs.active;
+    if (doc && !doc.dirty) {
+      doc.dirty = true;
+      tabs.render();
+      updateWindowTitle();
+    }
+  },
+  updateCursor,
+);
+
+function updateWindowTitle(): void {
   const doc = tabs.active;
-  if (doc && !doc.dirty) {
-    doc.dirty = true;
-    tabs.render();
-  }
-});
+  const title = doc
+    ? `${doc.dirty ? "• " : ""}${doc.title} — Plume`
+    : "Plume";
+  void getCurrentWindow().setTitle(title).catch(() => {
+    // Title sync is cosmetic; never surface errors for it.
+  });
+}
 
 function basename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
@@ -82,6 +98,7 @@ function showActive(): void {
   editor.swap(doc.buffer);
   tabs.render();
   updateStatusBar(doc);
+  updateWindowTitle();
   editor.focus();
   void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
 }
@@ -276,6 +293,7 @@ async function saveFlow(saveAs: boolean): Promise<void> {
     if (doc.lineEnding === "Mixed") doc.lineEnding = "LF";
     tabs.render();
     updateStatusBar(doc);
+    updateWindowTitle();
     if (titleChanged) {
       void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
     }
@@ -446,6 +464,9 @@ void listen<string>("plume://menu", (event) => {
       showFindInFiles((path, line) => {
         void openPath(path).then(() => editor.goToLine(line));
       });
+      break;
+    case "goto_line":
+      showGoToLine((line) => editor.goToLine(line));
       break;
   }
 });
