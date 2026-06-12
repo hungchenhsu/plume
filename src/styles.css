@@ -428,6 +428,52 @@ body {
   font-family: var(--editor-font-family, ui-monospace, monospace);
 }
 
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.confirm-dialog {
+  width: 360px;
+  padding: 16px 20px;
+  font-size: 13px;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.confirm-dialog p {
+  margin: 0 0 14px;
+}
+
+.confirm-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-buttons button {
+  padding: 5px 14px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--popup-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.confirm-buttons .confirm-primary {
+  background: #3478f6;
+  border-color: #3478f6;
+  color: #ffffff;
+}
+
 .prefs-overlay {
   position: fixed;
   inset: 0;
