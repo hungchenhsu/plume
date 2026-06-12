@@ -15,6 +15,8 @@ import {
   saveDocument,
   saveSession,
   takePendingFiles,
+  unwatchFile,
+  watchFile,
   type OpenedDocument,
   type SessionData,
 } from "./ipc";
@@ -124,6 +126,9 @@ function isPristineUntitled(doc: Doc): boolean {
 }
 
 function docFromOpened(opened: OpenedDocument): Doc {
+  void watchFile(opened.path).catch(() => {
+    // Watching is best-effort; editing must keep working without it.
+  });
   return {
     id: nextId++,
     path: opened.path,
@@ -135,6 +140,50 @@ function docFromOpened(opened: OpenedDocument): Doc {
     dirty: false,
     buffer: editor.newBuffer(opened.content),
   };
+}
+
+/** Timestamps of our own saves, to ignore the watcher echo they cause. */
+const recentSaves = new Map<string, number>();
+/** Paths with a reload-confirmation dialog currently open. */
+const reloadPrompts = new Set<string>();
+
+async function reloadFromDisk(doc: Doc): Promise<void> {
+  if (!doc.path) return;
+  try {
+    const opened = await openDocument(doc.path, doc.encoding);
+    doc.encoding = opened.encoding;
+    doc.withBom = opened.hadBom;
+    doc.lineEnding = opened.lineEnding;
+    doc.malformed = opened.malformed;
+    doc.dirty = false;
+    doc.buffer = editor.newBuffer(opened.content);
+    if (tabs.activeId === doc.id) showActive();
+    else tabs.render();
+  } catch {
+    // The file may be mid-replace or deleted; keep the buffer as-is.
+  }
+}
+
+async function handleExternalChange(path: string): Promise<void> {
+  const doc = tabs.docs.find((d) => d.path === path);
+  if (!doc) return;
+  const savedAt = recentSaves.get(path) ?? 0;
+  if (Date.now() - savedAt < 1500) return;
+  if (!doc.dirty) {
+    await reloadFromDisk(doc);
+    return;
+  }
+  if (reloadPrompts.has(path)) return;
+  reloadPrompts.add(path);
+  try {
+    const reload = await confirmDialog(
+      `"${doc.title}" changed on disk. Reload it and discard your unsaved changes?`,
+      { title: "File changed on disk", kind: "warning", okLabel: "Reload" },
+    );
+    if (reload) await reloadFromDisk(doc);
+  } finally {
+    reloadPrompts.delete(path);
+  }
 }
 
 /** Open a file by path into a tab, focusing the existing tab if any. */
@@ -167,6 +216,7 @@ async function openFileFlow(): Promise<void> {
 async function saveFlow(saveAs: boolean): Promise<void> {
   const doc = tabs.active;
   if (!doc) return;
+  const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
     path = await saveDialog({ defaultPath: path ?? doc.title });
@@ -180,6 +230,11 @@ async function saveFlow(saveAs: boolean): Promise<void> {
       withBom: doc.withBom,
       lineEnding: doc.lineEnding,
     });
+    recentSaves.set(path, Date.now());
+    if (oldPath !== path) {
+      if (oldPath) void unwatchFile(oldPath).catch(() => {});
+      void watchFile(path).catch(() => {});
+    }
     const titleChanged = doc.title !== basename(path);
     doc.path = path;
     doc.title = basename(path);
@@ -307,6 +362,7 @@ async function closeTab(id: number): Promise<void> {
     );
     if (!discard) return;
   }
+  if (doc.path) void unwatchFile(doc.path).catch(() => {});
   const wasActive = id === tabs.activeId;
   tabs.close(id);
   if (tabs.docs.length === 0) tabs.add(makeUntitled());
@@ -406,6 +462,13 @@ void getCurrentWebview().onDragDropEvent(async (event) => {
   if (event.payload.type !== "drop") return;
   for (const path of event.payload.paths) {
     await openPath(path);
+  }
+});
+
+// Watched files that changed on disk outside of Plume.
+void listen<string[]>("plume://file-changed", async (event) => {
+  for (const path of event.payload) {
+    await handleExternalChange(path);
   }
 });
 

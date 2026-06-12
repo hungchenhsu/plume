@@ -70,3 +70,11 @@ export function savePreferences(preferences: Preferences): Promise<void> {
 export function takePendingFiles(): Promise<string[]> {
   return invoke<string[]>("take_pending_files");
 }
+
+export function watchFile(path: string): Promise<void> {
+  return invoke<void>("watch_file", { path });
+}
+
+export function unwatchFile(path: string): Promise<void> {
+  return invoke<void>("unwatch_file", { path });
+}
