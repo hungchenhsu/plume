@@ -2,6 +2,7 @@ mod encoding;
 mod menu;
 mod prefs;
 mod recent;
+mod search;
 mod session;
 mod store;
 mod watcher;
@@ -129,7 +130,8 @@ pub fn run() {
             watcher::watch_file,
             watcher::unwatch_file,
             recent::load_recent_files,
-            recent::add_recent_file
+            recent::add_recent_file,
+            search::search_in_folder
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

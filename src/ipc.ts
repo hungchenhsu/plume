@@ -84,6 +84,30 @@ export function addRecentFile(path: string): Promise<string[]> {
   return invoke<string[]>("add_recent_file", { path });
 }
 
+export interface SearchMatch {
+  path: string;
+  line: number;
+  preview: string;
+}
+
+export interface SearchResults {
+  matches: SearchMatch[];
+  truncated: boolean;
+  filesScanned: number;
+}
+
+export function searchInFolder(
+  folder: string,
+  query: string,
+  caseSensitive: boolean,
+): Promise<SearchResults> {
+  return invoke<SearchResults>("search_in_folder", {
+    folder,
+    query,
+    caseSensitive,
+  });
+}
+
 export function unwatchFile(path: string): Promise<void> {
   return invoke<void>("unwatch_file", { path });
 }
