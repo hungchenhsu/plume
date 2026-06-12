@@ -85,25 +85,42 @@ edge cases. Consequences:
 - Avoid bleeding-edge CSS/JS features unless verified on both engines.
 - Linux (WebKitGTK) is Tier 2: kept building, not UX-polished.
 
-## Large files (future)
+## Large files
 
-CodeMirror 6 with viewport virtualization is fine into the tens of MB. The
-plan beyond that is a Rust-side strategy (chunked loading, read-only mode
-first) — not a custom editor engine. Until that lands, very large files are
-explicitly out of scope.
+Phase 1 (implemented): files over 10 MB open as a read-only preview of the
+first 2 MB, cut at a line boundary; saving is disabled because writing the
+slice back would destroy the file. Phase 2 (future) is Rust-side chunked
+scrolling through the whole file — still not a custom editor engine.
 
 ## Repository layout
 
 ```
-├── index.html            # Single-page UI shell
-├── src/                  # Frontend (TypeScript)
-│   ├── main.ts           # Editor setup, file commands, status bar
+├── index.html               # Single-page UI shell
+├── src/                     # Frontend (TypeScript, no framework)
+│   ├── main.ts              # Wiring: tabs, flows, menu events, startup
+│   ├── editor.ts            # The only module that imports CodeMirror
+│   ├── ipc.ts               # Typed wrappers for Rust commands
+│   ├── tabs.ts              # TabStore + tab bar rendering (tabs.test.ts)
+│   ├── statusbar.ts         # Path / encoding / line ending / cursor
+│   ├── encodings.ts         # Curated encoding choices for pickers
+│   ├── preferences.ts       # Prefs state + settings dialog
+│   ├── popup.ts             # Anchored popup menu (status bar pickers)
+│   ├── quickopen.ts         # Recent-files quick open (Mod+P)
+│   ├── findinfiles.ts       # Find-in-files panel (Mod+Shift+F)
+│   ├── goto.ts              # Go-to-line prompt (Mod+L)
 │   └── styles.css
-├── src-tauri/            # Rust core + Tauri shell
-│   ├── src/lib.rs        # Tauri commands (open/save)
-│   ├── src/encoding.rs   # Detection / decode / encode / line endings
-│   ├── tauri.conf.json
-│   └── capabilities/     # IPC permission scopes
+├── src-tauri/               # Rust core + Tauri shell
+│   ├── src/lib.rs           # Commands (open/save), pending files, run loop
+│   ├── src/encoding.rs      # Detection / decode / encode / line endings
+│   ├── src/search.rs        # Encoding-aware find-in-files backend
+│   ├── src/watcher.rs       # notify-based watching for auto-reload
+│   ├── src/session.rs       # Open-files session persistence
+│   ├── src/prefs.rs         # User preferences persistence
+│   ├── src/recent.rs        # Recent-files list persistence
+│   ├── src/store.rs         # Shared JSON config-dir read/write
+│   ├── src/menu.rs          # Native menu (platform-specific layout)
+│   ├── tauri.conf.json      # Window, bundle, file associations
+│   └── capabilities/        # IPC permission scopes
 ├── ROADMAP.md
-└── ARCHITECTURE.md       # This file
+└── ARCHITECTURE.md          # This file
 ```
