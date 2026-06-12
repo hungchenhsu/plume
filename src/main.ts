@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   confirm as confirmDialog,
@@ -157,9 +158,10 @@ async function openPath(path: string): Promise<void> {
 }
 
 async function openFileFlow(): Promise<void> {
-  const path = await openDialog({ multiple: false, directory: false });
-  if (path === null) return;
-  await openPath(path);
+  const paths = await openDialog({ multiple: true, directory: false });
+  for (const path of paths ?? []) {
+    await openPath(path);
+  }
 }
 
 async function saveFlow(saveAs: boolean): Promise<void> {
@@ -395,6 +397,14 @@ async function restoreSession(): Promise<void> {
 // Files opened through the OS while the app is already running.
 void listen<string[]>("plume://open-files", async (event) => {
   for (const path of event.payload) {
+    await openPath(path);
+  }
+});
+
+// Files dragged from the system onto the window.
+void getCurrentWebview().onDragDropEvent(async (event) => {
+  if (event.payload.type !== "drop") return;
+  for (const path of event.payload.paths) {
     await openPath(path);
   }
 });
