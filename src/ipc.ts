@@ -73,6 +73,8 @@ export function saveDocument(args: {
 export interface SessionFile {
   path: string;
   encoding: string;
+  /** Cursor position as a character offset. */
+  cursor: number;
 }
 
 export interface SessionData {

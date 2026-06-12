@@ -60,7 +60,7 @@ distribution) are tracked outside this list.
 - [x] Save option in the close-tab confirmation (Save / Don't Save / Cancel)
 - [x] Atomic saves (temp file + rename; a crash mid-save can no longer
   corrupt the target file)
-- [ ] Session restores cursor position per file
+- [x] Session restores cursor position per file
 - [ ] Window size/position persistence across launches
 - ~~Large-file phase 2c~~ (done — bidirectional continuous reading: the
   window slides through the file with chunk prepend/append plus trimming
