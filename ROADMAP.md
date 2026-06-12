@@ -37,9 +37,11 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 Ordered roughly by likelihood, not commitment:
 
 - Large-file mode — phase 1 done (read-only 2 MB preview for files over
-  10 MB, saving disabled). Phase 2a done: chunk paging through the whole
-  file via status-bar ◀ ▶ (line-aligned chunks; UTF-16 excluded). Phase 2b
-  (seamless scrolling) still open.
+  10 MB, saving disabled). Phase 2a done: chunk paging via status-bar ◀ ▶
+  (line-aligned chunks; UTF-16 excluded). Phase 2b done: continuous
+  reading — scrolling near the end auto-appends the next chunk, up to a
+  ~64 MB window; beyond that the jump pager takes over. Syntax
+  highlighting is disabled in large-file windows by design.
 - ~~Find in files (Rust search backend)~~ (done — encoding-aware, literal match; regex later)
 - ~~Recent files / quick open~~ (done)
 - ~~Column (rectangular) selection~~ (built into the editor surface: Alt+drag)

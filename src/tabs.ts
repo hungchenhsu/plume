@@ -16,6 +16,8 @@ export interface Doc {
   chunkOffset: number;
   nextChunkOffset: number | null;
   prevChunkOffsets: number[];
+  /** Chunks currently in the buffer (scroll-append window). */
+  loadedChunks: number;
   buffer: EditorBuffer;
 }
 
