@@ -42,12 +42,23 @@ Ordered roughly by likelihood, not commitment:
   reading — scrolling near the end auto-appends the next chunk, up to a
   ~64 MB window; beyond that the jump pager takes over. Syntax
   highlighting is disabled in large-file windows by design.
-- ~~Find in files (Rust search backend)~~ (done — encoding-aware, literal match; regex later)
+- ~~Find in files (Rust search backend)~~ (done — encoding-aware; regex mode done)
 - ~~Recent files / quick open~~ (done)
 - ~~Column (rectangular) selection~~ (built into the editor surface: Alt+drag)
 - ~~Drag-and-drop file opening~~ (done)
 - ~~Auto-reload on external change (file watcher)~~ (done)
 - ~~Printing~~ (done — native print dialog via a full-document print view; macOS/Windows)
+
+## v0.2 polish candidates
+
+Engineering-driven follow-ups; product-level decisions (naming, signing,
+distribution) are tracked outside this list.
+
+- [x] Regex mode for find in files
+- [ ] Word wrap toggle (View menu, persisted in preferences)
+- [ ] Editor zoom shortcuts (Mod+= / Mod+- adjusting font size)
+- [ ] Save option in the close-tab confirmation (currently discard/cancel)
+- Large-file phase 2c: seamless backward scrolling / windowed trimming
 
 ## Explicit non-goals
 

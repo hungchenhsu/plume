@@ -38,9 +38,18 @@ export function showFindInFiles(
   caseLabel.appendChild(document.createTextNode("Aa"));
   caseLabel.title = "Match case";
 
+  const regexLabel = document.createElement("label");
+  regexLabel.className = "fif-case";
+  const regexBox = document.createElement("input");
+  regexBox.type = "checkbox";
+  regexLabel.appendChild(regexBox);
+  regexLabel.appendChild(document.createTextNode(".*"));
+  regexLabel.title = "Regular expression";
+
   controls.appendChild(folderButton);
   controls.appendChild(input);
   controls.appendChild(caseLabel);
+  controls.appendChild(regexLabel);
   panel.appendChild(controls);
 
   const status = document.createElement("div");
@@ -100,7 +109,12 @@ export function showFindInFiles(
     status.textContent = "Searching…";
     list.replaceChildren();
     try {
-      const results = await searchInFolder(lastFolder, query, caseBox.checked);
+      const results = await searchInFolder(
+        lastFolder,
+        query,
+        caseBox.checked,
+        regexBox.checked,
+      );
       const count = results.matches.length;
       status.textContent =
         `${count}${results.truncated ? "+" : ""} match${count === 1 ? "" : "es"}` +
