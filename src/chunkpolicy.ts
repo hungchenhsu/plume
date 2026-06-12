@@ -23,3 +23,19 @@ export function canAutoAppend(state: {
     state.loadedChunks < MAX_AUTO_CHUNKS
   );
 }
+
+export function nearStart(viewportFrom: number): boolean {
+  return viewportFrom <= NEAR_END_MARGIN;
+}
+
+export function canPrepend(state: {
+  loadedChunks: number;
+  windowStart: number;
+  inFlight: boolean;
+}): boolean {
+  return (
+    !state.inFlight &&
+    state.windowStart > 0 &&
+    state.loadedChunks < MAX_AUTO_CHUNKS
+  );
+}

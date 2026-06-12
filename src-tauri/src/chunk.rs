@@ -105,6 +105,62 @@ pub fn read_document_chunk(
     })
 }
 
+/// Read the chunk that ends exactly at `end` (exclusive), for extending a
+/// large-file window backward. `end` must be line-aligned, which holds for
+/// every window start this app produces. The returned `offset` is the
+/// line-aligned start of the chunk; `next_offset` echoes `end`.
+#[tauri::command]
+pub fn read_document_chunk_before(
+    path: String,
+    end: u64,
+    encoding: String,
+) -> Result<DocumentChunk, String> {
+    let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
+        .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
+    if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+        return Err("Paging is not supported for UTF-16 files".into());
+    }
+    if end == 0 {
+        return Err("Already at the start of the file".into());
+    }
+
+    let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let total_size = file
+        .metadata()
+        .map_err(|e| format!("Failed to read {path}: {e}"))?
+        .len();
+    let start = end.saturating_sub(CHUNK_BYTES as u64);
+
+    let mut at_line_start = true;
+    if start > 0 {
+        file.seek(SeekFrom::Start(start - 1))
+            .map_err(|e| format!("Failed to read {path}: {e}"))?;
+        let mut prev = [0u8; 1];
+        file.read_exact(&mut prev)
+            .map_err(|e| format!("Failed to read {path}: {e}"))?;
+        at_line_start = prev[0] == b'\n';
+    } else {
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    }
+
+    let mut buf = vec![0u8; (end - start) as usize];
+    file.read_exact(&mut buf)
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+
+    let skip = if at_line_start { 0 } else { align_start(&buf) };
+    let slice = &buf[skip..];
+
+    let decoded = encoding::decode_with(slice, &encoding)?;
+    Ok(DocumentChunk {
+        content: encoding::normalize_to_lf(&decoded.content),
+        offset: start + skip as u64,
+        next_offset: Some(end),
+        total_size,
+        malformed: decoded.malformed,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +204,40 @@ mod tests {
     fn rejects_utf16_paging() {
         let result = read_document_chunk("/tmp/whatever.txt".into(), 0, "UTF-16LE".into());
         assert!(result.is_err());
+        let result = read_document_chunk_before("/tmp/whatever.txt".into(), 100, "UTF-16BE".into());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pages_backward_through_a_large_file_losslessly() {
+        let path = std::env::temp_dir().join("plume-chunk-back-test.txt");
+        let mut original = String::new();
+        for i in 0..120_000 {
+            original.push_str(&format!("line {i:07} with some padding text\n"));
+        }
+        std::fs::write(&path, &original).unwrap();
+
+        let path_str = path.to_string_lossy().into_owned();
+        let mut assembled_parts: Vec<String> = Vec::new();
+        let mut end = original.len() as u64;
+        let mut pages = 0;
+        loop {
+            let chunk = read_document_chunk_before(path_str.clone(), end, "UTF-8".into()).unwrap();
+            assert_eq!(chunk.next_offset, Some(end));
+            assembled_parts.push(chunk.content.clone());
+            end = chunk.offset;
+            pages += 1;
+            assert!(pages < 100, "backward paging must terminate");
+            if end == 0 {
+                break;
+            }
+        }
+        assert!(pages >= 2);
+        assembled_parts.reverse();
+        assert_eq!(assembled_parts.concat(), original);
+
+        let result = read_document_chunk_before(path_str, 0, "UTF-8".into());
+        assert!(result.is_err(), "end=0 has nothing before it");
+        std::fs::remove_file(&path).ok();
     }
 }

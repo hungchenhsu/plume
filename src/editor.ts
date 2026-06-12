@@ -7,7 +7,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { nearEnd } from "./chunkpolicy";
+import { nearEnd, nearStart } from "./chunkpolicy";
 
 export type EditorBuffer = EditorState;
 
@@ -20,6 +20,11 @@ export interface EditorHandle {
   snapshot(): EditorBuffer;
   /** Append text to the end of the live buffer (continuous reading). */
   appendText(text: string): void;
+  /**
+   * Insert text at the start of the live buffer, keeping the previously
+   * visible content anchored in place (backward continuous reading).
+   */
+  prependText(text: string): void;
   /** Text content of the live buffer. */
   content(): string;
   focus(): void;
@@ -48,6 +53,7 @@ export function createEditor(
   onDocChanged: () => void,
   onCursorMoved: (line: number, column: number) => void,
   onViewportNearEnd: () => void,
+  onViewportNearStart: () => void,
 ): EditorHandle {
   const language = new Compartment();
   const theme = new Compartment();
@@ -71,6 +77,9 @@ export function createEditor(
       if (update.viewportChanged || update.docChanged) {
         if (nearEnd(update.view.viewport.to, update.state.doc.length)) {
           onViewportNearEnd();
+        }
+        if (nearStart(update.view.viewport.from)) {
+          onViewportNearStart();
         }
       }
     }),
@@ -105,6 +114,15 @@ export function createEditor(
     appendText: (text) => {
       view.dispatch({
         changes: { from: view.state.doc.length, insert: text },
+      });
+    },
+    prependText: (text) => {
+      const anchor = view.viewport.from;
+      view.dispatch({ changes: { from: 0, to: 0, insert: text } });
+      view.dispatch({
+        effects: EditorView.scrollIntoView(anchor + text.length, {
+          y: "start",
+        }),
       });
     },
     openSearch: () => {
