@@ -40,7 +40,7 @@ Ordered roughly by likelihood, not commitment:
 - Find in files (Rust search backend)
 - Recent files / quick open
 - Column (rectangular) selection
-- Drag-and-drop file opening
+- ~~Drag-and-drop file opening~~ (done)
 - Auto-reload on external change (file watcher)
 - Printing
 
