@@ -19,6 +19,8 @@ export interface Doc {
   prevChunkOffsets: number[];
   /** Chunks currently in the buffer (sliding window, char+byte lengths). */
   windowChunks: WindowChunk[];
+  /** Hot-exit backup file name once unsaved content has been flushed. */
+  backupName: string | null;
   buffer: EditorBuffer;
 }
 

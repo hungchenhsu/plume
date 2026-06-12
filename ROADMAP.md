@@ -62,6 +62,9 @@ distribution) are tracked outside this list.
   corrupt the target file)
 - [x] Session restores cursor position per file
 - [x] Window size/position persistence across launches
+- [x] Hot exit: unsaved buffers (including untitled tabs) are backed up
+  continuously and restored on launch; closing the window never asks
+  about unsaved changes
 - ~~Large-file phase 2c~~ (done — bidirectional continuous reading: the
   window slides through the file with chunk prepend/append plus trimming
   on the opposite edge, bounded at 8 chunks ≈ 16 MB; ◀ ▶ remain as jump

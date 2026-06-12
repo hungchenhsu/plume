@@ -59,6 +59,11 @@ export function cursorOf(buffer: EditorBuffer): number {
   return buffer.selection.main.head;
 }
 
+/** Full text content of a detached buffer. */
+export function contentOf(buffer: EditorBuffer): string {
+  return buffer.doc.toString();
+}
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
