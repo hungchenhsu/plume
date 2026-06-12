@@ -58,6 +58,10 @@ distribution) are tracked outside this list.
 - [x] Word wrap toggle (View menu, persisted in preferences)
 - [x] Editor zoom shortcuts (Mod+= / Mod+- / Mod+0 adjusting font size)
 - [x] Save option in the close-tab confirmation (Save / Don't Save / Cancel)
+- [x] Atomic saves (temp file + rename; a crash mid-save can no longer
+  corrupt the target file)
+- [ ] Session restores cursor position per file
+- [ ] Window size/position persistence across launches
 - ~~Large-file phase 2c~~ (done — bidirectional continuous reading: the
   window slides through the file with chunk prepend/append plus trimming
   on the opposite edge, bounded at 8 chunks ≈ 16 MB; ◀ ▶ remain as jump
