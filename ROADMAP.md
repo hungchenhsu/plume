@@ -56,7 +56,7 @@ distribution) are tracked outside this list.
 
 - [x] Regex mode for find in files
 - [x] Word wrap toggle (View menu, persisted in preferences)
-- [ ] Editor zoom shortcuts (Mod+= / Mod+- adjusting font size)
+- [x] Editor zoom shortcuts (Mod+= / Mod+- / Mod+0 adjusting font size)
 - [ ] Save option in the close-tab confirmation (currently discard/cancel)
 - Large-file phase 2c: seamless backward scrolling / windowed trimming
 
