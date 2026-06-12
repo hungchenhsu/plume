@@ -53,6 +53,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .copy()
         .paste()
         .select_all()
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id("find", "Find and Replace…")
+                .accelerator("CmdOrCtrl+F")
+                .build(app)?,
+        )
         .build()?;
 
     let menu = MenuBuilder::new(app);
