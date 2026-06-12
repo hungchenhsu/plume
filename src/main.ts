@@ -25,6 +25,7 @@ import {
   type SessionData,
 } from "./ipc";
 import { canAutoAppend } from "./chunkpolicy";
+import { showCloseConfirm } from "./confirm";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showQuickOpen } from "./quickopen";
@@ -514,11 +515,15 @@ async function closeTab(id: number): Promise<void> {
   const doc = tabs.get(id);
   if (!doc) return;
   if (doc.dirty) {
-    const discard = await confirmDialog(
-      `"${doc.title}" has unsaved changes. Discard them?`,
-      { title: "Unsaved changes", kind: "warning", okLabel: "Discard" },
-    );
-    if (!discard) return;
+    const choice = await showCloseConfirm(doc.title);
+    if (choice === "cancel") return;
+    if (choice === "save") {
+      // saveFlow operates on the active doc; activate the tab first.
+      if (tabs.activeId !== id) activate(id);
+      await saveFlow(false);
+      // Save dialog cancelled (e.g. untitled doc): abort the close.
+      if (doc.dirty) return;
+    }
   }
   if (doc.path) void unwatchFile(doc.path).catch(() => {});
   const wasActive = id === tabs.activeId;
