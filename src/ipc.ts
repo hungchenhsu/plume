@@ -125,11 +125,13 @@ export function searchInFolder(
   folder: string,
   query: string,
   caseSensitive: boolean,
+  useRegex: boolean,
 ): Promise<SearchResults> {
   return invoke<SearchResults>("search_in_folder", {
     folder,
     query,
     caseSensitive,
+    useRegex,
   });
 }
 
