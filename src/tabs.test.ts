@@ -18,6 +18,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     nextChunkOffset: null,
     prevChunkOffsets: [],
     windowChunks: [],
+    backupName: null,
     buffer: {} as EditorBuffer,
   };
 }

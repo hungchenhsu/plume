@@ -7,16 +7,19 @@ import {
   open as openDialog,
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
-import { createEditor, cursorOf, isEmptyBuffer } from "./editor";
+import { contentOf, createEditor, cursorOf, isEmptyBuffer } from "./editor";
 import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
 import {
   addRecentFile,
+  deleteBackup,
+  loadBackup,
   loadRecentFiles,
   loadSession,
   openDocument,
   printWindow,
   readDocumentChunk,
   readDocumentChunkBefore,
+  saveBackup,
   saveDocument,
   saveSession,
   takePendingFiles,
@@ -24,6 +27,7 @@ import {
   watchFile,
   type OpenedDocument,
   type SessionData,
+  type SessionFile,
 } from "./ipc";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { pushBack, pushFront } from "./chunkwindow";
@@ -60,16 +64,56 @@ const editor = createEditor(
   () => {
     const doc = tabs.active;
     // Programmatic chunk appends must not mark read-only previews dirty.
-    if (doc && !doc.dirty && !doc.truncated) {
-      doc.dirty = true;
-      tabs.render();
-      updateWindowTitle();
+    if (doc && !doc.truncated) {
+      if (!doc.dirty) {
+        doc.dirty = true;
+        tabs.render();
+        updateWindowTitle();
+      }
+      scheduleBackup();
     }
   },
   updateCursor,
   () => void autoAppendChunk(),
   () => void prependChunk(),
 );
+
+// ---- Hot exit: unsaved buffers are continuously backed up so closing the
+// window never needs to ask about unsaved changes.
+
+const BACKUP_DEBOUNCE_MS = 2000;
+let backupTimer: number | null = null;
+
+function backupNameFor(doc: Doc): string {
+  if (!doc.backupName) doc.backupName = `bk-${doc.id}-${Date.now()}.txt`;
+  return doc.backupName;
+}
+
+async function flushBackup(doc: Doc, content: string): Promise<void> {
+  try {
+    await saveBackup(backupNameFor(doc), content);
+  } catch {
+    // Best-effort; worst case the close-time flush retries.
+  }
+}
+
+function scheduleBackup(): void {
+  if (backupTimer !== null) window.clearTimeout(backupTimer);
+  backupTimer = window.setTimeout(() => {
+    backupTimer = null;
+    const doc = tabs.active;
+    if (doc?.dirty && !doc.truncated) {
+      void flushBackup(doc, editor.content()).then(persistSession);
+    }
+  }, BACKUP_DEBOUNCE_MS);
+}
+
+function dropBackup(doc: Doc): void {
+  if (doc.backupName) {
+    void deleteBackup(doc.backupName).catch(() => {});
+    doc.backupName = null;
+  }
+}
 
 function updateWindowTitle(): void {
   const doc = tabs.active;
@@ -102,6 +146,7 @@ function makeUntitled(): Doc {
     nextChunkOffset: null,
     prevChunkOffsets: [],
     windowChunks: [],
+    backupName: null,
     buffer: editor.newBuffer(""),
   };
 }
@@ -125,17 +170,19 @@ function showActive(): void {
 }
 
 function collectSession(): SessionData {
-  const files = tabs.docs
-    .filter((d) => d.path !== null)
-    .map((d) => ({
-      path: d.path!,
-      encoding: d.encoding,
-      cursor: cursorOf(d.id === tabs.activeId ? editor.snapshot() : d.buffer),
-    }));
-  const activePath = tabs.active?.path;
-  const active = activePath
-    ? files.findIndex((f) => f.path === activePath)
-    : -1;
+  const sessionDocs = tabs.docs.filter(
+    (d) => d.path !== null || (d.dirty && d.backupName !== null),
+  );
+  const files: SessionFile[] = sessionDocs.map((d) => ({
+    path: d.path,
+    encoding: d.encoding,
+    cursor: cursorOf(d.id === tabs.activeId ? editor.snapshot() : d.buffer),
+    backup: d.dirty ? d.backupName : null,
+    title: d.title,
+    withBom: d.withBom,
+    lineEnding: d.lineEnding,
+  }));
+  const active = sessionDocs.findIndex((d) => d.id === tabs.activeId);
   return { files, active: Math.max(active, 0) };
 }
 
@@ -148,7 +195,15 @@ function persistSession(): void {
 function activate(id: number): void {
   if (id === tabs.activeId) return;
   const current = tabs.active;
-  if (current) current.buffer = editor.snapshot();
+  if (current) {
+    current.buffer = editor.snapshot();
+    // Flush a pending backup before the editor switches away.
+    if (backupTimer !== null && current.dirty && !current.truncated) {
+      window.clearTimeout(backupTimer);
+      backupTimer = null;
+      void flushBackup(current, contentOf(current.buffer));
+    }
+  }
   tabs.setActive(id);
   showActive();
   persistSession();
@@ -199,6 +254,7 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
           },
         ]
       : [],
+    backupName: null,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
   };
 }
@@ -454,6 +510,7 @@ async function saveFlow(saveAs: boolean): Promise<void> {
       lineEnding: doc.lineEnding,
     });
     recentSaves.set(path, Date.now());
+    dropBackup(doc);
     if (oldPath !== path) {
       if (oldPath) void unwatchFile(oldPath).catch(() => {});
       void watchFile(path).catch(() => {});
@@ -605,6 +662,7 @@ async function closeTab(id: number): Promise<void> {
     }
   }
   if (doc.path) void unwatchFile(doc.path).catch(() => {});
+  dropBackup(doc);
   const wasActive = id === tabs.activeId;
   tabs.close(id);
   if (tabs.docs.length === 0) tabs.add(makeUntitled());
@@ -686,16 +744,20 @@ void listen<string>("plume://menu", (event) => {
   }
 });
 
-void getCurrentWindow().onCloseRequested(async (event) => {
-  const dirtyCount = tabs.docs.filter((d) => d.dirty).length;
-  if (dirtyCount === 0) return;
-  const discard = await confirmDialog(
-    dirtyCount === 1
-      ? "1 file has unsaved changes. Discard and quit?"
-      : `${dirtyCount} files have unsaved changes. Discard and quit?`,
-    { title: "Unsaved changes", kind: "warning", okLabel: "Discard" },
-  );
-  if (!discard) event.preventDefault();
+// Hot exit: flush every unsaved buffer to its backup and quit without
+// asking — the next launch restores everything, including untitled tabs.
+void getCurrentWindow().onCloseRequested(async () => {
+  if (backupTimer !== null) {
+    window.clearTimeout(backupTimer);
+    backupTimer = null;
+  }
+  for (const doc of tabs.docs) {
+    if (!doc.dirty || doc.truncated) continue;
+    const content =
+      doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
+    await flushBackup(doc, content);
+  }
+  await saveSession(collectSession()).catch(() => {});
 });
 
 document
@@ -715,13 +777,57 @@ document
     showLineEndingMenu(event.currentTarget as HTMLElement),
   );
 
+/** Keep new untitled numbering clear of titles restored from backups. */
+function bumpUntitledCounter(title: string): void {
+  const match = /^Untitled(?:-(\d+))?$/.exec(title);
+  if (match) {
+    untitledCounter = Math.max(
+      untitledCounter,
+      match[1] ? Number(match[1]) : 1,
+    );
+  }
+}
+
+/** Restore one session entry from its hot-exit backup, if present. */
+async function restoreFromBackup(file: SessionFile): Promise<boolean> {
+  if (!file.backup) return false;
+  const content = await loadBackup(file.backup).catch(() => null);
+  if (content === null) return false;
+  const title =
+    file.title || (file.path ? basename(file.path) : "Untitled");
+  bumpUntitledCounter(title);
+  tabs.add({
+    id: nextId++,
+    path: file.path,
+    title,
+    encoding: file.encoding,
+    withBom: file.withBom ?? false,
+    lineEnding: file.lineEnding || defaultLineEnding,
+    malformed: false,
+    dirty: true,
+    truncated: false,
+    totalSize: 0,
+    chunkOffset: 0,
+    nextChunkOffset: null,
+    prevChunkOffsets: [],
+    windowChunks: [],
+    backupName: file.backup,
+    buffer: editor.newBuffer(content, false, file.cursor ?? 0),
+  });
+  if (file.path) void watchFile(file.path).catch(() => {});
+  return true;
+}
+
 /** Reopen the files from the previous session; missing files are skipped. */
 async function restoreSession(): Promise<void> {
   const session = await loadSession().catch(() => null);
   for (const file of session?.files ?? []) {
     try {
-      const opened = await openDocument(file.path, file.encoding);
-      tabs.add(docFromOpened(opened, file.cursor ?? 0));
+      if (await restoreFromBackup(file)) continue;
+      if (file.path) {
+        const opened = await openDocument(file.path, file.encoding);
+        tabs.add(docFromOpened(opened, file.cursor ?? 0));
+      }
     } catch {
       // The file may have been moved or deleted since last session.
     }

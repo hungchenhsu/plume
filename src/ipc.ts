@@ -71,10 +71,16 @@ export function saveDocument(args: {
 }
 
 export interface SessionFile {
-  path: string;
+  /** Null for untitled documents kept alive by a hot-exit backup. */
+  path: string | null;
   encoding: string;
   /** Cursor position as a character offset. */
   cursor: number;
+  /** Backup file name holding unsaved content, if any. */
+  backup: string | null;
+  title: string;
+  withBom: boolean;
+  lineEnding: string;
 }
 
 export interface SessionData {
@@ -110,6 +116,18 @@ export function savePreferences(preferences: Preferences): Promise<void> {
 /** Files queued by the OS (file association / CLI) before startup. */
 export function takePendingFiles(): Promise<string[]> {
   return invoke<string[]>("take_pending_files");
+}
+
+export function saveBackup(name: string, content: string): Promise<void> {
+  return invoke<void>("save_backup", { name, content });
+}
+
+export function loadBackup(name: string): Promise<string | null> {
+  return invoke<string | null>("load_backup", { name });
+}
+
+export function deleteBackup(name: string): Promise<void> {
+  return invoke<void>("delete_backup", { name });
 }
 
 export function watchFile(path: string): Promise<void> {

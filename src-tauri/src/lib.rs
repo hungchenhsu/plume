@@ -1,3 +1,4 @@
+mod backup;
 mod chunk;
 mod encoding;
 mod menu;
@@ -120,7 +121,7 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
 /// (same filesystem), fsync, then rename over the target. A crash mid-save
 /// leaves either the old file or the new one — never a half-written file.
 /// Existing file permissions are carried over to the replacement.
-fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -223,7 +224,10 @@ pub fn run() {
             watcher::unwatch_file,
             recent::load_recent_files,
             recent::add_recent_file,
-            search::search_in_folder
+            search::search_in_folder,
+            backup::save_backup,
+            backup::load_backup,
+            backup::delete_backup
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
