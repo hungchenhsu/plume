@@ -116,9 +116,42 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
     })
 }
 
+/// Write bytes atomically: write to a temporary file in the same directory
+/// (same filesystem), fsync, then rename over the target. A crash mid-save
+/// leaves either the old file or the new one — never a half-written file.
+/// Existing file permissions are carried over to the replacement.
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let tmp_path = dir.join(format!(".{file_name}.plume-tmp-{}", std::process::id()));
+
+    let result = (|| {
+        let mut tmp = std::fs::File::create(&tmp_path)?;
+        tmp.write_all(bytes)?;
+        tmp.sync_all()?;
+        drop(tmp);
+        if let Ok(meta) = std::fs::metadata(path) {
+            let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
+        }
+        // std::fs::rename replaces the destination on every platform
+        // (MOVEFILE_REPLACE_EXISTING on Windows).
+        std::fs::rename(&tmp_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
 /// Encode LF-normalized content with the given encoding and line ending,
-/// then write it to disk. `unmappable` is true when characters could not be
-/// represented in the target encoding.
+/// then write it to disk atomically. `unmappable` is true when characters
+/// could not be represented in the target encoding.
 #[tauri::command]
 fn save_document(
     path: String,
@@ -129,7 +162,8 @@ fn save_document(
 ) -> Result<SaveResult, String> {
     let text = encoding::apply_line_ending(&content, &line_ending);
     let (bytes, unmappable) = encoding::encode(&text, &encoding, with_bom)?;
-    std::fs::write(&path, bytes).map_err(|e| format!("Failed to write {path}: {e}"))?;
+    atomic_write(std::path::Path::new(&path), &bytes)
+        .map_err(|e| format!("Failed to write {path}: {e}"))?;
     Ok(SaveResult { unmappable })
 }
 
@@ -215,7 +249,57 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{existing_paths_from_args, preview_slice};
+    use super::{atomic_write, existing_paths_from_args, preview_slice};
+
+    #[test]
+    fn atomic_write_replaces_content_and_leaves_no_temp_files() {
+        let dir = std::env::temp_dir().join("plume-atomic-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+
+        atomic_write(&target, b"first version").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"first version");
+        atomic_write(&target, "第二版 with 中文".as_bytes()).unwrap();
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            "第二版 with 中文".as_bytes()
+        );
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("plume-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files may remain");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_unix_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("plume-atomic-perms");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("script.sh");
+
+        std::fs::write(&target, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        atomic_write(&target, b"#!/bin/sh\necho updated\n").unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn atomic_write_fails_cleanly_on_missing_directory() {
+        let target = std::env::temp_dir()
+            .join("plume-no-such-dir")
+            .join("nested")
+            .join("doc.txt");
+        assert!(atomic_write(&target, b"x").is_err());
+    }
 
     #[test]
     fn preview_slice_cuts_at_line_boundary() {
