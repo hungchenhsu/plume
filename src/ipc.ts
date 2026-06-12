@@ -12,6 +12,28 @@ export interface OpenedDocument {
   /** Only a leading slice of a large file was loaded; treat as read-only. */
   truncated: boolean;
   totalSize: number;
+  /** When truncated: file offset where the next chunk begins. */
+  nextOffset: number | null;
+}
+
+export interface DocumentChunk {
+  content: string;
+  offset: number;
+  nextOffset: number | null;
+  totalSize: number;
+  malformed: boolean;
+}
+
+export function readDocumentChunk(
+  path: string,
+  offset: number,
+  encoding: string,
+): Promise<DocumentChunk> {
+  return invoke<DocumentChunk>("read_document_chunk", {
+    path,
+    offset,
+    encoding,
+  });
 }
 
 export interface SaveResult {

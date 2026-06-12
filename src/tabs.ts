@@ -12,6 +12,10 @@ export interface Doc {
   /** Read-only preview of a large file; saving is disabled. */
   truncated: boolean;
   totalSize: number;
+  /** Paging state for truncated docs (line-aligned chunk offsets). */
+  chunkOffset: number;
+  nextChunkOffset: number | null;
+  prevChunkOffsets: number[];
   buffer: EditorBuffer;
 }
 

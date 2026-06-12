@@ -15,6 +15,7 @@ import {
   loadSession,
   openDocument,
   printWindow,
+  readDocumentChunk,
   saveDocument,
   saveSession,
   takePendingFiles,
@@ -32,7 +33,7 @@ import {
   preferences,
   showPreferencesDialog,
 } from "./preferences";
-import { updateCursor, updateStatusBar } from "./statusbar";
+import { updateCursor, updatePager, updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
 const defaultLineEnding = navigator.userAgent.includes("Windows")
@@ -88,6 +89,9 @@ function makeUntitled(): Doc {
     dirty: false,
     truncated: false,
     totalSize: 0,
+    chunkOffset: 0,
+    nextChunkOffset: null,
+    prevChunkOffsets: [],
     buffer: editor.newBuffer(""),
   };
 }
@@ -99,6 +103,7 @@ function showActive(): void {
   editor.swap(doc.buffer);
   tabs.render();
   updateStatusBar(doc);
+  updatePager(pagerState(doc));
   updateWindowTitle();
   editor.focus();
   void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
@@ -164,8 +169,49 @@ function docFromOpened(opened: OpenedDocument): Doc {
     dirty: false,
     truncated: opened.truncated,
     totalSize: opened.totalSize,
+    chunkOffset: 0,
+    nextChunkOffset: opened.nextOffset,
+    prevChunkOffsets: [],
     buffer: editor.newBuffer(opened.content, opened.truncated),
   };
+}
+
+/** UTF-16 chunks cannot be line-aligned; paging is disabled for them. */
+function pagingSupported(doc: Doc): boolean {
+  return doc.truncated && !doc.encoding.startsWith("UTF-16");
+}
+
+function pagerState(doc: Doc): { hasPrev: boolean; hasNext: boolean } | null {
+  if (!pagingSupported(doc)) return null;
+  return {
+    hasPrev: doc.prevChunkOffsets.length > 0,
+    hasNext: doc.nextChunkOffset !== null,
+  };
+}
+
+async function pageChunk(direction: 1 | -1): Promise<void> {
+  const doc = tabs.active;
+  if (!doc?.path || !pagingSupported(doc)) return;
+  let target: number;
+  if (direction === 1) {
+    if (doc.nextChunkOffset === null) return;
+    target = doc.nextChunkOffset;
+  } else {
+    const prev = doc.prevChunkOffsets.pop();
+    if (prev === undefined) return;
+    target = prev;
+  }
+  try {
+    const chunkData = await readDocumentChunk(doc.path, target, doc.encoding);
+    if (direction === 1) doc.prevChunkOffsets.push(doc.chunkOffset);
+    doc.chunkOffset = chunkData.offset;
+    doc.nextChunkOffset = chunkData.nextOffset;
+    doc.malformed = chunkData.malformed;
+    doc.buffer = editor.newBuffer(chunkData.content, true);
+    showActive();
+  } catch (error) {
+    await messageDialog(String(error), { title: "Paging", kind: "warning" });
+  }
 }
 
 /** Cached recent-files list, refreshed by the backend on every addition. */
@@ -197,6 +243,9 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.dirty = false;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
+    doc.chunkOffset = 0;
+    doc.nextChunkOffset = opened.nextOffset;
+    doc.prevChunkOffsets = [];
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     if (tabs.activeId === doc.id) showActive();
     else tabs.render();
@@ -330,6 +379,9 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.dirty = false;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
+    doc.chunkOffset = 0;
+    doc.nextChunkOffset = opened.nextOffset;
+    doc.prevChunkOffsets = [];
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     showActive();
     persistSession();
@@ -498,6 +550,12 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   if (!discard) event.preventDefault();
 });
 
+document
+  .querySelector<HTMLElement>("#chunk-prev")!
+  .addEventListener("click", () => void pageChunk(-1));
+document
+  .querySelector<HTMLElement>("#chunk-next")!
+  .addEventListener("click", () => void pageChunk(1));
 document
   .querySelector<HTMLElement>("#status-encoding")!
   .addEventListener("click", (event) =>

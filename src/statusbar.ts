@@ -17,9 +17,21 @@ const lineEndingEl = document.querySelector<HTMLElement>(
 const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
 const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
+const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
+const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
 
 export function updateCursor(line: number, column: number): void {
   cursorEl.textContent = `Ln ${line}, Col ${column}`;
+}
+
+/** Show/hide the large-file pager buttons. Pass null to hide both. */
+export function updatePager(
+  state: { hasPrev: boolean; hasNext: boolean } | null,
+): void {
+  chunkPrevEl.hidden = state === null;
+  chunkNextEl.hidden = state === null;
+  chunkPrevEl.disabled = !state?.hasPrev;
+  chunkNextEl.disabled = !state?.hasNext;
 }
 
 export function formatSize(bytes: number): string {
