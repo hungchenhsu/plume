@@ -9,9 +9,9 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 ## v0.1 — MVP
 
 **Editing**
-- [ ] Multi-tab open / save / save-as
+- [x] Multi-tab open / save / save-as
 - [x] Single-document open / save / save-as (skeleton)
-- [ ] Unsaved-changes indicator and close confirmation
+- [x] Unsaved-changes indicator and close confirmation
 
 **Encoding (the core identity)**
 - [x] Automatic detection: BOM sniffing + statistical detection (UTF-8, UTF-8 BOM, UTF-16 LE/BE, Big5, Shift_JIS, GB18030, …)
