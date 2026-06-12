@@ -1,6 +1,8 @@
 mod encoding;
+mod menu;
 
 use serde::Serialize;
+use tauri::Emitter;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +64,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .menu(menu::build)
+        .on_menu_event(|app, event| {
+            let _ = app.emit("plume://menu", event.id().0.as_str());
+        })
         .invoke_handler(tauri::generate_handler![open_document, save_document])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
