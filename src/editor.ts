@@ -13,7 +13,9 @@ export type EditorBuffer = EditorState;
 
 export interface EditorHandle {
   /** Create a detached buffer, e.g. for a newly opened document. */
-  newBuffer(content: string, readOnly?: boolean): EditorBuffer;
+  newBuffer(content: string, readOnly?: boolean, cursor?: number): EditorBuffer;
+  /** Scroll the live buffer's cursor into the center of the view. */
+  revealCursor(): void;
   /** Show the given buffer in the editor view. */
   swap(buffer: EditorBuffer): void;
   /** The live buffer currently in the view, including unsaved edits. */
@@ -52,6 +54,11 @@ export function isEmptyBuffer(buffer: EditorBuffer): boolean {
   return buffer.doc.length === 0;
 }
 
+/** Cursor position (character offset) stored in a buffer. */
+export function cursorOf(buffer: EditorBuffer): number {
+  return buffer.selection.main.head;
+}
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
@@ -88,9 +95,14 @@ export function createEditor(
       }
     }),
   ];
-  const newBuffer = (content: string, readOnly = false): EditorBuffer =>
+  const newBuffer = (
+    content: string,
+    readOnly = false,
+    cursor = 0,
+  ): EditorBuffer =>
     EditorState.create({
       doc: content,
+      selection: { anchor: Math.min(Math.max(cursor, 0), content.length) },
       extensions: readOnly
         ? [extensions, EditorState.readOnly.of(true), EditorView.editable.of(false)]
         : extensions,
@@ -144,6 +156,13 @@ export function createEditor(
     },
     openSearch: () => {
       openSearchPanel(view);
+    },
+    revealCursor: () => {
+      view.dispatch({
+        effects: EditorView.scrollIntoView(view.state.selection.main.head, {
+          y: "center",
+        }),
+      });
     },
     goToLine: (line) => {
       const clamped = Math.max(1, Math.min(line, view.state.doc.lines));

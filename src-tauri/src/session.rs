@@ -9,6 +9,10 @@ use tauri::{AppHandle, Runtime};
 pub struct SessionFile {
     pub path: String,
     pub encoding: String,
+    /// Cursor position as a character offset; defaults to 0 for sessions
+    /// written before this field existed.
+    #[serde(default)]
+    pub cursor: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -38,6 +42,7 @@ mod tests {
             files: vec![SessionFile {
                 path: "/tmp/中文檔名.txt".into(),
                 encoding: "Big5".into(),
+                cursor: 42,
             }],
             active: 0,
         };
@@ -46,6 +51,14 @@ mod tests {
         assert_eq!(back.files.len(), 1);
         assert_eq!(back.files[0].path, "/tmp/中文檔名.txt");
         assert_eq!(back.files[0].encoding, "Big5");
+        assert_eq!(back.files[0].cursor, 42);
         assert_eq!(back.active, 0);
+    }
+
+    #[test]
+    fn old_sessions_without_cursor_still_load() {
+        let json = r#"{"files":[{"path":"/tmp/a.txt","encoding":"UTF-8"}],"active":0}"#;
+        let session: Session = serde_json::from_str(json).unwrap();
+        assert_eq!(session.files[0].cursor, 0);
     }
 }

@@ -7,7 +7,7 @@ import {
   open as openDialog,
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
-import { createEditor, isEmptyBuffer } from "./editor";
+import { createEditor, cursorOf, isEmptyBuffer } from "./editor";
 import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
 import {
   addRecentFile,
@@ -127,7 +127,11 @@ function showActive(): void {
 function collectSession(): SessionData {
   const files = tabs.docs
     .filter((d) => d.path !== null)
-    .map((d) => ({ path: d.path!, encoding: d.encoding }));
+    .map((d) => ({
+      path: d.path!,
+      encoding: d.encoding,
+      cursor: cursorOf(d.id === tabs.activeId ? editor.snapshot() : d.buffer),
+    }));
   const activePath = tabs.active?.path;
   const active = activePath
     ? files.findIndex((f) => f.path === activePath)
@@ -169,7 +173,7 @@ function isPristineUntitled(doc: Doc): boolean {
   return doc.path === null && !doc.dirty && isEmptyBuffer(doc.buffer);
 }
 
-function docFromOpened(opened: OpenedDocument): Doc {
+function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
   void watchFile(opened.path).catch(() => {
     // Watching is best-effort; editing must keep working without it.
   });
@@ -195,7 +199,7 @@ function docFromOpened(opened: OpenedDocument): Doc {
           },
         ]
       : [],
-    buffer: editor.newBuffer(opened.content, opened.truncated),
+    buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
   };
 }
 
@@ -717,7 +721,7 @@ async function restoreSession(): Promise<void> {
   for (const file of session?.files ?? []) {
     try {
       const opened = await openDocument(file.path, file.encoding);
-      tabs.add(docFromOpened(opened));
+      tabs.add(docFromOpened(opened, file.cursor ?? 0));
     } catch {
       // The file may have been moved or deleted since last session.
     }
@@ -729,6 +733,7 @@ async function restoreSession(): Promise<void> {
     tabs.setActive(tabs.docs[index].id);
   }
   showActive();
+  editor.revealCursor();
 }
 
 // Files opened through the OS while the app is already running.
