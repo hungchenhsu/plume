@@ -2,7 +2,7 @@
 //! `serde(default)` so settings added later still load old files cleanly.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
@@ -29,21 +29,9 @@ impl Default for Preferences {
     }
 }
 
-fn prefs_path<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("Cannot resolve config dir: {e}"))?;
-    Ok(dir.join("preferences.json"))
-}
-
 #[tauri::command]
 pub fn load_preferences<R: Runtime>(app: AppHandle<R>) -> Preferences {
-    prefs_path(&app)
-        .ok()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::store::read_json(&app, "preferences.json").unwrap_or_default()
 }
 
 #[tauri::command]
@@ -51,14 +39,7 @@ pub fn save_preferences<R: Runtime>(
     app: AppHandle<R>,
     preferences: Preferences,
 ) -> Result<(), String> {
-    let path = prefs_path(&app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {e}"))?;
-    }
-    let json =
-        serde_json::to_vec_pretty(&preferences).map_err(|e| format!("Cannot serialize: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write preferences: {e}"))?;
-    Ok(())
+    crate::store::write_json(&app, "preferences.json", &preferences)
 }
 
 #[cfg(test)]

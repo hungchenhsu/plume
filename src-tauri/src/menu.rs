@@ -21,6 +21,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .accelerator("CmdOrCtrl+O")
                 .build(app)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("open_recent", "Open Recent…")
+                .accelerator("CmdOrCtrl+P")
+                .build(app)?,
+        )
         .separator()
         .item(
             &MenuItemBuilder::with_id("save", "Save")

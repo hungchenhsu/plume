@@ -38,7 +38,7 @@ Ordered roughly by likelihood, not commitment:
 
 - Large-file mode (Rust-side chunked loading, read-only first)
 - Find in files (Rust search backend)
-- Recent files / quick open
+- ~~Recent files / quick open~~ (done)
 - Column (rectangular) selection
 - ~~Drag-and-drop file opening~~ (done)
 - ~~Auto-reload on external change (file watcher)~~ (done)

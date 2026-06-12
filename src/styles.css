@@ -213,6 +213,80 @@ body {
   flex-shrink: 0;
 }
 
+.quickopen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+
+.quickopen-panel {
+  display: flex;
+  flex-direction: column;
+  width: 480px;
+  max-width: 90vw;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.quickopen-panel input {
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--popup-border);
+  outline: none;
+}
+
+.quickopen-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.quickopen-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.quickopen-item:hover,
+.quickopen-item.selected {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+.quickopen-name {
+  font-size: 13px;
+}
+
+.quickopen-dir {
+  font-size: 11px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quickopen-empty {
+  padding: 10px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+
 .prefs-overlay {
   position: fixed;
   inset: 0;

@@ -75,6 +75,15 @@ export function watchFile(path: string): Promise<void> {
   return invoke<void>("watch_file", { path });
 }
 
+export function loadRecentFiles(): Promise<string[]> {
+  return invoke<string[]>("load_recent_files");
+}
+
+/** Push a path onto the recent list; returns the updated list. */
+export function addRecentFile(path: string): Promise<string[]> {
+  return invoke<string[]>("add_recent_file", { path });
+}
+
 export function unwatchFile(path: string): Promise<void> {
   return invoke<void>("unwatch_file", { path });
 }
