@@ -48,10 +48,11 @@ npm run tauri dev    # run the app in development mode
 npm run tauri build  # produce a release bundle
 ```
 
-Rust tests live in `src-tauri`:
+Tests:
 
 ```sh
-cd src-tauri && cargo test
+npm test                     # frontend unit tests (vitest)
+cd src-tauri && cargo test   # Rust core tests
 ```
 
 ## Contributing
