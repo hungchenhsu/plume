@@ -61,7 +61,7 @@ distribution) are tracked outside this list.
 - [x] Atomic saves (temp file + rename; a crash mid-save can no longer
   corrupt the target file)
 - [x] Session restores cursor position per file
-- [ ] Window size/position persistence across launches
+- [x] Window size/position persistence across launches
 - ~~Large-file phase 2c~~ (done — bidirectional continuous reading: the
   window slides through the file with chunk prepend/append plus trimming
   on the opposite edge, bounded at 8 chunks ≈ 16 MB; ◀ ▶ remain as jump
