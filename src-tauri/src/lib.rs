@@ -1,3 +1,4 @@
+mod chunk;
 mod encoding;
 mod menu;
 mod prefs;
@@ -58,6 +59,8 @@ pub struct OpenedDocument {
     /// True when only a leading slice of the file was loaded (read-only).
     truncated: bool,
     total_size: u64,
+    /// When truncated: file offset where the next chunk begins.
+    next_offset: Option<u64>,
 }
 
 /// Cut a preview slice at the last line boundary so the tail is not a
@@ -89,10 +92,11 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
         .len();
     let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     let truncated = total_size > LARGE_FILE_THRESHOLD;
-    let bytes = if truncated {
-        preview_slice(&bytes, PREVIEW_BYTES)
+    let (bytes, next_offset) = if truncated {
+        let slice = preview_slice(&bytes, PREVIEW_BYTES);
+        (slice, Some(slice.len() as u64))
     } else {
-        &bytes[..]
+        (&bytes[..], None)
     };
     let decoded = match encoding {
         Some(label) => encoding::decode_with(bytes, &label)?,
@@ -108,6 +112,7 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
         line_ending,
         truncated,
         total_size,
+        next_offset,
     })
 }
 
@@ -171,6 +176,7 @@ pub fn run() {
             prefs::save_preferences,
             take_pending_files,
             print_window,
+            chunk::read_document_chunk,
             watcher::watch_file,
             watcher::unwatch_file,
             recent::load_recent_files,
