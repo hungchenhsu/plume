@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   confirm as confirmDialog,
@@ -10,7 +11,6 @@ import { openDocument, saveDocument } from "./ipc";
 import { updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
-const isMac = navigator.userAgent.includes("Mac");
 const defaultLineEnding = navigator.userAgent.includes("Windows")
   ? "CRLF"
   : "LF";
@@ -169,27 +169,33 @@ async function closeTab(id: number): Promise<void> {
   else tabs.render();
 }
 
+// File shortcuts (Mod-T/O/S/W) are owned by the native menu accelerators —
+// binding them here as well would double-fire. Only tab cycling stays in
+// the WebView because Ctrl+Tab is not reliable as a menu accelerator.
 window.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key === "Tab") {
     event.preventDefault();
     cycleTab(event.shiftKey ? -1 : 1);
-    return;
   }
-  const mod = isMac ? event.metaKey : event.ctrlKey;
-  if (!mod || event.altKey) return;
-  const key = event.key.toLowerCase();
-  if (key === "o" && !event.shiftKey) {
-    event.preventDefault();
-    void openFileFlow();
-  } else if (key === "s") {
-    event.preventDefault();
-    void saveFlow(event.shiftKey);
-  } else if (key === "t" && !event.shiftKey) {
-    event.preventDefault();
-    newTab();
-  } else if (key === "w" && !event.shiftKey) {
-    event.preventDefault();
-    if (tabs.activeId !== null) void closeTab(tabs.activeId);
+});
+
+void listen<string>("plume://menu", (event) => {
+  switch (event.payload) {
+    case "new_tab":
+      newTab();
+      break;
+    case "open":
+      void openFileFlow();
+      break;
+    case "save":
+      void saveFlow(false);
+      break;
+    case "save_as":
+      void saveFlow(true);
+      break;
+    case "close_tab":
+      if (tabs.activeId !== null) void closeTab(tabs.activeId);
+      break;
   }
 });
 
