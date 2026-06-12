@@ -15,6 +15,7 @@ pub struct Preferences {
     /// Default encoding for new (untitled) documents.
     pub default_encoding: String,
     pub default_bom: bool,
+    pub word_wrap: bool,
 }
 
 impl Default for Preferences {
@@ -25,13 +26,20 @@ impl Default for Preferences {
             theme: "system".into(),
             default_encoding: "UTF-8".into(),
             default_bom: false,
+            word_wrap: true,
         }
     }
 }
 
+/// Current preferences, shared by the load command and the menu builder
+/// (the View menu checkbox needs the persisted state at build time).
+pub fn current<R: Runtime>(app: &AppHandle<R>) -> Preferences {
+    crate::store::read_json(app, "preferences.json").unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn load_preferences<R: Runtime>(app: AppHandle<R>) -> Preferences {
-    crate::store::read_json(&app, "preferences.json").unwrap_or_default()
+    current(&app)
 }
 
 #[tauri::command]
@@ -61,6 +69,7 @@ mod tests {
         assert_eq!(prefs.font_size, 16);
         assert_eq!(prefs.theme, "system");
         assert_eq!(prefs.default_encoding, "UTF-8");
+        assert!(prefs.word_wrap);
     }
 
     #[test]
@@ -71,6 +80,7 @@ mod tests {
             theme: "dark".into(),
             default_encoding: "Big5".into(),
             default_bom: false,
+            word_wrap: false,
         };
         let json = serde_json::to_vec(&prefs).unwrap();
         let back: Preferences = serde_json::from_slice(&json).unwrap();

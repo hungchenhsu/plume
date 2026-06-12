@@ -161,9 +161,12 @@ pub fn run() {
             use tauri::Manager;
             let state = watcher::init(app.handle().clone())?;
             app.manage(state);
+            // Built in setup (not Builder::menu) because the menu reads
+            // preferences via app.path(), which is unavailable until the
+            // path resolver state is managed.
+            app.set_menu(menu::build(app.handle())?)?;
             Ok(())
         })
-        .menu(menu::build)
         .on_menu_event(|app, event| {
             let _ = app.emit("plume://menu", event.id().0.as_str());
         })

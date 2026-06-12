@@ -33,6 +33,7 @@ import {
   initPreferences,
   preferences,
   showPreferencesDialog,
+  toggleWordWrap,
 } from "./preferences";
 import { updateCursor, updatePager, updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
@@ -562,6 +563,9 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "open_recent":
       showQuickOpen(recentFiles, (path) => void openPath(path));
+      break;
+    case "word_wrap":
+      toggleWordWrap();
       break;
     case "find_in_files":
       showFindInFiles((path, line) => {
