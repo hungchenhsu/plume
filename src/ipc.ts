@@ -49,3 +49,19 @@ export function loadSession(): Promise<SessionData | null> {
 export function saveSession(session: SessionData): Promise<void> {
   return invoke<void>("save_session", { session });
 }
+
+export interface Preferences {
+  fontFamily: string;
+  fontSize: number;
+  theme: string;
+  defaultEncoding: string;
+  defaultBom: boolean;
+}
+
+export function loadPreferences(): Promise<Preferences> {
+  return invoke<Preferences>("load_preferences");
+}
+
+export function savePreferences(preferences: Preferences): Promise<void> {
+  return invoke<void>("save_preferences", { preferences });
+}

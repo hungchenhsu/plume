@@ -39,6 +39,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .build(app)?,
         );
     #[cfg(not(target_os = "macos"))]
+    let file = file.separator().item(
+        &MenuItemBuilder::with_id("preferences", "Preferences…")
+            .accelerator("CmdOrCtrl+,")
+            .build(app)?,
+    );
+    #[cfg(not(target_os = "macos"))]
     let file = file.separator().quit();
     let file = file.build()?;
 
@@ -67,6 +73,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let menu = menu.item(
         &SubmenuBuilder::new(app, "Plume")
             .about(Some(AboutMetadata::default()))
+            .separator()
+            .item(
+                &MenuItemBuilder::with_id("preferences", "Preferences…")
+                    .accelerator("CmdOrCtrl+,")
+                    .build(app)?,
+            )
             .separator()
             .services()
             .separator()

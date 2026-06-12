@@ -116,8 +116,15 @@ body {
 }
 
 #editor .cm-scroller {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-family: var(
+    --editor-font-family,
+    ui-monospace,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace
+  );
+  font-size: var(--editor-font-size, 13px);
 }
 
 #statusbar {
@@ -206,6 +213,75 @@ body {
   flex-shrink: 0;
 }
 
+.prefs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.prefs-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 380px;
+  padding: 18px 20px;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.prefs-dialog h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.prefs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.prefs-row input,
+.prefs-row select {
+  width: 190px;
+  padding: 4px 6px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--popup-border);
+  border-radius: 6px;
+}
+
+.prefs-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.prefs-buttons button {
+  padding: 5px 14px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--popup-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.prefs-buttons .prefs-save {
+  background: #3478f6;
+  border-color: #3478f6;
+  color: #ffffff;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --statusbar-bg: #2a2a2a;
@@ -221,4 +297,39 @@ body {
     --popup-bg: #2c2c2c;
     --popup-border: #444444;
   }
+}
+
+/* Explicit theme choice from Preferences overrides the system scheme. */
+html[data-theme="light"] {
+  --statusbar-bg: #f0f0f0;
+  --statusbar-fg: #444444;
+  --statusbar-border: #d8d8d8;
+  --warning-fg: #b35900;
+  --tab-bg: #e4e4e4;
+  --tab-active-bg: #ffffff;
+  --tab-fg: #555555;
+  --tab-active-fg: #111111;
+  --tab-border: #d0d0d0;
+  --tab-dirty: #b35900;
+  --popup-bg: #ffffff;
+  --popup-border: #d0d0d0;
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+}
+
+html[data-theme="dark"] {
+  --statusbar-bg: #2a2a2a;
+  --statusbar-fg: #bbbbbb;
+  --statusbar-border: #3a3a3a;
+  --warning-fg: #ffb454;
+  --tab-bg: #242424;
+  --tab-active-bg: #1e1e1e;
+  --tab-fg: #999999;
+  --tab-active-fg: #eeeeee;
+  --tab-border: #3a3a3a;
+  --tab-dirty: #ffb454;
+  --popup-bg: #2c2c2c;
+  --popup-border: #444444;
+  color: #f6f6f6;
+  background-color: #1e1e1e;
 }

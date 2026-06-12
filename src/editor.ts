@@ -2,10 +2,11 @@
 // editor through this interface and the opaque EditorBuffer type, so the
 // editor surface stays swappable (see ARCHITECTURE.md).
 import { basicSetup, EditorView } from "codemirror";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
+import { oneDark } from "@codemirror/theme-one-dark";
 
 export type EditorBuffer = EditorState;
 
@@ -21,6 +22,8 @@ export interface EditorHandle {
   focus(): void;
   /** Open the find/replace panel (regex, case and word toggles built in). */
   openSearch(): void;
+  /** Switch the editor between the light and dark color theme. */
+  setDarkTheme(dark: boolean): void;
   /**
    * Pick a language for the live buffer by filename and load it lazily.
    * `stillWanted` guards against the user switching tabs while the language
@@ -38,9 +41,14 @@ export function createEditor(
   onDocChanged: () => void,
 ): EditorHandle {
   const language = new Compartment();
+  const theme = new Compartment();
+  // The theme is global but each tab's EditorState carries its own
+  // compartment value, so the current theme is re-applied on every swap.
+  let currentTheme: Extension = [];
   const extensions = [
     basicSetup,
     language.of([]),
+    theme.of([]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onDocChanged();
     }),
@@ -52,12 +60,19 @@ export function createEditor(
 
   return {
     newBuffer,
-    swap: (buffer) => view.setState(buffer),
+    swap: (buffer) => {
+      view.setState(buffer);
+      view.dispatch({ effects: theme.reconfigure(currentTheme) });
+    },
     snapshot: () => view.state,
     content: () => view.state.doc.toString(),
     focus: () => view.focus(),
     openSearch: () => {
       openSearchPanel(view);
+    },
+    setDarkTheme: (dark) => {
+      currentTheme = dark ? oneDark : [];
+      view.dispatch({ effects: theme.reconfigure(currentTheme) });
     },
     async setLanguage(filename, stillWanted) {
       const description = filename
