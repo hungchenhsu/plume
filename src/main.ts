@@ -30,6 +30,7 @@ import { showGoToLine } from "./goto";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import {
+  adjustFontSize,
   initPreferences,
   preferences,
   showPreferencesDialog,
@@ -566,6 +567,15 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "word_wrap":
       toggleWordWrap();
+      break;
+    case "zoom_in":
+      adjustFontSize(1);
+      break;
+    case "zoom_out":
+      adjustFontSize(-1);
+      break;
+    case "zoom_reset":
+      adjustFontSize(0);
       break;
     case "find_in_files":
       showFindInFiles((path, line) => {

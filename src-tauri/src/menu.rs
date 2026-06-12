@@ -119,6 +119,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .accelerator("Alt+Z")
                 .build(app)?,
         )
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id("zoom_in", "Zoom In")
+                .accelerator("CmdOrCtrl+=")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("zoom_out", "Zoom Out")
+                .accelerator("CmdOrCtrl+-")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("zoom_reset", "Actual Size")
+                .accelerator("CmdOrCtrl+0")
+                .build(app)?,
+        )
         .build()?;
 
     let menu = menu.item(&file).item(&edit).item(&view);
