@@ -7,6 +7,7 @@ import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
+import { nearEnd } from "./chunkpolicy";
 
 export type EditorBuffer = EditorState;
 
@@ -17,6 +18,8 @@ export interface EditorHandle {
   swap(buffer: EditorBuffer): void;
   /** The live buffer currently in the view, including unsaved edits. */
   snapshot(): EditorBuffer;
+  /** Append text to the end of the live buffer (continuous reading). */
+  appendText(text: string): void;
   /** Text content of the live buffer. */
   content(): string;
   focus(): void;
@@ -42,6 +45,7 @@ export function createEditor(
   parent: Element,
   onDocChanged: () => void,
   onCursorMoved: (line: number, column: number) => void,
+  onViewportNearEnd: () => void,
 ): EditorHandle {
   const language = new Compartment();
   const theme = new Compartment();
@@ -58,6 +62,11 @@ export function createEditor(
         const head = update.state.selection.main.head;
         const line = update.state.doc.lineAt(head);
         onCursorMoved(line.number, head - line.from + 1);
+      }
+      if (update.viewportChanged || update.docChanged) {
+        if (nearEnd(update.view.viewport.to, update.state.doc.length)) {
+          onViewportNearEnd();
+        }
       }
     }),
   ];
@@ -83,6 +92,11 @@ export function createEditor(
     snapshot: () => view.state,
     content: () => view.state.doc.toString(),
     focus: () => view.focus(),
+    appendText: (text) => {
+      view.dispatch({
+        changes: { from: view.state.doc.length, insert: text },
+      });
+    },
     openSearch: () => {
       openSearchPanel(view);
     },

@@ -24,6 +24,7 @@ import {
   type OpenedDocument,
   type SessionData,
 } from "./ipc";
+import { canAutoAppend } from "./chunkpolicy";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showQuickOpen } from "./quickopen";
@@ -53,13 +54,15 @@ const editor = createEditor(
   document.querySelector("#editor")!,
   () => {
     const doc = tabs.active;
-    if (doc && !doc.dirty) {
+    // Programmatic chunk appends must not mark read-only previews dirty.
+    if (doc && !doc.dirty && !doc.truncated) {
       doc.dirty = true;
       tabs.render();
       updateWindowTitle();
     }
   },
   updateCursor,
+  () => void autoAppendChunk(),
 );
 
 function updateWindowTitle(): void {
@@ -92,6 +95,7 @@ function makeUntitled(): Doc {
     chunkOffset: 0,
     nextChunkOffset: null,
     prevChunkOffsets: [],
+    loadedChunks: 1,
     buffer: editor.newBuffer(""),
   };
 }
@@ -106,7 +110,12 @@ function showActive(): void {
   updatePager(pagerState(doc));
   updateWindowTitle();
   editor.focus();
-  void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
+  // No syntax highlighting for large-file windows: parsing tens of MB
+  // (and re-parsing on every append) would stall the WebView.
+  void editor.setLanguage(
+    doc.truncated ? null : doc.title,
+    () => tabs.activeId === doc.id,
+  );
 }
 
 function collectSession(): SessionData {
@@ -172,6 +181,7 @@ function docFromOpened(opened: OpenedDocument): Doc {
     chunkOffset: 0,
     nextChunkOffset: opened.nextOffset,
     prevChunkOffsets: [],
+    loadedChunks: 1,
     buffer: editor.newBuffer(opened.content, opened.truncated),
   };
 }
@@ -207,10 +217,48 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
     doc.chunkOffset = chunkData.offset;
     doc.nextChunkOffset = chunkData.nextOffset;
     doc.malformed = chunkData.malformed;
+    doc.loadedChunks = 1;
     doc.buffer = editor.newBuffer(chunkData.content, true);
     showActive();
   } catch (error) {
     await messageDialog(String(error), { title: "Paging", kind: "warning" });
+  }
+}
+
+let chunkLoadInFlight = false;
+
+/** Scrolling near the end of a large-file window loads the next chunk. */
+async function autoAppendChunk(): Promise<void> {
+  const doc = tabs.active;
+  if (!doc?.path || !pagingSupported(doc)) return;
+  if (
+    !canAutoAppend({
+      loadedChunks: doc.loadedChunks,
+      nextOffset: doc.nextChunkOffset,
+      inFlight: chunkLoadInFlight,
+    })
+  ) {
+    return;
+  }
+  chunkLoadInFlight = true;
+  try {
+    const chunkData = await readDocumentChunk(
+      doc.path,
+      doc.nextChunkOffset!,
+      doc.encoding,
+    );
+    // The user may have switched tabs while the chunk was loading.
+    if (tabs.activeId === doc.id) {
+      editor.appendText(chunkData.content);
+      doc.buffer = editor.snapshot();
+      doc.nextChunkOffset = chunkData.nextOffset;
+      doc.loadedChunks += 1;
+      updatePager(pagerState(doc));
+    }
+  } catch {
+    // Transient read failure; the manual pager remains available.
+  } finally {
+    chunkLoadInFlight = false;
   }
 }
 
@@ -246,6 +294,7 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.chunkOffset = 0;
     doc.nextChunkOffset = opened.nextOffset;
     doc.prevChunkOffsets = [];
+    doc.loadedChunks = 1;
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     if (tabs.activeId === doc.id) showActive();
     else tabs.render();
@@ -382,6 +431,7 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.chunkOffset = 0;
     doc.nextChunkOffset = opened.nextOffset;
     doc.prevChunkOffsets = [];
+    doc.loadedChunks = 1;
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     showActive();
     persistSession();
