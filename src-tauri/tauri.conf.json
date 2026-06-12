@@ -25,6 +25,32 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "fileAssociations": [
+      {
+        "ext": ["txt", "text", "log", "ini", "cfg", "conf"],
+        "name": "Text Document",
+        "description": "Plain text document",
+        "role": "Editor"
+      },
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown Document",
+        "description": "Markdown document",
+        "role": "Editor"
+      },
+      {
+        "ext": ["csv", "tsv"],
+        "name": "Delimited Text",
+        "description": "Delimited text data",
+        "role": "Editor"
+      },
+      {
+        "ext": ["json", "yaml", "yml", "toml", "xml"],
+        "name": "Structured Text",
+        "description": "Structured text document",
+        "role": "Editor"
+      }
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

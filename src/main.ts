@@ -13,6 +13,7 @@ import {
   openDocument,
   saveDocument,
   saveSession,
+  takePendingFiles,
   type OpenedDocument,
   type SessionData,
 } from "./ipc";
@@ -135,9 +136,8 @@ function docFromOpened(opened: OpenedDocument): Doc {
   };
 }
 
-async function openFileFlow(): Promise<void> {
-  const path = await openDialog({ multiple: false, directory: false });
-  if (path === null) return;
+/** Open a file by path into a tab, focusing the existing tab if any. */
+async function openPath(path: string): Promise<void> {
   const existing = tabs.findByPath(path);
   if (existing) {
     activate(existing.id);
@@ -154,6 +154,12 @@ async function openFileFlow(): Promise<void> {
   } catch (error) {
     await messageDialog(String(error), { title: "Open failed", kind: "error" });
   }
+}
+
+async function openFileFlow(): Promise<void> {
+  const path = await openDialog({ multiple: false, directory: false });
+  if (path === null) return;
+  await openPath(path);
 }
 
 async function saveFlow(saveAs: boolean): Promise<void> {
@@ -386,8 +392,20 @@ async function restoreSession(): Promise<void> {
   showActive();
 }
 
+// Files opened through the OS while the app is already running.
+void listen<string[]>("plume://open-files", async (event) => {
+  for (const path of event.payload) {
+    await openPath(path);
+  }
+});
+
 void (async () => {
   // Preferences first: the untitled fallback uses the default encoding.
   await initPreferences(editor);
   await restoreSession();
+  // Files that triggered this launch open last so they end up focused.
+  const pending = await takePendingFiles().catch(() => [] as string[]);
+  for (const path of pending) {
+    await openPath(path);
+  }
 })();

@@ -4,7 +4,27 @@ mod prefs;
 mod session;
 
 use serde::Serialize;
+use std::sync::Mutex;
 use tauri::Emitter;
+
+/// Files requested via OS integration (file association, CLI args) before
+/// the frontend was ready to receive events. Drained by the frontend on
+/// startup through `take_pending_files`.
+struct PendingFiles(Mutex<Vec<String>>);
+
+/// Extract existing file paths from process-style arguments, skipping the
+/// binary name and anything that looks like a flag.
+fn existing_paths_from_args<I: Iterator<Item = String>>(args: I) -> Vec<String> {
+    args.skip(1)
+        .filter(|arg| !arg.starts_with('-'))
+        .filter(|arg| std::path::Path::new(arg).is_file())
+        .collect()
+}
+
+#[tauri::command]
+fn take_pending_files(state: tauri::State<PendingFiles>) -> Vec<String> {
+    std::mem::take(&mut *state.0.lock().unwrap())
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,9 +83,28 @@ fn save_document(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // On Windows and Linux, opening an associated file launches a second
+    // process; forward its arguments to the running instance instead.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        use tauri::Manager;
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+        let paths = existing_paths_from_args(argv.into_iter());
+        if !paths.is_empty() {
+            let _ = app.emit("plume://open-files", paths);
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(PendingFiles(Mutex::new(existing_paths_from_args(
+            std::env::args(),
+        ))))
         .menu(menu::build)
         .on_menu_event(|app, event| {
             let _ = app.emit("plume://menu", event.id().0.as_str());
@@ -76,8 +115,51 @@ pub fn run() {
             session::load_session,
             session::save_session,
             prefs::load_preferences,
-            prefs::save_preferences
+            prefs::save_preferences,
+            take_pending_files
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // macOS delivers associated files through Apple Events; they can
+            // arrive before the frontend is listening, so they are queued in
+            // PendingFiles as well as emitted.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                use tauri::Manager;
+                let paths: Vec<String> = urls
+                    .into_iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                if !paths.is_empty() {
+                    _app.state::<PendingFiles>()
+                        .0
+                        .lock()
+                        .unwrap()
+                        .extend(paths.clone());
+                    let _ = _app.emit("plume://open-files", paths);
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::existing_paths_from_args;
+
+    #[test]
+    fn filters_args_to_existing_files() {
+        let file = std::env::temp_dir().join("plume-args-test.txt");
+        std::fs::write(&file, "x").unwrap();
+        let args = vec![
+            "plume".to_string(),
+            "--flag".to_string(),
+            "/no/such/file.txt".to_string(),
+            file.to_string_lossy().into_owned(),
+        ];
+        let paths = existing_paths_from_args(args.into_iter());
+        assert_eq!(paths, vec![file.to_string_lossy().into_owned()]);
+        std::fs::remove_file(&file).ok();
+    }
 }

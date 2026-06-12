@@ -20,7 +20,7 @@ Anyone who needs a dependable everyday editor for text files, logs, CSV exports,
 
 ## Status
 
-🚧 **Early development.** The current build is a minimal skeleton: a single-document editor with encoding-aware open/save. See [ROADMAP.md](ROADMAP.md) for what's planned and what's explicitly out of scope.
+🚧 **Early development — v0.1 MVP feature-complete, pre-release.** Multi-tab editing, encoding detection/conversion UI, line-ending handling, syntax highlighting, find/replace, session restore, native menus, preferences, and file associations are implemented. Cross-platform manual verification and packaging polish are still in progress. See [ROADMAP.md](ROADMAP.md) for details and explicit non-goals.
 
 ## Platform support
 

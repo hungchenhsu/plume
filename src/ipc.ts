@@ -65,3 +65,8 @@ export function loadPreferences(): Promise<Preferences> {
 export function savePreferences(preferences: Preferences): Promise<void> {
   return invoke<void>("save_preferences", { preferences });
 }
+
+/** Files queued by the OS (file association / CLI) before startup. */
+export function takePendingFiles(): Promise<string[]> {
+  return invoke<string[]>("take_pending_files");
+}
