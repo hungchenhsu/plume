@@ -29,6 +29,8 @@ export interface EditorHandle {
   goToLine(line: number): void;
   /** Switch the editor between the light and dark color theme. */
   setDarkTheme(dark: boolean): void;
+  /** Toggle soft wrapping of long lines. */
+  setLineWrapping(enabled: boolean): void;
   /**
    * Pick a language for the live buffer by filename and load it lazily.
    * `stillWanted` guards against the user switching tabs while the language
@@ -49,13 +51,16 @@ export function createEditor(
 ): EditorHandle {
   const language = new Compartment();
   const theme = new Compartment();
-  // The theme is global but each tab's EditorState carries its own
-  // compartment value, so the current theme is re-applied on every swap.
+  const wrapping = new Compartment();
+  // Theme and wrapping are global but each tab's EditorState carries its
+  // own compartment values, so both are re-applied on every swap.
   let currentTheme: Extension = [];
+  let currentWrapping: Extension = [];
   const extensions = [
     basicSetup,
     language.of([]),
     theme.of([]),
+    wrapping.of([]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onDocChanged();
       if (update.docChanged || update.selectionSet) {
@@ -84,7 +89,12 @@ export function createEditor(
     newBuffer,
     swap: (buffer) => {
       view.setState(buffer);
-      view.dispatch({ effects: theme.reconfigure(currentTheme) });
+      view.dispatch({
+        effects: [
+          theme.reconfigure(currentTheme),
+          wrapping.reconfigure(currentWrapping),
+        ],
+      });
       const head = view.state.selection.main.head;
       const line = view.state.doc.lineAt(head);
       onCursorMoved(line.number, head - line.from + 1);
@@ -112,6 +122,10 @@ export function createEditor(
     setDarkTheme: (dark) => {
       currentTheme = dark ? oneDark : [];
       view.dispatch({ effects: theme.reconfigure(currentTheme) });
+    },
+    setLineWrapping: (enabled) => {
+      currentWrapping = enabled ? EditorView.lineWrapping : [];
+      view.dispatch({ effects: wrapping.reconfigure(currentWrapping) });
     },
     async setLanguage(filename, stillWanted) {
       const description = filename

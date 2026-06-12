@@ -81,6 +81,7 @@ export interface Preferences {
   theme: string;
   defaultEncoding: string;
   defaultBom: boolean;
+  wordWrap: boolean;
 }
 
 export function loadPreferences(): Promise<Preferences> {

@@ -3,7 +3,7 @@
 //! and Linux get File/Edit as a window menu. Menu accelerators own the
 //! file shortcuts (CmdOrCtrl+T/O/S/W) — the frontend must not also bind them.
 
-use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Runtime};
 
 #[cfg(target_os = "macos")]
@@ -112,7 +112,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             .build()?,
     );
 
-    let menu = menu.item(&file).item(&edit);
+    let view = SubmenuBuilder::new(app, "View")
+        .item(
+            &CheckMenuItemBuilder::with_id("word_wrap", "Word Wrap")
+                .checked(crate::prefs::current(app).word_wrap)
+                .accelerator("Alt+Z")
+                .build(app)?,
+        )
+        .build()?;
+
+    let menu = menu.item(&file).item(&edit).item(&view);
 
     #[cfg(target_os = "macos")]
     let menu = menu.item(
