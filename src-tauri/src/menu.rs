@@ -75,6 +75,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .accelerator("CmdOrCtrl+Shift+F")
                 .build(app)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("goto_line", "Go to Line…")
+                .accelerator("CmdOrCtrl+L")
+                .build(app)?,
+        )
         .build()?;
 
     let menu = MenuBuilder::new(app);

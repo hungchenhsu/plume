@@ -288,6 +288,37 @@ body {
   text-align: center;
 }
 
+.goto-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+
+.goto-panel {
+  width: 240px;
+  background: var(--popup-bg);
+  border: 1px solid var(--popup-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.goto-panel input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
 .fif-overlay {
   position: fixed;
   inset: 0;

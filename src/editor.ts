@@ -41,6 +41,7 @@ export function isEmptyBuffer(buffer: EditorBuffer): boolean {
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
+  onCursorMoved: (line: number, column: number) => void,
 ): EditorHandle {
   const language = new Compartment();
   const theme = new Compartment();
@@ -53,6 +54,11 @@ export function createEditor(
     theme.of([]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onDocChanged();
+      if (update.docChanged || update.selectionSet) {
+        const head = update.state.selection.main.head;
+        const line = update.state.doc.lineAt(head);
+        onCursorMoved(line.number, head - line.from + 1);
+      }
     }),
   ];
   const newBuffer = (content: string, readOnly = false): EditorBuffer =>
@@ -70,6 +76,9 @@ export function createEditor(
     swap: (buffer) => {
       view.setState(buffer);
       view.dispatch({ effects: theme.reconfigure(currentTheme) });
+      const head = view.state.selection.main.head;
+      const line = view.state.doc.lineAt(head);
+      onCursorMoved(line.number, head - line.from + 1);
     },
     snapshot: () => view.state,
     content: () => view.state.doc.toString(),

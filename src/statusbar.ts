@@ -16,6 +16,11 @@ const lineEndingEl = document.querySelector<HTMLElement>(
 )!;
 const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
+const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
+
+export function updateCursor(line: number, column: number): void {
+  cursorEl.textContent = `Ln ${line}, Col ${column}`;
+}
 
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024)
