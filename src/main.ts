@@ -7,7 +7,9 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import { createEditor, isEmptyBuffer } from "./editor";
+import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
 import { openDocument, saveDocument } from "./ipc";
+import { showMenu } from "./popup";
 import { updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
@@ -152,6 +154,99 @@ async function saveFlow(saveAs: boolean): Promise<void> {
   }
 }
 
+/** Re-decode the file on disk with a user-chosen encoding. */
+async function reopenWithEncoding(encoding: string): Promise<void> {
+  const doc = tabs.active;
+  if (!doc?.path) return;
+  if (doc.dirty) {
+    const discard = await confirmDialog(
+      `Reopening will discard unsaved changes in "${doc.title}". Continue?`,
+      { title: "Unsaved changes", kind: "warning", okLabel: "Reopen" },
+    );
+    if (!discard) return;
+  }
+  try {
+    const opened = await openDocument(doc.path, encoding);
+    doc.encoding = opened.encoding;
+    doc.withBom = opened.hadBom;
+    doc.lineEnding = opened.lineEnding;
+    doc.malformed = opened.malformed;
+    doc.dirty = false;
+    doc.buffer = editor.newBuffer(opened.content);
+    showActive();
+  } catch (error) {
+    await messageDialog(String(error), {
+      title: "Reopen failed",
+      kind: "error",
+    });
+  }
+}
+
+function setLineEnding(lineEnding: string): void {
+  const doc = tabs.active;
+  if (!doc || doc.lineEnding === lineEnding) return;
+  doc.lineEnding = lineEnding;
+  if (!doc.dirty) {
+    doc.dirty = true;
+    tabs.render();
+  }
+  updateStatusBar(doc);
+}
+
+function showEncodingMenu(anchor: HTMLElement): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  showMenu(anchor, [
+    {
+      label: "Reopen with Encoding",
+      disabled: doc.path === null,
+      action: () =>
+        showMenu(
+          anchor,
+          REOPEN_ENCODINGS.map((e) => ({
+            label: e.label,
+            checked: e.value === doc.encoding,
+            action: () => void reopenWithEncoding(e.value),
+          })),
+        ),
+    },
+    {
+      label: "Save with Encoding",
+      action: () =>
+        showMenu(
+          anchor,
+          ENCODINGS.map((e) => ({
+            label: e.label,
+            checked: e.value === doc.encoding && e.withBom === doc.withBom,
+            action: () => {
+              doc.encoding = e.value;
+              doc.withBom = e.withBom;
+              updateStatusBar(doc);
+              void saveFlow(false);
+            },
+          })),
+        ),
+    },
+  ]);
+}
+
+function showLineEndingMenu(anchor: HTMLElement): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  showMenu(anchor, [
+    {
+      label: "LF (Unix / macOS)",
+      checked: doc.lineEnding === "LF",
+      action: () => setLineEnding("LF"),
+    },
+    {
+      label: "CRLF (Windows)",
+      checked: doc.lineEnding === "CRLF",
+      action: () => setLineEnding("CRLF"),
+    },
+  ]);
+}
+
 async function closeTab(id: number): Promise<void> {
   const doc = tabs.get(id);
   if (!doc) return;
@@ -210,6 +305,17 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   );
   if (!discard) event.preventDefault();
 });
+
+document
+  .querySelector<HTMLElement>("#status-encoding")!
+  .addEventListener("click", (event) =>
+    showEncodingMenu(event.currentTarget as HTMLElement),
+  );
+document
+  .querySelector<HTMLElement>("#status-line-ending")!
+  .addEventListener("click", (event) =>
+    showLineEndingMenu(event.currentTarget as HTMLElement),
+  );
 
 tabs.add(makeUntitled());
 showActive();
