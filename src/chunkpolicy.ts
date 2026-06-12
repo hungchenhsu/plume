@@ -1,9 +1,6 @@
-// Policy for continuous reading of large files: when to auto-append the
-// next chunk as the user scrolls, and when to stop and fall back to the
-// manual jump pager.
-
-/** Auto-append stops once this many chunks are loaded (~64 MB of text). */
-export const MAX_AUTO_CHUNKS = 32;
+// Policy for continuous reading of large files: when to load another chunk
+// as the user scrolls. The window itself stays bounded via trimming (see
+// chunkwindow.ts), so neither direction has a hard stop anymore.
 
 /** Distance (in characters) from the document end that counts as "near". */
 export const NEAR_END_MARGIN = 1000;
@@ -13,15 +10,10 @@ export function nearEnd(viewportTo: number, docLength: number): boolean {
 }
 
 export function canAutoAppend(state: {
-  loadedChunks: number;
   nextOffset: number | null;
   inFlight: boolean;
 }): boolean {
-  return (
-    !state.inFlight &&
-    state.nextOffset !== null &&
-    state.loadedChunks < MAX_AUTO_CHUNKS
-  );
+  return !state.inFlight && state.nextOffset !== null;
 }
 
 export function nearStart(viewportFrom: number): boolean {
@@ -29,13 +21,8 @@ export function nearStart(viewportFrom: number): boolean {
 }
 
 export function canPrepend(state: {
-  loadedChunks: number;
   windowStart: number;
   inFlight: boolean;
 }): boolean {
-  return (
-    !state.inFlight &&
-    state.windowStart > 0 &&
-    state.loadedChunks < MAX_AUTO_CHUNKS
-  );
+  return !state.inFlight && state.windowStart > 0;
 }

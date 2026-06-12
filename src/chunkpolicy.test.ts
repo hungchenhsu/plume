@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   canAutoAppend,
   canPrepend,
-  MAX_AUTO_CHUNKS,
   nearEnd,
   nearStart,
   NEAR_END_MARGIN,
@@ -17,7 +16,7 @@ describe("nearEnd", () => {
 });
 
 describe("canAutoAppend", () => {
-  const base = { loadedChunks: 1, nextOffset: 2048 as number | null, inFlight: false };
+  const base = { nextOffset: 2048 as number | null, inFlight: false };
 
   it("allows appending in the normal case", () => {
     expect(canAutoAppend(base)).toBe(true);
@@ -30,12 +29,6 @@ describe("canAutoAppend", () => {
   it("blocks at end of file", () => {
     expect(canAutoAppend({ ...base, nextOffset: null })).toBe(false);
   });
-
-  it("blocks at the window cap", () => {
-    expect(canAutoAppend({ ...base, loadedChunks: MAX_AUTO_CHUNKS })).toBe(
-      false,
-    );
-  });
 });
 
 describe("nearStart", () => {
@@ -47,7 +40,7 @@ describe("nearStart", () => {
 });
 
 describe("canPrepend", () => {
-  const base = { loadedChunks: 2, windowStart: 4096, inFlight: false };
+  const base = { windowStart: 4096, inFlight: false };
 
   it("allows prepending mid-file", () => {
     expect(canPrepend(base)).toBe(true);
@@ -59,9 +52,5 @@ describe("canPrepend", () => {
 
   it("blocks while a load is in flight", () => {
     expect(canPrepend({ ...base, inFlight: true })).toBe(false);
-  });
-
-  it("blocks at the window cap", () => {
-    expect(canPrepend({ ...base, loadedChunks: MAX_AUTO_CHUNKS })).toBe(false);
   });
 });

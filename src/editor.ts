@@ -25,6 +25,10 @@ export interface EditorHandle {
    * visible content anchored in place (backward continuous reading).
    */
   prependText(text: string): void;
+  /** Remove chars from the buffer start, keeping visible content anchored. */
+  trimStart(chars: number): void;
+  /** Remove chars from the buffer end. */
+  trimEnd(chars: number): void;
   /** Text content of the live buffer. */
   content(): string;
   focus(): void;
@@ -124,6 +128,19 @@ export function createEditor(
           y: "start",
         }),
       });
+    },
+    trimStart: (chars) => {
+      const anchor = view.viewport.from;
+      view.dispatch({ changes: { from: 0, to: chars } });
+      view.dispatch({
+        effects: EditorView.scrollIntoView(Math.max(anchor - chars, 0), {
+          y: "start",
+        }),
+      });
+    },
+    trimEnd: (chars) => {
+      const length = view.state.doc.length;
+      view.dispatch({ changes: { from: length - chars, to: length } });
     },
     openSearch: () => {
       openSearchPanel(view);

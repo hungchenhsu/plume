@@ -26,6 +26,7 @@ import {
   type SessionData,
 } from "./ipc";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
+import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
@@ -100,7 +101,7 @@ function makeUntitled(): Doc {
     chunkOffset: 0,
     nextChunkOffset: null,
     prevChunkOffsets: [],
-    loadedChunks: 1,
+    windowChunks: [],
     buffer: editor.newBuffer(""),
   };
 }
@@ -186,7 +187,14 @@ function docFromOpened(opened: OpenedDocument): Doc {
     chunkOffset: 0,
     nextChunkOffset: opened.nextOffset,
     prevChunkOffsets: [],
-    loadedChunks: 1,
+    windowChunks: opened.truncated
+      ? [
+          {
+            chars: opened.content.length,
+            bytes: opened.nextOffset ?? opened.totalSize,
+          },
+        ]
+      : [],
     buffer: editor.newBuffer(opened.content, opened.truncated),
   };
 }
@@ -222,7 +230,12 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
     doc.chunkOffset = chunkData.offset;
     doc.nextChunkOffset = chunkData.nextOffset;
     doc.malformed = chunkData.malformed;
-    doc.loadedChunks = 1;
+    doc.windowChunks = [
+      {
+        chars: chunkData.content.length,
+        bytes: (chunkData.nextOffset ?? chunkData.totalSize) - chunkData.offset,
+      },
+    ];
     doc.buffer = editor.newBuffer(chunkData.content, true);
     showActive();
   } catch (error) {
@@ -238,7 +251,6 @@ async function autoAppendChunk(): Promise<void> {
   if (!doc?.path || !pagingSupported(doc)) return;
   if (
     !canAutoAppend({
-      loadedChunks: doc.loadedChunks,
       nextOffset: doc.nextChunkOffset,
       inFlight: chunkLoadInFlight,
     })
@@ -247,17 +259,21 @@ async function autoAppendChunk(): Promise<void> {
   }
   chunkLoadInFlight = true;
   try {
-    const chunkData = await readDocumentChunk(
-      doc.path,
-      doc.nextChunkOffset!,
-      doc.encoding,
-    );
+    const loadedAt = doc.nextChunkOffset!;
+    const chunkData = await readDocumentChunk(doc.path, loadedAt, doc.encoding);
     // The user may have switched tabs while the chunk was loading.
     if (tabs.activeId === doc.id) {
       editor.appendText(chunkData.content);
-      doc.buffer = editor.snapshot();
       doc.nextChunkOffset = chunkData.nextOffset;
-      doc.loadedChunks += 1;
+      const trim = pushBack(doc.windowChunks, {
+        chars: chunkData.content.length,
+        bytes: (chunkData.nextOffset ?? chunkData.totalSize) - chunkData.offset,
+      });
+      if (trim) {
+        editor.trimStart(trim.trimChars);
+        doc.chunkOffset += trim.trimBytes;
+      }
+      doc.buffer = editor.snapshot();
       updatePager(pagerState(doc));
     }
   } catch {
@@ -273,7 +289,6 @@ async function prependChunk(): Promise<void> {
   if (!doc?.path || !pagingSupported(doc)) return;
   if (
     !canPrepend({
-      loadedChunks: doc.loadedChunks,
       windowStart: doc.chunkOffset,
       inFlight: chunkLoadInFlight,
     })
@@ -282,17 +297,26 @@ async function prependChunk(): Promise<void> {
   }
   chunkLoadInFlight = true;
   try {
+    const windowStart = doc.chunkOffset;
     const chunkData = await readDocumentChunkBefore(
       doc.path,
-      doc.chunkOffset,
+      windowStart,
       doc.encoding,
     );
     // The user may have switched tabs while the chunk was loading.
     if (tabs.activeId === doc.id) {
       editor.prependText(chunkData.content);
-      doc.buffer = editor.snapshot();
       doc.chunkOffset = chunkData.offset;
-      doc.loadedChunks += 1;
+      const trim = pushFront(doc.windowChunks, {
+        chars: chunkData.content.length,
+        bytes: windowStart - chunkData.offset,
+      });
+      if (trim) {
+        editor.trimEnd(trim.trimChars);
+        doc.nextChunkOffset =
+          (doc.nextChunkOffset ?? chunkData.totalSize) - trim.trimBytes;
+      }
+      doc.buffer = editor.snapshot();
       updatePager(pagerState(doc));
     }
   } catch {
@@ -334,7 +358,14 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.chunkOffset = 0;
     doc.nextChunkOffset = opened.nextOffset;
     doc.prevChunkOffsets = [];
-    doc.loadedChunks = 1;
+    doc.windowChunks = opened.truncated
+      ? [
+          {
+            chars: opened.content.length,
+            bytes: opened.nextOffset ?? opened.totalSize,
+          },
+        ]
+      : [];
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     if (tabs.activeId === doc.id) showActive();
     else tabs.render();
@@ -471,7 +502,14 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.chunkOffset = 0;
     doc.nextChunkOffset = opened.nextOffset;
     doc.prevChunkOffsets = [];
-    doc.loadedChunks = 1;
+    doc.windowChunks = opened.truncated
+      ? [
+          {
+            chars: opened.content.length,
+            bytes: opened.nextOffset ?? opened.totalSize,
+          },
+        ]
+      : [];
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     showActive();
     persistSession();

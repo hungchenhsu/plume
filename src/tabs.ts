@@ -1,3 +1,4 @@
+import type { WindowChunk } from "./chunkwindow";
 import type { EditorBuffer } from "./editor";
 
 export interface Doc {
@@ -16,8 +17,8 @@ export interface Doc {
   chunkOffset: number;
   nextChunkOffset: number | null;
   prevChunkOffsets: number[];
-  /** Chunks currently in the buffer (scroll-append window). */
-  loadedChunks: number;
+  /** Chunks currently in the buffer (sliding window, char+byte lengths). */
+  windowChunks: WindowChunk[];
   buffer: EditorBuffer;
 }
 
