@@ -2,7 +2,9 @@
 // editor through this interface and the opaque EditorBuffer type, so the
 // editor surface stays swappable (see ARCHITECTURE.md).
 import { basicSetup, EditorView } from "codemirror";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
+import { LanguageDescription } from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
 
 export type EditorBuffer = EditorState;
 
@@ -16,6 +18,12 @@ export interface EditorHandle {
   /** Text content of the live buffer. */
   content(): string;
   focus(): void;
+  /**
+   * Pick a language for the live buffer by filename and load it lazily.
+   * `stillWanted` guards against the user switching tabs while the language
+   * package chunk is loading.
+   */
+  setLanguage(filename: string | null, stillWanted: () => boolean): Promise<void>;
 }
 
 export function isEmptyBuffer(buffer: EditorBuffer): boolean {
@@ -26,8 +34,10 @@ export function createEditor(
   parent: Element,
   onDocChanged: () => void,
 ): EditorHandle {
+  const language = new Compartment();
   const extensions = [
     basicSetup,
+    language.of([]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onDocChanged();
     }),
@@ -43,5 +53,13 @@ export function createEditor(
     snapshot: () => view.state,
     content: () => view.state.doc.toString(),
     focus: () => view.focus(),
+    async setLanguage(filename, stillWanted) {
+      const description = filename
+        ? LanguageDescription.matchFilename(languages, filename)
+        : null;
+      const support = description ? await description.load() : [];
+      if (!stillWanted()) return;
+      view.dispatch({ effects: language.reconfigure(support) });
+    },
   };
 }

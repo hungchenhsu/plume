@@ -22,7 +22,7 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 - [x] Line-ending conversion (UI)
 
 **Editor basics**
-- [ ] Syntax highlighting for common languages
+- [x] Syntax highlighting for common languages
 - [ ] Find / replace with regex
 - [ ] Session restore (reopen last files on launch)
 

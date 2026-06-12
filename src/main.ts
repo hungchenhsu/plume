@@ -102,7 +102,7 @@ async function openFileFlow(): Promise<void> {
     const opened = await openDocument(path);
     const previous = tabs.active;
     if (previous) previous.buffer = editor.snapshot();
-    tabs.add({
+    const doc: Doc = {
       id: nextId++,
       path: opened.path,
       title: basename(opened.path),
@@ -112,9 +112,11 @@ async function openFileFlow(): Promise<void> {
       malformed: opened.malformed,
       dirty: false,
       buffer: editor.newBuffer(opened.content),
-    });
+    };
+    tabs.add(doc);
     if (previous && isPristineUntitled(previous)) tabs.close(previous.id);
     showActive();
+    void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
   } catch (error) {
     await messageDialog(String(error), { title: "Open failed", kind: "error" });
   }
@@ -136,6 +138,7 @@ async function saveFlow(saveAs: boolean): Promise<void> {
       withBom: doc.withBom,
       lineEnding: doc.lineEnding,
     });
+    const titleChanged = doc.title !== basename(path);
     doc.path = path;
     doc.title = basename(path);
     doc.dirty = false;
@@ -143,6 +146,9 @@ async function saveFlow(saveAs: boolean): Promise<void> {
     if (doc.lineEnding === "Mixed") doc.lineEnding = "LF";
     tabs.render();
     updateStatusBar(doc);
+    if (titleChanged) {
+      void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
+    }
     if (result.unmappable) {
       await messageDialog(
         `Some characters could not be represented in ${doc.encoding} and were replaced.`,
@@ -174,6 +180,7 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.dirty = false;
     doc.buffer = editor.newBuffer(opened.content);
     showActive();
+    void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
   } catch (error) {
     await messageDialog(String(error), {
       title: "Reopen failed",
