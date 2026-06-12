@@ -8,7 +8,14 @@ import {
 } from "@tauri-apps/plugin-dialog";
 import { createEditor, isEmptyBuffer } from "./editor";
 import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
-import { openDocument, saveDocument } from "./ipc";
+import {
+  loadSession,
+  openDocument,
+  saveDocument,
+  saveSession,
+  type OpenedDocument,
+  type SessionData,
+} from "./ipc";
 import { showMenu } from "./popup";
 import { updateStatusBar } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
@@ -61,6 +68,24 @@ function showActive(): void {
   tabs.render();
   updateStatusBar(doc);
   editor.focus();
+  void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
+}
+
+function collectSession(): SessionData {
+  const files = tabs.docs
+    .filter((d) => d.path !== null)
+    .map((d) => ({ path: d.path!, encoding: d.encoding }));
+  const activePath = tabs.active?.path;
+  const active = activePath
+    ? files.findIndex((f) => f.path === activePath)
+    : -1;
+  return { files, active: Math.max(active, 0) };
+}
+
+function persistSession(): void {
+  void saveSession(collectSession()).catch(() => {
+    // Session persistence is best-effort; never interrupt editing over it.
+  });
 }
 
 function activate(id: number): void {
@@ -69,6 +94,7 @@ function activate(id: number): void {
   if (current) current.buffer = editor.snapshot();
   tabs.setActive(id);
   showActive();
+  persistSession();
 }
 
 function newTab(): void {
@@ -90,6 +116,20 @@ function isPristineUntitled(doc: Doc): boolean {
   return doc.path === null && !doc.dirty && isEmptyBuffer(doc.buffer);
 }
 
+function docFromOpened(opened: OpenedDocument): Doc {
+  return {
+    id: nextId++,
+    path: opened.path,
+    title: basename(opened.path),
+    encoding: opened.encoding,
+    withBom: opened.hadBom,
+    lineEnding: opened.lineEnding,
+    malformed: opened.malformed,
+    dirty: false,
+    buffer: editor.newBuffer(opened.content),
+  };
+}
+
 async function openFileFlow(): Promise<void> {
   const path = await openDialog({ multiple: false, directory: false });
   if (path === null) return;
@@ -102,21 +142,10 @@ async function openFileFlow(): Promise<void> {
     const opened = await openDocument(path);
     const previous = tabs.active;
     if (previous) previous.buffer = editor.snapshot();
-    const doc: Doc = {
-      id: nextId++,
-      path: opened.path,
-      title: basename(opened.path),
-      encoding: opened.encoding,
-      withBom: opened.hadBom,
-      lineEnding: opened.lineEnding,
-      malformed: opened.malformed,
-      dirty: false,
-      buffer: editor.newBuffer(opened.content),
-    };
-    tabs.add(doc);
+    tabs.add(docFromOpened(opened));
     if (previous && isPristineUntitled(previous)) tabs.close(previous.id);
     showActive();
-    void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
+    persistSession();
   } catch (error) {
     await messageDialog(String(error), { title: "Open failed", kind: "error" });
   }
@@ -149,6 +178,7 @@ async function saveFlow(saveAs: boolean): Promise<void> {
     if (titleChanged) {
       void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
     }
+    persistSession();
     if (result.unmappable) {
       await messageDialog(
         `Some characters could not be represented in ${doc.encoding} and were replaced.`,
@@ -180,7 +210,7 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.dirty = false;
     doc.buffer = editor.newBuffer(opened.content);
     showActive();
-    void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
+    persistSession();
   } catch (error) {
     await messageDialog(String(error), {
       title: "Reopen failed",
@@ -269,6 +299,7 @@ async function closeTab(id: number): Promise<void> {
   if (tabs.docs.length === 0) tabs.add(makeUntitled());
   if (wasActive) showActive();
   else tabs.render();
+  persistSession();
 }
 
 // File shortcuts (Mod-T/O/S/W) are owned by the native menu accelerators —
@@ -327,5 +358,24 @@ document
     showLineEndingMenu(event.currentTarget as HTMLElement),
   );
 
-tabs.add(makeUntitled());
-showActive();
+/** Reopen the files from the previous session; missing files are skipped. */
+async function restoreSession(): Promise<void> {
+  const session = await loadSession().catch(() => null);
+  for (const file of session?.files ?? []) {
+    try {
+      const opened = await openDocument(file.path, file.encoding);
+      tabs.add(docFromOpened(opened));
+    } catch {
+      // The file may have been moved or deleted since last session.
+    }
+  }
+  if (tabs.docs.length === 0) {
+    tabs.add(makeUntitled());
+  } else {
+    const index = Math.min(session?.active ?? 0, tabs.docs.length - 1);
+    tabs.setActive(tabs.docs[index].id);
+  }
+  showActive();
+}
+
+void restoreSession();

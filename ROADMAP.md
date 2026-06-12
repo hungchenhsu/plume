@@ -24,7 +24,7 @@ This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinel
 **Editor basics**
 - [x] Syntax highlighting for common languages
 - [x] Find / replace with regex
-- [ ] Session restore (reopen last files on launch)
+- [x] Session restore (reopen last files on launch)
 
 **Platform integration**
 - [x] macOS native menu bar with standard shortcuts
