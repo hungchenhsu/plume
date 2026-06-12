@@ -180,6 +180,7 @@ pub fn run() {
             take_pending_files,
             print_window,
             chunk::read_document_chunk,
+            chunk::read_document_chunk_before,
             watcher::watch_file,
             watcher::unwatch_file,
             recent::load_recent_files,

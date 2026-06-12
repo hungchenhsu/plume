@@ -36,6 +36,19 @@ export function readDocumentChunk(
   });
 }
 
+/** Read the chunk that ends exactly at `end` (backward window extension). */
+export function readDocumentChunkBefore(
+  path: string,
+  end: number,
+  encoding: string,
+): Promise<DocumentChunk> {
+  return invoke<DocumentChunk>("read_document_chunk_before", {
+    path,
+    end,
+    encoding,
+  });
+}
+
 export interface SaveResult {
   unmappable: boolean;
 }

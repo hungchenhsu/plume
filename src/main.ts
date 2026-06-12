@@ -16,6 +16,7 @@ import {
   openDocument,
   printWindow,
   readDocumentChunk,
+  readDocumentChunkBefore,
   saveDocument,
   saveSession,
   takePendingFiles,
@@ -24,7 +25,7 @@ import {
   type OpenedDocument,
   type SessionData,
 } from "./ipc";
-import { canAutoAppend } from "./chunkpolicy";
+import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { showCloseConfirm } from "./confirm";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
@@ -66,6 +67,7 @@ const editor = createEditor(
   },
   updateCursor,
   () => void autoAppendChunk(),
+  () => void prependChunk(),
 );
 
 function updateWindowTitle(): void {
@@ -255,6 +257,41 @@ async function autoAppendChunk(): Promise<void> {
       editor.appendText(chunkData.content);
       doc.buffer = editor.snapshot();
       doc.nextChunkOffset = chunkData.nextOffset;
+      doc.loadedChunks += 1;
+      updatePager(pagerState(doc));
+    }
+  } catch {
+    // Transient read failure; the manual pager remains available.
+  } finally {
+    chunkLoadInFlight = false;
+  }
+}
+
+/** Scrolling near the top of a mid-file window loads the previous chunk. */
+async function prependChunk(): Promise<void> {
+  const doc = tabs.active;
+  if (!doc?.path || !pagingSupported(doc)) return;
+  if (
+    !canPrepend({
+      loadedChunks: doc.loadedChunks,
+      windowStart: doc.chunkOffset,
+      inFlight: chunkLoadInFlight,
+    })
+  ) {
+    return;
+  }
+  chunkLoadInFlight = true;
+  try {
+    const chunkData = await readDocumentChunkBefore(
+      doc.path,
+      doc.chunkOffset,
+      doc.encoding,
+    );
+    // The user may have switched tabs while the chunk was loading.
+    if (tabs.activeId === doc.id) {
+      editor.prependText(chunkData.content);
+      doc.buffer = editor.snapshot();
+      doc.chunkOffset = chunkData.offset;
       doc.loadedChunks += 1;
       updatePager(pagerState(doc));
     }
