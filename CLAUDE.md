@@ -3,6 +3,10 @@
 Operational guidance for working in this repo. The task queue is
 [ROADMAP.md](ROADMAP.md); design principles and hard constraints are in
 [ARCHITECTURE.md](ARCHITECTURE.md). Read both before making changes.
+Agent judgment specifics — danger domains, verification matrix, permission
+tiers, known dead ends — live in
+[.claude/judgment-overlay.md](.claude/judgment-overlay.md); on conflict,
+this file wins and the overlay gets updated.
 
 ## Commands
 
