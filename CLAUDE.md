@@ -34,7 +34,8 @@ A change is complete only when all of these pass locally:
 
 ## Workflow
 
-- Never commit to `main`. Feature branch → PR → CI green → squash merge.
+- Never commit to `main`. Feature branch → PR → CI green → squash merge →
+  delete the working branch (local and remote).
 - One ROADMAP item (or one coherent fix) per PR.
 - Commit messages and PR titles in Traditional Chinese (zh-TW); code,
   comments, and docs in English.
