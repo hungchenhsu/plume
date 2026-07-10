@@ -23,6 +23,13 @@
   --accent: #5757d1;
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);
+  /* Text-selection highlight only (see src/editor-theme.ts .cm-selectionBackground).
+     Deliberately a separate, higher-contrast token from --accent-soft: the
+     active-line tint needs to stay subtle, but a selection has to read as
+     "selected" at a glance and keep selected text legible — see PR
+     description for the WebKit/CodeMirror drawSelection() investigation
+     that led to splitting this out. */
+  --bg-selection: rgba(87, 87, 209, 0.32);
   --warning: #b35900;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
@@ -848,6 +855,7 @@ select:focus-visible {
     --accent: #8c8cf0;
     --accent-fg: #1e1f24;
     --accent-soft: rgba(140, 140, 240, 0.16);
+    --bg-selection: rgba(140, 140, 240, 0.38);
     --warning: #ffb454;
     --warning-soft: rgba(255, 180, 84, 0.16);
     --danger: #e5484d;
@@ -875,6 +883,7 @@ html[data-theme="light"] {
   --accent: #5757d1;
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);
+  --bg-selection: rgba(87, 87, 209, 0.32);
   --warning: #b35900;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
@@ -904,6 +913,7 @@ html[data-theme="dark"] {
   --accent: #8c8cf0;
   --accent-fg: #1e1f24;
   --accent-soft: rgba(140, 140, 240, 0.16);
+  --bg-selection: rgba(140, 140, 240, 0.38);
   --warning: #ffb454;
   --warning-soft: rgba(255, 180, 84, 0.16);
   --danger: #e5484d;
@@ -942,6 +952,7 @@ html[data-theme="paper"] {
   --accent: #3e6a59;
   --accent-fg: #ffffff;
   --accent-soft: rgba(62, 106, 89, 0.14);
+  --bg-selection: rgba(62, 106, 89, 0.32);
   --warning: #b35900;
   --warning-soft: rgba(179, 89, 0, 0.14);
   --danger: #c4373c;
@@ -977,6 +988,7 @@ html[data-theme="dusk"] {
   --accent: #9ba3f5;
   --accent-fg: #232634;
   --accent-soft: rgba(155, 163, 245, 0.16);
+  --bg-selection: rgba(155, 163, 245, 0.38);
   --warning: #f5b461;
   --warning-soft: rgba(245, 180, 97, 0.16);
   --danger: #e5484d;
