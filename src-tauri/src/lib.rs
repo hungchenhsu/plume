@@ -118,6 +118,55 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
     })
 }
 
+/// Diagnostics evidence never touches raw bytes: `bom` is a formatted
+/// description, not the bytes themselves (ARCHITECTURE.md: raw bytes never
+/// cross IPC).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionExplanation {
+    /// e.g. "UTF-8 BOM (EF BB BF)"; `None` when no BOM was found.
+    bom: Option<String>,
+    /// chardetng's verdict on the sampled bytes, e.g. "windows-1252".
+    detector_verdict: String,
+    sampled_bytes: usize,
+    total_size: u64,
+    /// "{encoding} ({reason})" where reason is "bom" | "detector" |
+    /// "fallback" — the encoding `open_document`'s auto-detection would
+    /// pick, and why.
+    would_choose: String,
+}
+
+/// Diagnostics sample size: large enough for chardetng to reach a stable
+/// verdict, small enough to never require reading a whole large file just
+/// to explain a detection.
+const EXPLAIN_SAMPLE_BYTES: usize = 64 * 1024;
+
+/// Re-read a bounded prefix of `path` and report the evidence behind the
+/// encoding auto-detection would use, without decoding or returning any
+/// raw bytes. This is a read-only diagnostics command: it never affects
+/// `open_document`'s behavior and reuses `encoding::detect`, the same
+/// function `decode_auto` (and therefore `open_document`) calls, so the
+/// two can never disagree for files at or under the sample size — see the
+/// `detect_agrees_with_decode_auto_*` tests in `encoding.rs`.
+#[tauri::command]
+fn explain_detection(path: String) -> Result<DetectionExplanation, String> {
+    let total_size = std::fs::metadata(&path)
+        .map_err(|e| format!("Failed to read {path}: {e}"))?
+        .len();
+    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let sample_len = bytes.len().min(EXPLAIN_SAMPLE_BYTES);
+    let sample = &bytes[..sample_len];
+
+    let detection = encoding::detect(sample);
+    Ok(DetectionExplanation {
+        bom: encoding::describe_bom(sample),
+        detector_verdict: detection.detector_guess.name().to_string(),
+        sampled_bytes: sample_len,
+        total_size,
+        would_choose: format!("{} ({})", detection.chosen.name(), detection.reason),
+    })
+}
+
 /// Write bytes atomically: write to a temporary file in the same directory
 /// (same filesystem), fsync, then rename over the target. A crash mid-save
 /// leaves either the old file or the new one — never a half-written file.
@@ -212,6 +261,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_document,
+            explain_detection,
             save_document,
             session::load_session,
             session::save_session,
@@ -260,7 +310,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{atomic_write, existing_paths_from_args, preview_slice};
+    use super::{
+        atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
+    };
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
@@ -338,5 +390,109 @@ mod tests {
         let paths = existing_paths_from_args(args.into_iter());
         assert_eq!(paths, vec![file.to_string_lossy().into_owned()]);
         std::fs::remove_file(&file).ok();
+    }
+
+    /// Pull the encoding name out of a `"{encoding} ({reason})"` would-choose
+    /// string, mirroring the parsing the frontend does.
+    fn would_choose_encoding(would_choose: &str) -> &str {
+        would_choose.split(" (").next().unwrap_or(would_choose)
+    }
+
+    /// `explain_detection`'s `wouldChoose` must agree with what
+    /// `open_document`'s auto-detection actually picks, for every scenario
+    /// the diagnostics popup is meant to explain. All fixtures here are
+    /// well under the 64 KB sample cap, so the sample is the whole file and
+    /// the two commands see identical bytes.
+    fn assert_explain_matches_open(bytes: &[u8], dir_name: &str) {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), None).unwrap();
+        let explained = explain_detection(path).unwrap();
+
+        assert_eq!(
+            would_choose_encoding(&explained.would_choose),
+            opened.encoding,
+            "explain_detection and open_document disagree for {dir_name}"
+        );
+        assert_eq!(explained.sampled_bytes, bytes.len());
+        assert_eq!(explained.total_size, bytes.len() as u64);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explain_detection_agrees_with_open_utf8_bom() {
+        let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
+        assert_explain_matches_open(&bytes, "plume-explain-utf8-bom");
+
+        let dir = std::env::temp_dir().join("plume-explain-utf8-bom-evidence");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, bytes).unwrap();
+        let explained = explain_detection(file.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(explained.bom.as_deref(), Some("UTF-8 BOM (EF BB BF)"));
+        assert!(explained.would_choose.ends_with("(bom)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explain_detection_agrees_with_open_utf16le_bom() {
+        let (bytes, _) = crate::encoding::encode("hi", "UTF-16LE", true).unwrap();
+        assert_explain_matches_open(&bytes, "plume-explain-utf16le-bom");
+    }
+
+    #[test]
+    fn explain_detection_agrees_with_open_plain_ascii() {
+        let bytes = b"hello world, this is plain ascii text with no accents";
+        assert_explain_matches_open(bytes, "plume-explain-ascii");
+
+        let dir = std::env::temp_dir().join("plume-explain-ascii-evidence");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, bytes).unwrap();
+        let explained = explain_detection(file.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(explained.bom, None);
+        assert!(explained.would_choose.ends_with("(detector)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explain_detection_agrees_with_open_big5_sample() {
+        let text =
+            "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
+        let (bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_explain_matches_open(&bytes, "plume-explain-big5");
+    }
+
+    #[test]
+    fn explain_detection_agrees_with_open_empty_file() {
+        assert_explain_matches_open(&[], "plume-explain-empty");
+
+        let dir = std::env::temp_dir().join("plume-explain-empty-evidence");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, []).unwrap();
+        let explained = explain_detection(file.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(explained.bom, None);
+        assert!(explained.would_choose.ends_with("(fallback)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explain_detection_reports_missing_file_as_error() {
+        let path = std::env::temp_dir()
+            .join("plume-explain-does-not-exist.txt")
+            .to_string_lossy()
+            .into_owned();
+        assert!(explain_detection(path).is_err());
     }
 }

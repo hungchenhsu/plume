@@ -589,6 +589,51 @@ select:focus-visible {
   outline: none;
 }
 
+.detectcard-panel {
+  position: fixed;
+  z-index: 100;
+  width: 320px;
+  max-width: 90vw;
+  padding: 10px 12px;
+  font-size: var(--font-ui-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  animation: panel-in 140ms ease-out;
+}
+
+.detectcard-header {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.detectcard-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.detectcard-rows dt {
+  color: var(--fg-faint);
+  font-size: var(--font-ui-xs);
+  white-space: nowrap;
+}
+
+.detectcard-rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detectcard-note {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: var(--font-ui-xs);
+  color: var(--fg-faint);
+}
+
 .confirm-overlay {
   position: fixed;
   inset: 0;
