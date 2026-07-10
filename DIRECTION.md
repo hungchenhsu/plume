@@ -42,19 +42,23 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-10)
+## 2. Current state (2026-07-11)
 
-- **v0.1.0-alpha.7** released (pre-release, private repo): the entire v0.1
-  MVP plus all v0.2 polish candidates are done — 33 PRs, all CI-green.
-  Feature inventory lives in [ROADMAP.md](ROADMAP.md) (everything checked).
-- Tests: 29 Rust unit tests + 27 frontend vitest tests; release pipeline
+- **v0.2 feature cycle complete** (PRs #34–#50, all CI-green): full
+  visual refresh on design tokens, built-in themes, UI i18n (zh-TW
+  first), all six Tier-1 encoding/editing items, plus selection-contrast
+  and markup-highlighting fixes from first real-device feedback.
+  Tagged **v0.2.0-alpha.1**.
+- Tests: 75 Rust unit tests + 92 frontend vitest tests; release pipeline
   builds six installers per tag as a draft release.
-- **P3 feature cycle active** (user instruction, 2026-07-10): the user
-  explicitly approved a v0.2 scope — full UI visual refresh + design
-  tokens, built-in themes, all six Tier-1 items, UI i18n (zh-TW first) —
-  ending the P0 pause per §8-2. The approved backlog lives in ROADMAP.md.
-  P1/P2 gates (naming, signing, public) remain open and unordered
-  relative to this cycle.
+- **P3 v0.3 cycle active** (user approval, 2026-07-11): four parallel
+  tracks — encoding tools, large files, editing comfort, release &
+  community — approved for concurrent work as contributors join. The
+  committed items live in ROADMAP.md §v0.3. D1 (naming) explicitly
+  deferred by the user; D2 blocked behind it.
+- Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
+  Windows); pre-release tagging is delegated to the agent (final
+  releases remain user-gated).
 - Open decision gates: naming (D1), signing/updates (D2), going public
   (D3), distribution (D4) — see §3.
 - Known operational constraints and dead ends live in
@@ -208,12 +212,12 @@ user decision recorded in this file.
 - **Exit:** repo public, beta tagged, at least one distribution channel
   beyond GitHub Releases live.
 
-### P3 — v0.2 feature cycle (current phase)
+### P3 — feature cycles (current phase; recurring)
 
-- **Entry:** P0 triage produced a user-approved backlog (promoted from §6
-  into ROADMAP.md as checkboxes). *(Satisfied 2026-07-10: the user
-  approved the scope directly by session instruction — §8-2 — rather
-  than via issue triage; no issues had been filed during P0.)*
+- **Entry:** a user-approved backlog (promoted from §6 into ROADMAP.md
+  as checkboxes). *(v0.2 cycle: approved 2026-07-10 by session
+  instruction, completed 2026-07-11. v0.3 cycle: four parallel tracks
+  approved 2026-07-11 — see ROADMAP.md §v0.3.)*
 - **Work:** normal feature PRs under the existing Definition of Done.
   One coherent item per PR; danger domains get the full treatment
   (§5-S1 discipline even without an incident).
@@ -329,8 +333,10 @@ notes. All of this is Red-tier: user confirms each step.
 
 ## 6. Feature backlog (pre-triage)
 
-Candidate pool for v0.2+. **Nothing here is committed** — P0's triage
-with the user promotes items into ROADMAP.md. Tiers reflect autonomy
+Candidate pool for future cycles. **Nothing here is committed** — user
+triage promotes items into ROADMAP.md. *(2026-07-11: the v0.3 tracks —
+encoding tools, large files, editing comfort, release & community — were
+proposed and approved directly in-session; see ROADMAP.md §v0.3.)* Tiers reflect autonomy
 required, not value.
 
 ### Tier 1 — safe for any competent session (small, testable, no design debate)
