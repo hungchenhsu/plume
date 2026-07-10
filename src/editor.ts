@@ -8,6 +8,12 @@ import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
+import {
+  findHistory,
+  pushFindTerm,
+  pushReplaceTerm,
+  replaceHistory,
+} from "./searchhistory";
 
 export type EditorBuffer = EditorState;
 
@@ -62,6 +68,87 @@ export function contentOf(buffer: EditorBuffer): string {
   return buffer.doc.toString();
 }
 
+const FIND_DATALIST_ID = "plume-find-history";
+const REPLACE_DATALIST_ID = "plume-replace-history";
+
+function populateDatalist(list: HTMLDataListElement, terms: readonly string[]): void {
+  list.replaceChildren(
+    ...terms.map((term) => {
+      const option = document.createElement("option");
+      option.value = term;
+      return option;
+    }),
+  );
+}
+
+/**
+ * Attach a native `<datalist>` MRU dropdown to the CM6 search panel's find
+ * and replace fields, and record submitted terms into the history store.
+ *
+ * This is DOM-layer plumbing, not a fork of CM6 search: it only reads the
+ * panel's public, documented class names (`.cm-panel.cm-search`,
+ * `.cm-textfield[name=...]`) after CM6 has created the panel, and never
+ * touches CM6's own state or event wiring. It runs from the shared
+ * `updateListener` below (idempotent via a dataset flag) so it applies no
+ * matter which path opened the panel — the app's "find" menu item or CM6's
+ * own Mod-f keymap baked into `basicSetup`.
+ */
+function wireSearchHistory(view: EditorView): void {
+  const panel = view.dom.querySelector<HTMLDivElement>(".cm-panel.cm-search");
+  if (!panel || panel.dataset.historyWired === "true") return;
+  panel.dataset.historyWired = "true";
+
+  const searchField = panel.querySelector<HTMLInputElement>('.cm-textfield[name="search"]');
+  const replaceField = panel.querySelector<HTMLInputElement>('.cm-textfield[name="replace"]');
+
+  const searchList = document.createElement("datalist");
+  searchList.id = FIND_DATALIST_ID;
+  const replaceList = document.createElement("datalist");
+  replaceList.id = REPLACE_DATALIST_ID;
+  panel.append(searchList, replaceList);
+  populateDatalist(searchList, findHistory());
+  populateDatalist(replaceList, replaceHistory());
+
+  searchField?.setAttribute("list", FIND_DATALIST_ID);
+  replaceField?.setAttribute("list", REPLACE_DATALIST_ID);
+
+  const commitFind = () => {
+    if (!searchField) return;
+    pushFindTerm(searchField.value);
+    populateDatalist(searchList, findHistory());
+  };
+  const commitReplace = () => {
+    if (!replaceField) return;
+    pushReplaceTerm(replaceField.value);
+    populateDatalist(replaceList, replaceHistory());
+  };
+
+  // Enter in the search field runs find-next/previous; Enter in the
+  // replace field runs replace-next (which also consumes the find term).
+  panel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    if (event.target === searchField) {
+      commitFind();
+    } else if (event.target === replaceField) {
+      commitFind();
+      commitReplace();
+    }
+  });
+  // The panel's next/prev/select-all buttons act on the find term; replace
+  // and replace-all act on both.
+  panel.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLButtonElement)) return;
+    const name = target.getAttribute("name");
+    if (name === "next" || name === "prev" || name === "select") {
+      commitFind();
+    } else if (name === "replace" || name === "replaceAll") {
+      commitFind();
+      commitReplace();
+    }
+  });
+}
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
@@ -82,6 +169,7 @@ export function createEditor(
     language.of([]),
     wrapping.of([]),
     EditorView.updateListener.of((update) => {
+      wireSearchHistory(update.view);
       if (update.docChanged) onDocChanged();
       if (update.docChanged || update.selectionSet) {
         const head = update.state.selection.main.head;

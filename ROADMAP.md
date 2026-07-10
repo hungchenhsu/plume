@@ -106,7 +106,7 @@ conversation). One coherent item per PR.
   bytes never cross IPC)
 - [ ] Per-extension default encoding — prefs table ext→encoding;
   confident detection still wins; round-trip tests
-- [ ] Find/replace history dropdown
+- [x] Find/replace history dropdown
 - [ ] Startup-time budget test — scripted cold-start measurement with a
   tracked threshold
 - [ ] Encoding-detection diagnostics — status-bar popup showing the
