@@ -34,6 +34,7 @@ import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
+import { showHexView } from "./hexview";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import {
@@ -630,6 +631,23 @@ function showEncodingMenu(anchor: HTMLElement): void {
   ]);
 }
 
+function showDecodeWarningMenu(anchor: HTMLElement): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  showMenu(anchor, [
+    {
+      label: "View raw bytes…",
+      // Only real files have bytes on disk to inspect; untitled docs
+      // cannot reach the malformed state in the first place, but this
+      // stays defensive in case that ever changes.
+      disabled: doc.path === null,
+      action: () => {
+        if (doc.path) showHexView(doc.path, doc.title);
+      },
+    },
+  ]);
+}
+
 function showLineEndingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
@@ -775,6 +793,11 @@ document
   .querySelector<HTMLElement>("#status-line-ending")!
   .addEventListener("click", (event) =>
     showLineEndingMenu(event.currentTarget as HTMLElement),
+  );
+document
+  .querySelector<HTMLElement>("#status-warning")!
+  .addEventListener("click", (event) =>
+    showDecodeWarningMenu(event.currentTarget as HTMLElement),
   );
 
 /** Keep new untitled numbering clear of titles restored from backups. */

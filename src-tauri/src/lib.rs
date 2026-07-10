@@ -1,6 +1,7 @@
 mod backup;
 mod chunk;
 mod encoding;
+mod hexdump;
 mod menu;
 mod prefs;
 mod recent;
@@ -227,7 +228,8 @@ pub fn run() {
             search::search_in_folder,
             backup::save_backup,
             backup::load_backup,
-            backup::delete_backup
+            backup::delete_backup,
+            hexdump::read_hex_dump
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

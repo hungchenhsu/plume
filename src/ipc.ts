@@ -177,3 +177,22 @@ export function unwatchFile(path: string): Promise<void> {
 export function printWindow(): Promise<void> {
   return invoke<void>("print_window");
 }
+
+export interface HexDumpResult {
+  /** Classic hex dump text, already formatted by the Rust core. */
+  text: string;
+  totalSize: number;
+  shownBytes: number;
+}
+
+/**
+ * Read-only hex/bytes preview for a file that failed to decode as text.
+ * Raw bytes never cross IPC: the Rust core formats them into `text` before
+ * returning. `maxBytes` is a request, not a guarantee — the core caps it.
+ */
+export function readHexDump(
+  path: string,
+  maxBytes: number,
+): Promise<HexDumpResult> {
+  return invoke<HexDumpResult>("read_hex_dump", { path, maxBytes });
+}
