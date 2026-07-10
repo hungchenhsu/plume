@@ -21,10 +21,41 @@ const baseTheme = EditorView.theme({
   ".cm-cursor, .cm-dropCursor": {
     borderLeftColor: "var(--accent)",
   },
-  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
-    {
-      backgroundColor: "var(--accent-soft)",
-    },
+  // `basicSetup` enables @codemirror/view's drawSelection(), which installs
+  // its own Prec.highest theme (`hideNativeSelection`, see
+  // node_modules/@codemirror/view/dist/index.js) forcing
+  // `.cm-line ::selection { background-color: transparent !important }` on
+  // every browser, WebKit included. That means a rule targeting the native
+  // `::selection` pseudo-element here can never paint anything — the only
+  // thing that ever renders a selection highlight is `.cm-selectionBackground`
+  // (a plain layer div drawSelection positions behind the text).
+  //
+  // Two independent bugs compounded here, confirmed by reading
+  // @codemirror/view's own source and by instrumenting a live editor:
+  //   1. CM6's `EditorView.baseTheme()` ships its own default for
+  //      `.cm-selectionBackground`, and the *focused*-state variant
+  //      (`&light.cm-focused > .cm-scroller > .cm-selectionLayer
+  //      .cm-selectionBackground`) has higher CSS specificity than a plain
+  //      `.cm-selectionBackground` rule from our own `EditorView.theme()`
+  //      call. Without `!important` our override was silently losing to
+  //      CM6's hardcoded `#d7d4f0` (light) / `#233` (dark) the entire time
+  //      the editor had focus — i.e. whenever a user was actually
+  //      selecting text. `#d7d4f0` is a very pale lavender that reads as
+  //      near-white against this app's near-white light/paper
+  //      backgrounds, which matches the "bright white, selected text
+  //      unreadable" report exactly.
+  //   2. Because `EditorView.theme()` was never called with `{ dark: true
+  //      }`, CM6 always considers the editor "light" for its *own*
+  //      base-theme purposes (see `EditorView.theme`'s doc comment) no
+  //      matter which of this app's four token themes is active — so the
+  //      `#d7d4f0`/`#d9d9d9` light defaults, not the `#222`/`#233` dark
+  //      ones, leaked through in every theme, including dark and dusk.
+  // `!important` (the same technique drawSelection's own hideNativeSelection
+  // theme uses) makes the fix independent of both of those specificity
+  // details rather than trying to out-specify CM6's selector shape.
+  ".cm-selectionBackground": {
+    backgroundColor: "var(--bg-selection) !important",
+  },
   ".cm-activeLine": {
     backgroundColor: "var(--accent-soft)",
   },
@@ -148,6 +179,33 @@ const highlightStyle = HighlightStyle.define([
   { tag: [t.operator, t.punctuation, t.bracket], color: "var(--fg-muted)" },
   { tag: t.meta, color: "var(--fg-faint)" },
   { tag: t.invalid, color: "var(--danger)" },
+  // Markdown (@lezer/markdown) tags. Cross-checked against the parser's own
+  // `styleTags` call (node_modules/@lezer/markdown/dist/index.js) rather
+  // than assumed from memory:
+  //  - ATXHeading1..6 / SetextHeading1..2 all resolve to `heading1`..`heading6`,
+  //    which @lezer/highlight defines as *subtypes* of `heading`
+  //    (node_modules/@lezer/highlight/dist/index.js: `heading1: t(heading)`,
+  //    etc.), so one rule for `t.heading` styles every level via tag
+  //    inheritance — no need to enumerate heading1-6 separately.
+  //  - `t.list` is intentionally NOT styled here: OrderedList/BulletList are
+  //    tagged with the markdown parser's "/..." (inherit) mode, which means
+  //    the list tag's class is added to *every* descendant span in addition
+  //    to that descendant's own tag (see @lezer/highlight's
+  //    `highlightRange`: `inheritedClass` accumulates, it does not get
+  //    overridden by a child's own rule). A list-item's Paragraph text would
+  //    inherit `t.list` alongside `t.content`, so coloring `t.list` would
+  //    dim entire list bodies, not just the bullet/number marker — the
+  //    marker itself is a separate `ListMark` node already tagged
+  //    `processingInstruction` (a subtype of `meta`, styled above).
+  { tag: t.heading, color: "var(--syn-keyword)", fontWeight: "700" },
+  { tag: t.strong, fontWeight: "700" },
+  { tag: t.emphasis, fontStyle: "italic" },
+  { tag: t.strikethrough, textDecoration: "line-through" },
+  { tag: t.link, color: "var(--syn-function)", textDecoration: "underline" },
+  { tag: t.url, color: "var(--syn-function)" },
+  { tag: t.quote, color: "var(--syn-comment)", fontStyle: "italic" },
+  { tag: t.monospace, color: "var(--syn-string)" },
+  { tag: t.contentSeparator, color: "var(--fg-faint)" },
 ]);
 
 /** Static, token-driven theme applied once at editor construction. */
