@@ -226,3 +226,12 @@ export function readHexDump(
 ): Promise<HexDumpResult> {
   return invoke<HexDumpResult>("read_hex_dump", { path, maxBytes });
 }
+
+/**
+ * Signals that frontend startup finished (preferences, session, pending
+ * files). No-op unless the `PLUME_STARTUP_PROBE` env var is set on the
+ * Rust side — see `scripts/startup-bench.mjs`.
+ */
+export function reportStartupReady(): Promise<void> {
+  return invoke<void>("report_startup_ready");
+}

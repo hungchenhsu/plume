@@ -52,3 +52,37 @@ jobs:
       - name: Rust tests
         run: cargo test
         working-directory: src-tauri
+
+  startup-bench:
+    # Cold-start regression guard (ROADMAP v0.2: startup-time budget
+    # test). macOS only, independent of the check matrix above — a
+    # failure here means startup regressed by roughly an order of
+    # magnitude, not a minor blip (CI machines are slower and noisier
+    # than a dev laptop, so the threshold stays deliberately loose).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend (tsc + vite)
+        run: npm run build
+
+      - name: Build release binary
+        run: cargo build --release
+        working-directory: src-tauri
+
+      - name: Startup-time benchmark
+        run: node scripts/startup-bench.mjs --threshold=3000

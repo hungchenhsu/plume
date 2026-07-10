@@ -7,6 +7,7 @@ mod prefs;
 mod recent;
 mod search;
 mod session;
+mod startup_probe;
 mod store;
 mod watcher;
 
@@ -220,6 +221,9 @@ fn save_document(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // As early as possible: the startup probe measures from here.
+    startup_probe::mark_process_start();
+
     let builder = tauri::Builder::default();
 
     // On Windows and Linux, opening an associated file launches a second
@@ -280,7 +284,8 @@ pub fn run() {
             backup::save_backup,
             backup::load_backup,
             backup::delete_backup,
-            hexdump::read_hex_dump
+            hexdump::read_hex_dump,
+            startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
