@@ -1,6 +1,7 @@
 // Preferences state, application, and the in-window settings dialog.
 import type { EditorHandle } from "./editor";
-import { ENCODINGS } from "./encodings";
+import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
+import { normalizeTable } from "./extensionEncodings";
 import {
   loadPreferences,
   savePreferences,
@@ -30,6 +31,7 @@ let current: Preferences = {
   defaultBom: false,
   wordWrap: true,
   showInvisibles: false,
+  extensionEncodings: [],
 };
 
 let editorRef: EditorHandle | null = null;
@@ -150,6 +152,89 @@ function select(options: { label: string; value: string }[]): HTMLSelectElement 
   return el;
 }
 
+/** Build the "Per-extension encodings" editor: a small table of
+ *  extension + encoding rows with remove buttons and an Add button.
+ *  `read()` returns the rows as currently edited (normalization and
+ *  dedupe happen on save, in extensionEncodings.ts `normalizeTable`). */
+function extensionTable(initial: [string, string][]): {
+  element: HTMLElement;
+  read: () => { extension: string; encoding: string }[];
+} {
+  const section = document.createElement("div");
+  section.className = "prefs-ext-section";
+
+  const heading = document.createElement("div");
+  heading.className = "prefs-ext-heading";
+  heading.textContent = "Per-extension encodings";
+  section.appendChild(heading);
+
+  const hint = document.createElement("div");
+  hint.className = "prefs-ext-hint";
+  hint.textContent =
+    "Files with these extensions open with the given encoding when it " +
+    "decodes cleanly; a BOM or a clear mismatch still wins.";
+  section.appendChild(hint);
+
+  const rows = document.createElement("div");
+  rows.className = "prefs-ext-rows";
+  section.appendChild(rows);
+
+  const addRow = (extension: string, encoding: string): void => {
+    const row = document.createElement("div");
+    row.className = "prefs-ext-row";
+
+    const ext = document.createElement("input");
+    ext.type = "text";
+    ext.className = "prefs-ext-name";
+    ext.placeholder = "txt";
+    ext.value = extension;
+
+    const enc = select(
+      REOPEN_ENCODINGS.map((e) => ({ label: e.label, value: e.value })),
+    );
+    enc.className = "prefs-ext-encoding";
+    enc.value = encoding;
+    if (enc.selectedIndex < 0) enc.selectedIndex = 0;
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "prefs-ext-remove";
+    remove.textContent = "✕";
+    remove.title = "Remove";
+    remove.addEventListener("click", () => row.remove());
+
+    row.appendChild(ext);
+    row.appendChild(enc);
+    row.appendChild(remove);
+    rows.appendChild(row);
+  };
+
+  for (const [extension, encoding] of initial) addRow(extension, encoding);
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "prefs-ext-add";
+  add.textContent = "Add";
+  add.addEventListener("click", () => {
+    addRow("", "UTF-8");
+    const inputs = rows.querySelectorAll<HTMLInputElement>(".prefs-ext-name");
+    inputs[inputs.length - 1]?.focus();
+  });
+  section.appendChild(add);
+
+  return {
+    element: section,
+    read: () =>
+      [...rows.querySelectorAll<HTMLElement>(".prefs-ext-row")].map((row) => ({
+        extension:
+          row.querySelector<HTMLInputElement>(".prefs-ext-name")?.value ?? "",
+        encoding:
+          row.querySelector<HTMLSelectElement>(".prefs-ext-encoding")?.value ??
+          "",
+      })),
+  };
+}
+
 export function showPreferencesDialog(): void {
   if (document.querySelector(".prefs-overlay")) return;
 
@@ -189,6 +274,9 @@ export function showPreferencesDialog(): void {
   if (encoding.selectedIndex < 0) encoding.selectedIndex = 0;
   dialog.appendChild(row("Encoding for new files", encoding));
 
+  const extensions = extensionTable(current.extensionEncodings);
+  dialog.appendChild(extensions.element);
+
   const buttons = document.createElement("div");
   buttons.className = "prefs-buttons";
   const cancel = document.createElement("button");
@@ -219,6 +307,7 @@ export function showPreferencesDialog(): void {
       defaultBom: encBom === "true",
       wordWrap: current.wordWrap,
       showInvisibles: current.showInvisibles,
+      extensionEncodings: normalizeTable(extensions.read()),
     };
     applyAll();
     void savePreferences(current).catch(() => {

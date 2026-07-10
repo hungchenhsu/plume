@@ -36,6 +36,7 @@ function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
     defaultBom: false,
     wordWrap: true,
     showInvisibles: false,
+    extensionEncodings: [],
     ...overrides,
   };
 }

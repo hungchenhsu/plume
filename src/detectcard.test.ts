@@ -24,6 +24,13 @@ describe("parseWouldChoose", () => {
     });
   });
 
+  it("splits the encoding from an extension reason", () => {
+    expect(parseWouldChoose("Big5 (extension)")).toEqual({
+      encoding: "Big5",
+      reason: "extension",
+    });
+  });
+
   it("falls back to treating the whole string as the encoding when unrecognized", () => {
     expect(parseWouldChoose("UTF-8")).toEqual({
       encoding: "UTF-8",
@@ -84,6 +91,22 @@ describe("formatDetectionCard", () => {
       label: "BOM",
       value: "No BOM found",
     });
+  });
+
+  it("labels the extension reason as a per-extension preference", () => {
+    const info: DetectionExplanation = {
+      bom: null,
+      detectorVerdict: "Big5",
+      sampledBytes: 128,
+      totalSize: 128,
+      wouldChoose: "Big5 (extension)",
+    };
+    const model = formatDetectionCard("notes.txt", "Big5", info);
+    expect(model.rows).toContainEqual({
+      label: "Auto-detect would choose",
+      value: "Big5 (per-extension preference, decoded cleanly)",
+    });
+    expect(model.manualNote).toBeNull();
   });
 
   it("shows a truncated sample as 'first N of M'", () => {

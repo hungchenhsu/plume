@@ -88,8 +88,21 @@ pub struct SaveResult {
 /// Read a file from disk, decoding with the given encoding label or with
 /// automatic detection when `encoding` is `None`. The returned content is
 /// LF-normalized; the original line ending is reported in `line_ending`.
+///
+/// `extension_encoding` is an advisory hint forwarded by the frontend: the
+/// encoding its per-extension preferences table maps this file's extension
+/// to, if any (resolved from `Preferences::extension_encodings` — see
+/// `src/extensionEncodings.ts`). It only takes effect during auto-detection
+/// (`encoding: None`) and only when it decodes the bytes cleanly; the core
+/// decision — BOM first, then the extension hint if it decodes without
+/// malformed sequences, else the statistical fallback — is made in
+/// `encoding::detect_with_extension`, not here or in the frontend.
 #[tauri::command]
-fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocument, String> {
+fn open_document(
+    path: String,
+    encoding: Option<String>,
+    extension_encoding: Option<String>,
+) -> Result<OpenedDocument, String> {
     let total_size = std::fs::metadata(&path)
         .map_err(|e| format!("Failed to read {path}: {e}"))?
         .len();
@@ -103,7 +116,7 @@ fn open_document(path: String, encoding: Option<String>) -> Result<OpenedDocumen
     };
     let decoded = match encoding {
         Some(label) => encoding::decode_with(bytes, &label)?,
-        None => encoding::decode_auto(bytes),
+        None => encoding::decode_auto_with_extension(bytes, extension_encoding.as_deref()),
     };
     let line_ending = encoding::detect_line_ending(&decoded.content).to_string();
     Ok(OpenedDocument {
@@ -131,9 +144,9 @@ pub struct DetectionExplanation {
     detector_verdict: String,
     sampled_bytes: usize,
     total_size: u64,
-    /// "{encoding} ({reason})" where reason is "bom" | "detector" |
-    /// "fallback" — the encoding `open_document`'s auto-detection would
-    /// pick, and why.
+    /// "{encoding} ({reason})" where reason is "bom" | "extension" |
+    /// "detector" | "fallback" — the encoding `open_document`'s
+    /// auto-detection would pick, and why.
     would_choose: String,
 }
 
@@ -145,12 +158,17 @@ const EXPLAIN_SAMPLE_BYTES: usize = 64 * 1024;
 /// Re-read a bounded prefix of `path` and report the evidence behind the
 /// encoding auto-detection would use, without decoding or returning any
 /// raw bytes. This is a read-only diagnostics command: it never affects
-/// `open_document`'s behavior and reuses `encoding::detect`, the same
-/// function `decode_auto` (and therefore `open_document`) calls, so the
-/// two can never disagree for files at or under the sample size — see the
-/// `detect_agrees_with_decode_auto_*` tests in `encoding.rs`.
+/// `open_document`'s behavior and reuses `encoding::detect_with_extension`,
+/// the same function `decode_auto_with_extension` (and therefore
+/// `open_document`) calls, so the two can never disagree for files at or
+/// under the sample size — see the `detect_agrees_with_decode_auto_*`
+/// tests in `encoding.rs`. `extension_encoding` is the same advisory hint
+/// the frontend passes to `open_document` (see there).
 #[tauri::command]
-fn explain_detection(path: String) -> Result<DetectionExplanation, String> {
+fn explain_detection(
+    path: String,
+    extension_encoding: Option<String>,
+) -> Result<DetectionExplanation, String> {
     let total_size = std::fs::metadata(&path)
         .map_err(|e| format!("Failed to read {path}: {e}"))?
         .len();
@@ -158,7 +176,7 @@ fn explain_detection(path: String) -> Result<DetectionExplanation, String> {
     let sample_len = bytes.len().min(EXPLAIN_SAMPLE_BYTES);
     let sample = &bytes[..sample_len];
 
-    let detection = encoding::detect(sample);
+    let detection = encoding::detect_with_extension(sample, extension_encoding.as_deref());
     Ok(DetectionExplanation {
         bom: encoding::describe_bom(sample),
         detector_verdict: detection.detector_guess.name().to_string(),
@@ -326,6 +344,7 @@ pub fn run() {
 mod tests {
     use super::{
         atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
+        save_document,
     };
 
     #[test]
@@ -414,19 +433,25 @@ mod tests {
 
     /// `explain_detection`'s `wouldChoose` must agree with what
     /// `open_document`'s auto-detection actually picks, for every scenario
-    /// the diagnostics popup is meant to explain. All fixtures here are
+    /// the diagnostics popup is meant to explain — including when both are
+    /// given the same per-extension encoding hint. All fixtures here are
     /// well under the 64 KB sample cap, so the sample is the whole file and
     /// the two commands see identical bytes.
-    fn assert_explain_matches_open(bytes: &[u8], dir_name: &str) {
+    fn assert_explain_matches_open_with_ext(
+        bytes: &[u8],
+        dir_name: &str,
+        ext_encoding: Option<&str>,
+    ) {
         let dir = std::env::temp_dir().join(dir_name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
         std::fs::write(&file, bytes).unwrap();
         let path = file.to_string_lossy().into_owned();
+        let ext = ext_encoding.map(str::to_string);
 
-        let opened = open_document(path.clone(), None).unwrap();
-        let explained = explain_detection(path).unwrap();
+        let opened = open_document(path.clone(), None, ext.clone()).unwrap();
+        let explained = explain_detection(path, ext).unwrap();
 
         assert_eq!(
             would_choose_encoding(&explained.would_choose),
@@ -439,6 +464,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    fn assert_explain_matches_open(bytes: &[u8], dir_name: &str) {
+        assert_explain_matches_open_with_ext(bytes, dir_name, None);
+    }
+
     #[test]
     fn explain_detection_agrees_with_open_utf8_bom() {
         let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
@@ -449,7 +478,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
         std::fs::write(&file, bytes).unwrap();
-        let explained = explain_detection(file.to_string_lossy().into_owned()).unwrap();
+        let explained = explain_detection(file.to_string_lossy().into_owned(), None).unwrap();
         assert_eq!(explained.bom.as_deref(), Some("UTF-8 BOM (EF BB BF)"));
         assert!(explained.would_choose.ends_with("(bom)"));
         std::fs::remove_dir_all(&dir).ok();
@@ -471,7 +500,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
         std::fs::write(&file, bytes).unwrap();
-        let explained = explain_detection(file.to_string_lossy().into_owned()).unwrap();
+        let explained = explain_detection(file.to_string_lossy().into_owned(), None).unwrap();
         assert_eq!(explained.bom, None);
         assert!(explained.would_choose.ends_with("(detector)"));
         std::fs::remove_dir_all(&dir).ok();
@@ -495,7 +524,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
         std::fs::write(&file, []).unwrap();
-        let explained = explain_detection(file.to_string_lossy().into_owned()).unwrap();
+        let explained = explain_detection(file.to_string_lossy().into_owned(), None).unwrap();
         assert_eq!(explained.bom, None);
         assert!(explained.would_choose.ends_with("(fallback)"));
         std::fs::remove_dir_all(&dir).ok();
@@ -507,6 +536,107 @@ mod tests {
             .join("plume-explain-does-not-exist.txt")
             .to_string_lossy()
             .into_owned();
-        assert!(explain_detection(path).is_err());
+        assert!(explain_detection(path, None).is_err());
+    }
+
+    /// With a per-extension hint, the diagnostics command and the open
+    /// command must still agree — both when the hint is honored (Big5
+    /// bytes, Big5 hint) and when it is rejected (UTF-8 bytes, Big5 hint).
+    #[test]
+    fn explain_detection_agrees_with_open_under_extension_hint() {
+        let text =
+            "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
+        let (big5_bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_explain_matches_open_with_ext(&big5_bytes, "plume-explain-ext-big5", Some("Big5"));
+        assert_explain_matches_open_with_ext(
+            text.as_bytes(),
+            "plume-explain-ext-utf8-mismatch",
+            Some("Big5"),
+        );
+        // BOM still wins over the hint at the command level too.
+        let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
+        assert_explain_matches_open_with_ext(&bytes, "plume-explain-ext-bom", Some("Big5"));
+    }
+
+    /// End-to-end round trip through the real commands and the disk, with a
+    /// per-extension preference in play: a Big5 .txt file opened with a
+    /// Big5 extension hint, saved, and reopened must keep both its content
+    /// and its Big5 encoding byte-for-byte.
+    #[test]
+    fn open_save_reopen_round_trips_big5_via_extension_hint() {
+        let text = "中文編碼偵測測試，這是繁體中文範例文字。\n第二行內容。\n";
+        let (original_bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+
+        let dir = std::env::temp_dir().join("plume-ext-roundtrip-big5");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, &original_bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), None, Some("Big5".into())).unwrap();
+        assert_eq!(opened.encoding, "Big5");
+        assert_eq!(opened.content, text);
+        assert!(!opened.malformed);
+        assert_eq!(opened.line_ending, "LF");
+
+        let saved = save_document(
+            path.clone(),
+            opened.content.clone(),
+            opened.encoding.clone(),
+            opened.had_bom,
+            opened.line_ending.clone(),
+        )
+        .unwrap();
+        assert!(!saved.unmappable);
+        assert_eq!(std::fs::read(&file).unwrap(), original_bytes);
+
+        let reopened = open_document(path, None, Some("Big5".into())).unwrap();
+        assert_eq!(reopened.encoding, "Big5");
+        assert_eq!(reopened.content, text);
+        assert!(!reopened.malformed);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The mirror-image safety case on disk: a legitimate multi-byte UTF-8
+    /// .txt file must not be opened as Big5 mojibake just because the
+    /// user's extension table says .txt = Big5. It opens clean as UTF-8 and
+    /// survives a save/reopen cycle unchanged.
+    #[test]
+    fn open_save_reopen_keeps_utf8_despite_wrong_extension_hint() {
+        let text = "中文編碼偵測測試，這是繁體中文範例文字。\n";
+        let original_bytes = text.as_bytes().to_vec();
+
+        let dir = std::env::temp_dir().join("plume-ext-roundtrip-utf8-mismatch");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, &original_bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), None, Some("Big5".into())).unwrap();
+        assert_eq!(opened.encoding, "UTF-8");
+        assert_eq!(opened.content, text);
+        assert!(!opened.malformed);
+
+        let saved = save_document(
+            path.clone(),
+            opened.content.clone(),
+            opened.encoding.clone(),
+            opened.had_bom,
+            opened.line_ending.clone(),
+        )
+        .unwrap();
+        assert!(!saved.unmappable);
+        assert_eq!(std::fs::read(&file).unwrap(), original_bytes);
+
+        let reopened = open_document(path, None, Some("Big5".into())).unwrap();
+        assert_eq!(reopened.encoding, "UTF-8");
+        assert_eq!(reopened.content, text);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

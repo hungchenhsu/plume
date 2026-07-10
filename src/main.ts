@@ -31,6 +31,7 @@ import {
   type SessionFile,
 } from "./ipc";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
+import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
 import { showDetectionCard } from "./detectcard";
@@ -461,6 +462,12 @@ async function handleExternalChange(path: string): Promise<void> {
   }
 }
 
+/** Per-extension default encoding for `path` from the preferences table,
+ *  forwarded to the Rust core as an auto-detection hint. */
+function extensionHint(path: string): string | undefined {
+  return lookupExtensionEncoding(preferences().extensionEncodings, path);
+}
+
 /** Open a file by path into a tab, focusing the existing tab if any. */
 async function openPath(path: string): Promise<void> {
   const existing = tabs.findByPath(path);
@@ -469,7 +476,7 @@ async function openPath(path: string): Promise<void> {
     return;
   }
   try {
-    const opened = await openDocument(path);
+    const opened = await openDocument(path, undefined, extensionHint(path));
     const previous = tabs.active;
     if (previous) previous.buffer = editor.snapshot();
     tabs.add(docFromOpened(opened));
@@ -608,7 +615,13 @@ function showEncodingMenu(anchor: HTMLElement): void {
       disabled: doc.path === null,
       action: () => {
         if (doc.path) {
-          showDetectionCard(anchor, doc.path, doc.title, doc.encoding);
+          showDetectionCard(
+            anchor,
+            doc.path,
+            doc.title,
+            doc.encoding,
+            extensionHint(doc.path),
+          );
         }
       },
     },
