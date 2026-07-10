@@ -21,8 +21,10 @@ pub struct Preferences {
     /// Per-extension default encoding, e.g. `[("txt", "Big5")]`. Extension
     /// is stored without a leading dot, lowercase (the frontend normalizes
     /// before persisting; see `src/extensionEncodings.ts`). Auto-detection
-    /// only honors an entry when decoding the sample with it produces no
-    /// malformed sequences — see `encoding::detect_with_extension`.
+    /// only honors an entry when the file has no BOM, is not valid
+    /// non-ASCII UTF-8 (confident UTF-8 always wins), and the entry's
+    /// encoding decodes the sample without malformed sequences — see
+    /// `encoding::detect_with_extension`.
     pub extension_encodings: Vec<(String, String)>,
 }
 

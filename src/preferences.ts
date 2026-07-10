@@ -171,8 +171,8 @@ function extensionTable(initial: [string, string][]): {
   const hint = document.createElement("div");
   hint.className = "prefs-ext-hint";
   hint.textContent =
-    "Files with these extensions open with the given encoding when it " +
-    "decodes cleanly; a BOM or a clear mismatch still wins.";
+    "Files with these extensions open with the given encoding; a BOM, " +
+    "valid UTF-8 text, or a byte mismatch still wins.";
   section.appendChild(hint);
 
   const rows = document.createElement("div");

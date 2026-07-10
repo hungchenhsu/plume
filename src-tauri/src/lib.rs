@@ -93,10 +93,11 @@ pub struct SaveResult {
 /// encoding its per-extension preferences table maps this file's extension
 /// to, if any (resolved from `Preferences::extension_encodings` — see
 /// `src/extensionEncodings.ts`). It only takes effect during auto-detection
-/// (`encoding: None`) and only when it decodes the bytes cleanly; the core
-/// decision — BOM first, then the extension hint if it decodes without
-/// malformed sequences, else the statistical fallback — is made in
-/// `encoding::detect_with_extension`, not here or in the frontend.
+/// (`encoding: None`); the core decision — BOM first, then confident UTF-8
+/// (valid non-ASCII UTF-8 is never reinterpreted by the hint), then the
+/// hint if it decodes the bytes without malformed sequences, else the
+/// statistical fallback — is made in `encoding::detect_with_extension`,
+/// not here or in the frontend.
 #[tauri::command]
 fn open_document(
     path: String,
@@ -552,6 +553,13 @@ mod tests {
         assert_explain_matches_open_with_ext(
             text.as_bytes(),
             "plume-explain-ext-utf8-mismatch",
+            Some("Big5"),
+        );
+        // Short valid UTF-8 that is byte-valid as Big5 (the UTF-8 gate
+        // case): both commands must agree it stays UTF-8.
+        assert_explain_matches_open_with_ext(
+            "測試".as_bytes(),
+            "plume-explain-ext-short-utf8",
             Some("Big5"),
         );
         // BOM still wins over the hint at the command level too.

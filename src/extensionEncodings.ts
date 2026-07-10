@@ -8,9 +8,11 @@
 // The encoding value is a canonical encoding_rs name from encodings.ts.
 //
 // The entry is only a *hint*: the Rust core ignores it when the file has a
-// BOM or when decoding the bytes with it would produce malformed output
-// (see encoding.rs `detect_with_extension`), so a wrong mapping can never
-// force mojibake.
+// BOM, when the bytes are valid non-ASCII UTF-8 (confident UTF-8 always
+// wins — even short UTF-8 that happens to be byte-valid in a legacy
+// encoding), or when decoding the bytes with it would produce malformed
+// output (see encoding.rs `detect_with_extension`), so a wrong mapping is
+// never silently rendered as mojibake for UTF-8 or byte-invalid content.
 
 export type ExtensionEncodingEntry = [extension: string, encoding: string];
 

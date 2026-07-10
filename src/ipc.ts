@@ -56,9 +56,10 @@ export interface SaveResult {
 /**
  * `extensionEncoding` is the per-extension default from the preferences
  * table (see extensionEncodings.ts), forwarded as a hint for
- * auto-detection. The Rust core only honors it when the file has no BOM
- * and the hinted encoding decodes the bytes cleanly; it is ignored
- * entirely when an explicit `encoding` is passed.
+ * auto-detection. The Rust core only honors it when the file has no BOM,
+ * is not valid non-ASCII UTF-8 (confident UTF-8 always wins), and the
+ * hinted encoding decodes the bytes without malformed sequences; it is
+ * ignored entirely when an explicit `encoding` is passed.
  */
 export function openDocument(
   path: string,
