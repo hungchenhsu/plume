@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: sshnaidm/gpt-code-review-action@v4.0
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
         with:
           openai-key: ${{ secrets.OPENAI_API_KEY }}
           model: 'gpt-4'
