@@ -1,4 +1,5 @@
 // Quick-open panel: type-to-filter over recently opened files.
+import { t } from "./i18n";
 
 const MAX_VISIBLE = 12;
 
@@ -31,7 +32,7 @@ export function showQuickOpen(
 
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "Search recent files…";
+  input.placeholder = t("quickOpen.searchPlaceholder");
   panel.appendChild(input);
 
   const list = document.createElement("ul");
@@ -57,7 +58,7 @@ export function showQuickOpen(
       const empty = document.createElement("li");
       empty.className = "quickopen-empty";
       empty.textContent =
-        recent.length === 0 ? "No recent files" : "No matches";
+        recent.length === 0 ? t("quickOpen.noRecent") : t("quickOpen.noMatches");
       list.appendChild(empty);
       return;
     }

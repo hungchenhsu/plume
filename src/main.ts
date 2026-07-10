@@ -8,7 +8,8 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import { contentOf, createEditor, cursorOf, isEmptyBuffer } from "./editor";
-import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
+import { encodingChoices, reopenEncodingChoices } from "./encodings";
+import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
   deleteBackup,
@@ -49,7 +50,13 @@ import {
   toggleShowInvisibles,
   toggleWordWrap,
 } from "./preferences";
-import { updateCursor, updatePager, updateStatusBar } from "./statusbar";
+import {
+  refreshCursor,
+  refreshStatusBar,
+  updateCursor,
+  updatePager,
+  updateStatusBar,
+} from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
 const defaultLineEnding = navigator.userAgent.includes("Windows")
@@ -140,7 +147,10 @@ function makeUntitled(): Doc {
   return {
     id: nextId++,
     path: null,
-    title: untitledCounter === 1 ? "Untitled" : `Untitled-${untitledCounter}`,
+    title:
+      untitledCounter === 1
+        ? t("app.untitled")
+        : t("app.untitledNumbered", untitledCounter),
     encoding: preferences().defaultEncoding,
     withBom: preferences().defaultBom,
     lineEnding: defaultLineEnding,
@@ -305,7 +315,10 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
     doc.buffer = editor.newBuffer(chunkData.content, true);
     showActive();
   } catch (error) {
-    await messageDialog(String(error), { title: "Paging", kind: "warning" });
+    await messageDialog(String(error), {
+      title: t("dialog.pagingTitle"),
+      kind: "warning",
+    });
   }
 }
 
@@ -452,10 +465,11 @@ async function handleExternalChange(path: string): Promise<void> {
   if (reloadPrompts.has(path)) return;
   reloadPrompts.add(path);
   try {
-    const reload = await confirmDialog(
-      `"${doc.title}" changed on disk. Reload it and discard your unsaved changes?`,
-      { title: "File changed on disk", kind: "warning", okLabel: "Reload" },
-    );
+    const reload = await confirmDialog(t("dialog.fileChangedMessage", doc.title), {
+      title: t("dialog.fileChangedTitle"),
+      kind: "warning",
+      okLabel: t("dialog.reload"),
+    });
     if (reload) await reloadFromDisk(doc);
   } finally {
     reloadPrompts.delete(path);
@@ -485,7 +499,10 @@ async function openPath(path: string): Promise<void> {
     persistSession();
     rememberRecent(opened.path);
   } catch (error) {
-    await messageDialog(String(error), { title: "Open failed", kind: "error" });
+    await messageDialog(String(error), {
+      title: t("dialog.openFailedTitle"),
+      kind: "error",
+    });
   }
 }
 
@@ -501,10 +518,10 @@ async function saveFlow(saveAs: boolean): Promise<void> {
   if (!doc) return;
   if (doc.truncated) {
     // Writing the preview slice back would destroy the rest of the file.
-    await messageDialog(
-      `"${doc.title}" is a read-only preview of a large file; saving is disabled.`,
-      { title: "Read-only preview", kind: "warning" },
-    );
+    await messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
+      title: t("dialog.readonlyPreviewTitle"),
+      kind: "warning",
+    });
     return;
   }
   const oldPath = doc.path;
@@ -542,13 +559,16 @@ async function saveFlow(saveAs: boolean): Promise<void> {
     }
     persistSession();
     if (result.unmappable) {
-      await messageDialog(
-        `Some characters could not be represented in ${doc.encoding} and were replaced.`,
-        { title: "Encoding warning", kind: "warning" },
-      );
+      await messageDialog(t("dialog.encodingWarningMessage", doc.encoding), {
+        title: t("dialog.encodingWarningTitle"),
+        kind: "warning",
+      });
     }
   } catch (error) {
-    await messageDialog(String(error), { title: "Save failed", kind: "error" });
+    await messageDialog(String(error), {
+      title: t("dialog.saveFailedTitle"),
+      kind: "error",
+    });
   }
 }
 
@@ -557,10 +577,11 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
   const doc = tabs.active;
   if (!doc?.path) return;
   if (doc.dirty) {
-    const discard = await confirmDialog(
-      `Reopening will discard unsaved changes in "${doc.title}". Continue?`,
-      { title: "Unsaved changes", kind: "warning", okLabel: "Reopen" },
-    );
+    const discard = await confirmDialog(t("dialog.reopenMessage", doc.title), {
+      title: t("dialog.unsavedChangesTitle"),
+      kind: "warning",
+      okLabel: t("dialog.reopen"),
+    });
     if (!discard) return;
   }
   try {
@@ -588,7 +609,7 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     persistSession();
   } catch (error) {
     await messageDialog(String(error), {
-      title: "Reopen failed",
+      title: t("dialog.reopenFailedTitle"),
       kind: "error",
     });
   }
@@ -610,7 +631,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
   if (!doc) return;
   showMenu(anchor, [
     {
-      label: `Why ${doc.encoding}?`,
+      label: t("menu.whyEncoding", doc.encoding),
       // Untitled documents have no file on disk to re-read and explain.
       disabled: doc.path === null,
       action: () => {
@@ -626,12 +647,12 @@ function showEncodingMenu(anchor: HTMLElement): void {
       },
     },
     {
-      label: "Reopen with Encoding",
+      label: t("menu.reopenWithEncoding"),
       disabled: doc.path === null,
       action: () =>
         showMenu(
           anchor,
-          REOPEN_ENCODINGS.map((e) => ({
+          reopenEncodingChoices().map((e) => ({
             label: e.label,
             checked: e.value === doc.encoding,
             action: () => void reopenWithEncoding(e.value),
@@ -639,11 +660,11 @@ function showEncodingMenu(anchor: HTMLElement): void {
         ),
     },
     {
-      label: "Save with Encoding",
+      label: t("menu.saveWithEncoding"),
       action: () =>
         showMenu(
           anchor,
-          ENCODINGS.map((e) => ({
+          encodingChoices().map((e) => ({
             label: e.label,
             checked: e.value === doc.encoding && e.withBom === doc.withBom,
             action: () => {
@@ -663,7 +684,7 @@ function showDecodeWarningMenu(anchor: HTMLElement): void {
   if (!doc) return;
   showMenu(anchor, [
     {
-      label: "View raw bytes…",
+      label: t("menu.viewRawBytes"),
       // Only real files have bytes on disk to inspect; untitled docs
       // cannot reach the malformed state in the first place, but this
       // stays defensive in case that ever changes.
@@ -680,12 +701,12 @@ function showLineEndingMenu(anchor: HTMLElement): void {
   if (!doc) return;
   showMenu(anchor, [
     {
-      label: "LF (Unix / macOS)",
+      label: t("menu.lineEndingLf"),
       checked: doc.lineEnding === "LF",
       action: () => setLineEnding("LF"),
     },
     {
-      label: "CRLF (Windows)",
+      label: t("menu.lineEndingCrlf"),
       checked: doc.lineEnding === "CRLF",
       action: () => setLineEnding("CRLF"),
     },
@@ -782,7 +803,10 @@ void listen<string>("plume://menu", (event) => {
       printView.textContent = editor.content();
       void printWindow()
         .catch((error) =>
-          messageDialog(String(error), { title: "Print", kind: "warning" }),
+          messageDialog(String(error), {
+            title: t("dialog.printTitle"),
+            kind: "warning",
+          }),
         )
         .finally(() => {
           printView.textContent = "";
@@ -837,14 +861,19 @@ document
     showDecodeWarningMenu(event.currentTarget as HTMLElement),
   );
 
-/** Keep new untitled numbering clear of titles restored from backups. */
+/** Keep new untitled numbering clear of titles restored from backups.
+ *  Matches both untitled roots ("Untitled", "未命名") since a session or
+ *  hot-exit backup created under one locale can be restored under another. */
 function bumpUntitledCounter(title: string): void {
-  const match = /^Untitled(?:-(\d+))?$/.exec(title);
-  if (match) {
-    untitledCounter = Math.max(
-      untitledCounter,
-      match[1] ? Number(match[1]) : 1,
-    );
+  for (const root of ["Untitled", "未命名"]) {
+    const match = new RegExp(`^${root}(?:-(\\d+))?$`).exec(title);
+    if (match) {
+      untitledCounter = Math.max(
+        untitledCounter,
+        match[1] ? Number(match[1]) : 1,
+      );
+      return;
+    }
   }
 }
 
@@ -854,7 +883,7 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
   const content = await loadBackup(file.backup).catch(() => null);
   if (content === null) return false;
   const title =
-    file.title || (file.path ? basename(file.path) : "Untitled");
+    file.title || (file.path ? basename(file.path) : t("app.untitled"));
   bumpUntitledCounter(title);
   tabs.add({
     id: nextId++,
@@ -924,9 +953,22 @@ void listen<string[]>("plume://file-changed", async (event) => {
   }
 });
 
+// Locale changes (from the Preferences dialog's Language select) update the
+// frontend's own strings immediately; the native menu relabels itself
+// separately (see preferences.ts applyLanguage / ipc.ts retitleMenu).
+onLocaleChange(() => {
+  tabs.render();
+  refreshStatusBar();
+  refreshCursor();
+  updateWindowTitle();
+});
+
 void (async () => {
-  // Preferences first: the untitled fallback uses the default encoding.
+  // Preferences first: the untitled fallback uses the default encoding, and
+  // the resolved locale needs to be applied before anything else renders.
   await initPreferences(editor);
+  refreshStatusBar();
+  refreshCursor();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused.

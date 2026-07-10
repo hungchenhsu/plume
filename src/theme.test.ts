@@ -8,6 +8,7 @@ import type { Preferences } from "./ipc";
 const loadPreferences = vi.fn<() => Promise<Preferences>>();
 const savePreferences = vi.fn<(p: Preferences) => Promise<void>>();
 const syncThemeMenu = vi.fn<(theme: string) => Promise<void>>();
+const retitleMenu = vi.fn<(locale: string) => Promise<void>>();
 
 vi.mock("./ipc", () => ({
   loadPreferences: (...args: unknown[]) =>
@@ -16,15 +17,18 @@ vi.mock("./ipc", () => ({
     (savePreferences as (...a: unknown[]) => unknown)(...args),
   syncThemeMenu: (...args: unknown[]) =>
     (syncThemeMenu as (...a: unknown[]) => unknown)(...args),
+  retitleMenu: (...args: unknown[]) =>
+    (retitleMenu as (...a: unknown[]) => unknown)(...args),
 }));
 
 // vi.mock calls above are hoisted above this static import by vitest, so
 // ./ipc is already mocked by the time preferences.ts is evaluated.
-import { initPreferences, preferences, setTheme, THEMES } from "./preferences";
+import { initPreferences, preferences, setTheme, themeChoices } from "./preferences";
 
 const fakeEditor = {
   setLineWrapping: vi.fn(),
   setShowInvisibles: vi.fn(),
+  setLocale: vi.fn(),
 } as unknown as EditorHandle;
 
 function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
@@ -32,6 +36,7 @@ function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
     fontFamily: "",
     fontSize: 13,
     theme: "system",
+    language: "system",
     defaultEncoding: "UTF-8",
     defaultBom: false,
     wordWrap: true,
@@ -46,11 +51,12 @@ beforeEach(() => {
   loadPreferences.mockReset();
   savePreferences.mockReset().mockResolvedValue(undefined);
   syncThemeMenu.mockReset().mockResolvedValue(undefined);
+  retitleMenu.mockReset().mockResolvedValue(undefined);
 });
 
-describe("THEMES", () => {
+describe("themeChoices", () => {
   it("lists exactly the five built-in choices, matching menu.rs THEME_IDS", () => {
-    expect(THEMES.map((t) => t.value)).toEqual([
+    expect(themeChoices().map((t) => t.value)).toEqual([
       "system",
       "light",
       "dark",

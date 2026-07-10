@@ -2,15 +2,24 @@
 // current document's encoding (BOM found, chardetng verdict) so the "Why
 // {encoding}?" status-bar item has something to display. Read-only — it
 // never changes the open document.
+import { t } from "./i18n";
 import { explainDetection, type DetectionExplanation } from "./ipc";
 import { formatSize } from "./statusbar";
 
-const REASON_LABELS: Record<string, string> = {
-  bom: "a BOM was found",
-  extension: "per-extension preference, decoded cleanly",
-  detector: "chardetng statistical detection",
-  fallback: "no evidence to analyze (empty file), defaulted",
-};
+function reasonLabel(reason: string): string {
+  switch (reason) {
+    case "bom":
+      return t("detectcard.reasonBom");
+    case "extension":
+      return t("detectcard.reasonExtension");
+    case "detector":
+      return t("detectcard.reasonDetector");
+    case "fallback":
+      return t("detectcard.reasonFallback");
+    default:
+      return reason;
+  }
+}
 
 /** Pure helper: split "{encoding} ({reason})" back into its parts. */
 export function parseWouldChoose(wouldChoose: string): {
@@ -45,30 +54,33 @@ export function formatDetectionCard(
   const { encoding: detectedEncoding, reason } = parseWouldChoose(
     info.wouldChoose,
   );
-  const reasonLabel = REASON_LABELS[reason] ?? reason;
   const manualNote =
     currentEncoding === detectedEncoding
       ? null
-      : `Currently using ${currentEncoding} manually — auto-detect would choose ${detectedEncoding}.`;
+      : t("detectcard.manualNote", currentEncoding, detectedEncoding);
 
   return {
-    title: `Why ${currentEncoding}?`,
+    title: t("detectcard.title", currentEncoding),
     rows: [
-      { label: "File", value: title },
-      { label: "BOM", value: info.bom ?? "No BOM found" },
-      { label: "chardetng verdict", value: info.detectorVerdict },
+      { label: t("detectcard.labelFile"), value: title },
+      { label: t("detectcard.labelBom"), value: info.bom ?? t("detectcard.noBom") },
+      { label: t("detectcard.labelVerdict"), value: info.detectorVerdict },
       {
-        label: "Sampled",
+        label: t("detectcard.labelSampled"),
         value:
           info.sampledBytes >= info.totalSize
-            ? `all ${formatSize(info.totalSize)}`
-            : `first ${formatSize(info.sampledBytes)} of ${formatSize(info.totalSize)}`,
+            ? t("detectcard.sampledAll", formatSize(info.totalSize))
+            : t(
+                "detectcard.sampledPartial",
+                formatSize(info.sampledBytes),
+                formatSize(info.totalSize),
+              ),
       },
       {
-        label: "Auto-detect would choose",
-        value: `${detectedEncoding} (${reasonLabel})`,
+        label: t("detectcard.labelWouldChoose"),
+        value: t("detectcard.wouldChooseValue", detectedEncoding, reasonLabel(reason)),
       },
-      { label: "Currently using", value: currentEncoding },
+      { label: t("detectcard.labelCurrentlyUsing"), value: currentEncoding },
     ],
     manualNote,
   };
@@ -120,7 +132,7 @@ export function showDetectionCard(
 
   const panel = document.createElement("div");
   panel.className = "detectcard-panel";
-  panel.textContent = "Loading…";
+  panel.textContent = t("common.loading");
 
   const close = (): void => {
     document.removeEventListener("mousedown", onAway);

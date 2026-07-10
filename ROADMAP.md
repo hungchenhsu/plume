@@ -94,7 +94,7 @@ conversation). One coherent item per PR.
   eye-friendly) built on the design tokens; View-menu switching,
   persisted preference. Built-ins + CSS variables only — no custom
   theme import
-- [ ] UI i18n, zh-TW first: lightweight typed dictionary module (no
+- [x] UI i18n, zh-TW first: lightweight typed dictionary module (no
   runtime dependency), covering UI strings and native menus; language
   preference follows the system by default with English fallback
 

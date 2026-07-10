@@ -22,12 +22,44 @@ import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
+import type { Locale } from "./i18n";
 import {
   findHistory,
   pushFindTerm,
   pushReplaceTerm,
   replaceHistory,
 } from "./searchhistory";
+
+/**
+ * Traditional-Chinese phrases for the @codemirror/search find/replace
+ * panel, keyed by the exact English source phrases CM6 looks up via
+ * `EditorState.phrases` (see @codemirror/search's `phrase(view, "...")`
+ * calls) — this is CM6's own built-in translation mechanism, not a new
+ * dependency. English needs no entries: it is CM6's built-in default.
+ */
+const SEARCH_PANEL_PHRASES_ZH_TW: Record<string, string> = {
+  Find: "尋找",
+  Replace: "取代",
+  next: "下一個",
+  previous: "上一個",
+  all: "全部",
+  "match case": "區分大小寫",
+  regexp: "正規表示式",
+  "by word": "全字符合",
+  replace: "取代",
+  "replace all": "全部取代",
+  close: "關閉",
+  "Go to line": "跳至行號",
+  go: "前往",
+  "replaced match on line $": "已在第 $ 行取代符合項目",
+  "replaced $ matches": "已取代 $ 筆符合項目",
+  "current match": "目前符合項目",
+  "on line": "位於行",
+};
+
+function searchPanelPhrases(locale: Locale): Record<string, string> {
+  return locale === "zh-TW" ? SEARCH_PANEL_PHRASES_ZH_TW : {};
+}
 
 export type EditorBuffer = EditorState;
 
@@ -65,6 +97,10 @@ export interface EditorHandle {
    *  every line that has a trailing newline. Purely visual — never touches
    *  the document, so it is safe to use in large-file/chunked mode. */
   setShowInvisibles(enabled: boolean): void;
+  /** Localize the CM6 find/replace panel's built-in strings (labels,
+   *  placeholders, screen-reader announcements) via `EditorState.phrases`.
+   *  Purely presentational, like show-invisibles/word-wrap above. */
+  setLocale(locale: Locale): void;
   /**
    * Pick a language for the live buffer by filename and load it lazily.
    * `stillWanted` guards against the user switching tabs while the language
@@ -255,18 +291,22 @@ export function createEditor(
   const language = new Compartment();
   const wrapping = new Compartment();
   const invisibles = new Compartment();
-  // Wrapping and show-invisibles are global but each tab's EditorState
-  // carries its own compartment value, so they're re-applied on every swap.
-  // The color theme is fully token-driven (CSS variables), so it needs no
-  // compartment or per-swap reconfiguration — see editor-theme.ts.
+  const phrases = new Compartment();
+  // Wrapping, show-invisibles, and the search-panel locale are global but
+  // each tab's EditorState carries its own compartment value, so they're
+  // re-applied on every swap. The color theme is fully token-driven (CSS
+  // variables), so it needs no compartment or per-swap reconfiguration —
+  // see editor-theme.ts.
   let currentWrapping: Extension = [];
   let currentInvisibles: Extension = [];
+  let currentPhrases: Extension = [];
   const extensions = [
     basicSetup,
     editorTheme,
     language.of([]),
     wrapping.of([]),
     invisibles.of([]),
+    phrases.of([]),
     EditorView.updateListener.of((update) => {
       wireSearchHistory(update.view);
       if (update.docChanged) onDocChanged();
@@ -308,6 +348,7 @@ export function createEditor(
         effects: [
           wrapping.reconfigure(currentWrapping),
           invisibles.reconfigure(currentInvisibles),
+          phrases.reconfigure(currentPhrases),
         ],
       });
       const head = view.state.selection.main.head;
@@ -370,6 +411,10 @@ export function createEditor(
     setShowInvisibles: (enabled) => {
       currentInvisibles = enabled ? invisiblesExtension : [];
       view.dispatch({ effects: invisibles.reconfigure(currentInvisibles) });
+    },
+    setLocale: (locale) => {
+      currentPhrases = EditorState.phrases.of(searchPanelPhrases(locale));
+      view.dispatch({ effects: phrases.reconfigure(currentPhrases) });
     },
     async setLanguage(filename, stillWanted) {
       const description = filename

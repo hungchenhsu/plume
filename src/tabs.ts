@@ -1,5 +1,6 @@
 import type { WindowChunk } from "./chunkwindow";
 import type { EditorBuffer } from "./editor";
+import { t } from "./i18n";
 
 export interface Doc {
   id: number;
@@ -95,7 +96,7 @@ export class TabStore {
       const close = document.createElement("button");
       close.className = doc.dirty ? "tab-close dirty" : "tab-close";
       close.textContent = doc.dirty ? "●" : "×";
-      close.ariaLabel = `Close ${doc.title}`;
+      close.ariaLabel = t("tabs.closeAria", doc.title);
       close.addEventListener("mousedown", (e) => e.stopPropagation());
       close.addEventListener("click", () => this.events.onClose(doc.id));
       tab.appendChild(close);
@@ -106,7 +107,7 @@ export class TabStore {
     const add = document.createElement("button");
     add.className = "tab-new";
     add.textContent = "+";
-    add.ariaLabel = "New tab";
+    add.ariaLabel = t("tabs.newTabAria");
     add.addEventListener("click", () => this.events.onNew());
     this.container.appendChild(add);
   }
