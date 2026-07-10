@@ -107,8 +107,10 @@ conversation). One coherent item per PR.
 - [ ] Per-extension default encoding — prefs table ext→encoding;
   confident detection still wins; round-trip tests
 - [x] Find/replace history dropdown
-- [ ] Startup-time budget test — scripted cold-start measurement with a
-  tracked threshold
+- [x] Startup-time budget test — scripted cold-start measurement with a
+  tracked threshold (local `scripts/startup-bench.mjs` + env-gated probe
+  mode; a CI job was attempted and removed — GitHub macOS runners never
+  start loading the WebView, see the script header)
 - [x] Encoding-detection diagnostics — status-bar popup showing the
   evidence behind the detection (BOM found, chardetng verdict)
 

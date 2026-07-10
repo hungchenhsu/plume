@@ -52,3 +52,12 @@ jobs:
       - name: Rust tests
         run: cargo test
         working-directory: src-tauri
+
+  # Note: a startup-bench job (release build + scripts/startup-bench.mjs
+  # with a hard threshold) was attempted here and removed on 2026-07-10.
+  # On GitHub's macOS runners the app's WKWebView never begins loading
+  # the page — native setup completes in ~1.7s, then silence; the
+  # on_page_load Started event never fires — so the startup probe cannot
+  # complete. An Aqua session is present and ad-hoc codesigning did not
+  # help; root cause undetermined. Run the benchmark locally instead
+  # (see scripts/startup-bench.mjs).

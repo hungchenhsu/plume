@@ -19,6 +19,7 @@ import {
   printWindow,
   readDocumentChunk,
   readDocumentChunkBefore,
+  reportStartupReady,
   saveBackup,
   saveDocument,
   saveSession,
@@ -920,4 +921,7 @@ void (async () => {
   for (const path of pending) {
     await openPath(path);
   }
+  // Cold-start probe hook: no-op unless PLUME_STARTUP_PROBE=1 (see
+  // scripts/startup-bench.mjs). Marks "frontend ready" for the benchmark.
+  void reportStartupReady().catch(() => {});
 })();

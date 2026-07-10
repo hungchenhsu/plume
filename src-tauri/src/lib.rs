@@ -7,6 +7,7 @@ mod prefs;
 mod recent;
 mod search;
 mod session;
+mod startup_probe;
 mod store;
 mod watcher;
 
@@ -220,6 +221,10 @@ fn save_document(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // As early as possible: the startup probe measures from here.
+    startup_probe::mark_process_start();
+    startup_probe::checkpoint("run() entered");
+
     let builder = tauri::Builder::default();
 
     // On Windows and Linux, opening an associated file launches a second
@@ -254,7 +259,15 @@ pub fn run() {
             // preferences via app.path(), which is unavailable until the
             // path resolver state is managed.
             app.set_menu(menu::build(app.handle())?)?;
+            startup_probe::checkpoint("setup() completed");
             Ok(())
+        })
+        .on_page_load(|_window, payload| {
+            use tauri::webview::PageLoadEvent;
+            match payload.event() {
+                PageLoadEvent::Started => startup_probe::checkpoint("on_page_load: Started"),
+                PageLoadEvent::Finished => startup_probe::checkpoint("on_page_load: Finished"),
+            }
         })
         .on_menu_event(|app, event| {
             let _ = app.emit("plume://menu", event.id().0.as_str());
@@ -280,7 +293,8 @@ pub fn run() {
             backup::save_backup,
             backup::load_backup,
             backup::delete_backup,
-            hexdump::read_hex_dump
+            hexdump::read_hex_dump,
+            startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
