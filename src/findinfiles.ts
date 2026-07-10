@@ -1,5 +1,6 @@
 // Find-in-files panel: pick a folder, type a query, click a result to jump.
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { t } from "./i18n";
 import { searchInFolder, type SearchMatch } from "./ipc";
 
 let lastFolder: string | null = null;
@@ -23,12 +24,14 @@ export function showFindInFiles(
 
   const folderButton = document.createElement("button");
   folderButton.className = "fif-folder";
-  folderButton.textContent = lastFolder ? basename(lastFolder) : "Choose folder…";
+  folderButton.textContent = lastFolder
+    ? basename(lastFolder)
+    : t("findInFiles.chooseFolder");
   if (lastFolder) folderButton.title = lastFolder;
 
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "Search in files…";
+  input.placeholder = t("findInFiles.searchPlaceholder");
 
   const caseLabel = document.createElement("label");
   caseLabel.className = "fif-case";
@@ -36,7 +39,7 @@ export function showFindInFiles(
   caseBox.type = "checkbox";
   caseLabel.appendChild(caseBox);
   caseLabel.appendChild(document.createTextNode("Aa"));
-  caseLabel.title = "Match case";
+  caseLabel.title = t("findInFiles.matchCase");
 
   const regexLabel = document.createElement("label");
   regexLabel.className = "fif-case";
@@ -44,7 +47,7 @@ export function showFindInFiles(
   regexBox.type = "checkbox";
   regexLabel.appendChild(regexBox);
   regexLabel.appendChild(document.createTextNode(".*"));
-  regexLabel.title = "Regular expression";
+  regexLabel.title = t("findInFiles.regex");
 
   controls.appendChild(folderButton);
   controls.appendChild(input);
@@ -106,7 +109,7 @@ export function showFindInFiles(
     const query = input.value;
     if (!lastFolder || query === "") return;
     searching = true;
-    status.textContent = "Searching…";
+    status.textContent = t("findInFiles.searching");
     list.replaceChildren();
     try {
       const results = await searchInFolder(
@@ -116,9 +119,12 @@ export function showFindInFiles(
         regexBox.checked,
       );
       const count = results.matches.length;
-      status.textContent =
-        `${count}${results.truncated ? "+" : ""} match${count === 1 ? "" : "es"}` +
-        ` in ${results.filesScanned} files`;
+      status.textContent = t(
+        "findInFiles.status",
+        count,
+        results.truncated,
+        results.filesScanned,
+      );
       renderMatches(results.matches);
     } catch (error) {
       status.textContent = String(error);

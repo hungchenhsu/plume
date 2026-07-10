@@ -12,6 +12,9 @@ pub struct Preferences {
     pub font_size: u32,
     /// "system" | "light" | "dark"
     pub theme: String,
+    /// UI language: "system" | "en" | "zh-TW". "system" resolves via the OS
+    /// locale (see `menu::resolve_lang`, `src/i18n.ts` on the frontend).
+    pub language: String,
     /// Default encoding for new (untitled) documents.
     pub default_encoding: String,
     pub default_bom: bool,
@@ -34,6 +37,7 @@ impl Default for Preferences {
             font_family: String::new(),
             font_size: 13,
             theme: "system".into(),
+            language: "system".into(),
             default_encoding: "UTF-8".into(),
             default_bom: false,
             word_wrap: true,
@@ -71,6 +75,7 @@ mod tests {
         let prefs = Preferences::default();
         assert_eq!(prefs.font_size, 13);
         assert_eq!(prefs.theme, "system");
+        assert_eq!(prefs.language, "system");
         assert_eq!(prefs.default_encoding, "UTF-8");
         assert!(!prefs.default_bom);
     }
@@ -91,6 +96,7 @@ mod tests {
             font_family: "SF Mono".into(),
             font_size: 15,
             theme: "dark".into(),
+            language: "zh-TW".into(),
             default_encoding: "Big5".into(),
             default_bom: false,
             word_wrap: false,
@@ -102,6 +108,7 @@ mod tests {
         assert_eq!(back.font_family, "SF Mono");
         assert_eq!(back.font_size, 15);
         assert_eq!(back.theme, "dark");
+        assert_eq!(back.language, "zh-TW");
         assert_eq!(back.default_encoding, "Big5");
         assert!(back.show_invisibles);
         assert_eq!(
@@ -130,6 +137,45 @@ mod tests {
         assert_eq!(prefs.theme, "dark");
         assert_eq!(prefs.default_encoding, "Big5");
         assert!(!prefs.word_wrap);
+    }
+
+    /// `language` was added after `show_invisibles` (UI i18n); an old
+    /// `preferences.json` written by a build before it existed has no such
+    /// key. `serde(default)` must still deserialize it cleanly, defaulting
+    /// `language` to "system" (follow the OS locale) and leaving every
+    /// pre-existing field intact.
+    #[test]
+    fn old_preferences_json_without_language_loads_with_default_system() {
+        let json = r#"{
+            "fontFamily": "SF Mono",
+            "fontSize": 15,
+            "theme": "dark",
+            "defaultEncoding": "Big5",
+            "defaultBom": false,
+            "wordWrap": false,
+            "showInvisibles": true
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.language, "system");
+        assert_eq!(prefs.font_family, "SF Mono");
+        assert_eq!(prefs.theme, "dark");
+        assert!(prefs.show_invisibles);
+    }
+
+    /// `language` accepts "en" and "zh-TW" and round-trips through JSON —
+    /// pins the values the frontend's language select and menu.rs's
+    /// `resolve_lang` agree on (see src/i18n.ts `Locale`).
+    #[test]
+    fn language_values_round_trip_through_json() {
+        for language in ["system", "en", "zh-TW"] {
+            let prefs = Preferences {
+                language: language.into(),
+                ..Preferences::default()
+            };
+            let json = serde_json::to_vec(&prefs).unwrap();
+            let back: Preferences = serde_json::from_slice(&json).unwrap();
+            assert_eq!(back.language, language);
+        }
     }
 
     /// `extension_encodings` is new: an old `preferences.json` written

@@ -1,4 +1,6 @@
 // Minimal "Go to Line" prompt.
+import { t } from "./i18n";
+
 export function showGoToLine(onGo: (line: number) => void): void {
   if (document.querySelector(".goto-overlay")) return;
 
@@ -10,7 +12,7 @@ export function showGoToLine(onGo: (line: number) => void): void {
   const input = document.createElement("input");
   input.type = "text";
   input.inputMode = "numeric";
-  input.placeholder = "Go to line…";
+  input.placeholder = t("goto.placeholder");
   panel.appendChild(input);
 
   const close = (): void => {

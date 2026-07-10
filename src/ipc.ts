@@ -142,6 +142,11 @@ export interface Preferences {
   fontFamily: string;
   fontSize: number;
   theme: string;
+  /** UI language: "system" | "en" | "zh-TW". "system" resolves via
+   *  navigator.language on the frontend (see src/i18n.ts effectiveLocale)
+   *  and via the OS locale API on the Rust side for the native menu (see
+   *  src-tauri/src/menu.rs). */
+  language: string;
   defaultEncoding: string;
   defaultBom: boolean;
   wordWrap: boolean;
@@ -166,6 +171,17 @@ export function savePreferences(preferences: Preferences): Promise<void> {
  *  THEMES ("system" | "light" | "dark" | "paper" | "dusk"). */
 export function syncThemeMenu(theme: string): Promise<void> {
   return invoke<void>("sync_theme_menu", { theme });
+}
+
+/** Relabel the native menu's custom items (File/Edit/View submenus, and
+ *  every `with_id` item inside them) to `locale`'s labels. Called whenever
+ *  the resolved locale changes (Preferences dialog, or the "System"
+ *  preference tracking an OS locale change). Best-effort like
+ *  `syncThemeMenu`: if it fails, the frontend UI is already correct and the
+ *  menu simply catches up on next relaunch. `locale` is "en" | "zh-TW" —
+ *  already resolved, never "system" (see src/i18n.ts effectiveLocale). */
+export function retitleMenu(locale: string): Promise<void> {
+  return invoke<void>("retitle_menu", { locale });
 }
 
 /** Files queued by the OS (file association / CLI) before startup. */

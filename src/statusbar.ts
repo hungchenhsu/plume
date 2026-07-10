@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 interface StatusInfo {
   path: string | null;
   title: string;
@@ -20,8 +22,24 @@ const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
 
+// The decode-warning button's label never changes with document state (only
+// its visibility does, via `updateStatusBar`), so it only needs a refresh
+// when the locale changes. See main.ts's onLocaleChange subscription.
+export function applyStaticLabels(): void {
+  warningEl.textContent = t("statusbar.decodeWarning");
+}
+
+let lastCursor: { line: number; column: number } = { line: 1, column: 1 };
+
 export function updateCursor(line: number, column: number): void {
-  cursorEl.textContent = `Ln ${line}, Col ${column}`;
+  lastCursor = { line, column };
+  cursorEl.textContent = t("statusbar.cursor", line, column);
+}
+
+/** Re-render the cursor label after a locale change, using the last known
+ *  position (the editor doesn't need to re-report it). */
+export function refreshCursor(): void {
+  updateCursor(lastCursor.line, lastCursor.column);
 }
 
 /** Show/hide the large-file pager buttons. Pass null to hide both. */
@@ -41,17 +59,27 @@ export function formatSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+let lastDoc: StatusInfo | null = null;
+
 export function updateStatusBar(doc: StatusInfo | null): void {
-  pathEl.textContent = doc ? (doc.path ?? doc.title) : "No file";
+  lastDoc = doc;
+  pathEl.textContent = doc ? (doc.path ?? doc.title) : t("statusbar.noFile");
   encodingEl.textContent = doc
     ? doc.withBom
-      ? `${doc.encoding} BOM`
+      ? t("statusbar.encodingWithBom", doc.encoding)
       : doc.encoding
     : "";
   lineEndingEl.textContent = doc?.lineEnding ?? "";
   warningEl.hidden = !doc?.malformed;
   readonlyEl.hidden = !doc?.truncated;
   readonlyEl.textContent = doc?.truncated
-    ? `Read-only preview of ${formatSize(doc.totalSize)} file`
+    ? t("statusbar.readonlyPreview", formatSize(doc.totalSize))
     : "";
+}
+
+/** Re-render the status bar after a locale change, using the last known
+ *  document (the caller doesn't need to re-supply it). */
+export function refreshStatusBar(): void {
+  applyStaticLabels();
+  updateStatusBar(lastDoc);
 }

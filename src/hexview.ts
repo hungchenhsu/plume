@@ -3,6 +3,7 @@
 // strictly read-only: no editing, no save path — it only ever displays the
 // plain-text hex dump the Rust core already formatted (raw bytes never
 // cross IPC).
+import { t } from "./i18n";
 import { readHexDump } from "./ipc";
 import { formatSize } from "./statusbar";
 
@@ -19,9 +20,9 @@ export function hexPreviewCaption(
   totalSize: number,
 ): string {
   if (shownBytes >= totalSize) {
-    return `showing all ${formatSize(totalSize)}`;
+    return t("hexview.showingAll", formatSize(totalSize));
   }
-  return `showing first ${formatSize(shownBytes)} of ${formatSize(totalSize)}`;
+  return t("hexview.showingPartial", formatSize(shownBytes), formatSize(totalSize));
 }
 
 export function showHexView(path: string, title: string): void {
@@ -39,7 +40,7 @@ export function showHexView(path: string, title: string): void {
   titleEl.textContent = title || basename(path);
   const captionEl = document.createElement("span");
   captionEl.className = "hexview-caption";
-  captionEl.textContent = "Loading…";
+  captionEl.textContent = t("common.loading");
   header.appendChild(titleEl);
   header.appendChild(captionEl);
   panel.appendChild(header);

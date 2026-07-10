@@ -1,9 +1,11 @@
 // Preferences state, application, and the in-window settings dialog.
 import type { EditorHandle } from "./editor";
-import { ENCODINGS, REOPEN_ENCODINGS } from "./encodings";
+import { encodingChoices, reopenEncodingChoices } from "./encodings";
 import { normalizeTable } from "./extensionEncodings";
+import { effectiveLocale, setLocale, t, type Locale } from "./i18n";
 import {
   loadPreferences,
+  retitleMenu,
   savePreferences,
   syncThemeMenu,
   type Preferences,
@@ -14,19 +16,36 @@ const FALLBACK_FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 /** Built-in theme choices: "system" plus two token sets each for a light
  *  and a dark base (see styles.css `html[data-theme]` blocks). Shared by
  *  the Preferences dialog select and the View > Theme menu (menu.rs uses
- *  the same ids prefixed with "theme_"). */
-export const THEMES: { value: string; label: string }[] = [
-  { value: "system", label: "Follow system" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "paper", label: "Paper" },
-  { value: "dusk", label: "Dusk" },
-];
+ *  the same ids prefixed with "theme_"). Labels are localized, so this is a
+ *  function — recompute after a locale change. */
+export function themeChoices(): { value: string; label: string }[] {
+  return [
+    { value: "system", label: t("preferences.themeSystem") },
+    { value: "light", label: t("preferences.themeLight") },
+    { value: "dark", label: t("preferences.themeDark") },
+    { value: "paper", label: t("preferences.themePaper") },
+    { value: "dusk", label: t("preferences.themeDusk") },
+  ];
+}
+
+/** Language preference choices. "System" is localized (it's a UI concept,
+ *  like the theme's "Follow system"); "English" and "繁體中文" are language
+ *  endonyms and intentionally not translated — the same convention used by
+ *  every OS language picker, so a user can always find their language
+ *  regardless of the UI's current language. */
+export function languageChoices(): { value: string; label: string }[] {
+  return [
+    { value: "system", label: t("preferences.langSystemOption") },
+    { value: "en", label: "English" },
+    { value: "zh-TW", label: "繁體中文" },
+  ];
+}
 
 let current: Preferences = {
   fontFamily: "",
   fontSize: 13,
   theme: "system",
+  language: "system",
   defaultEncoding: "UTF-8",
   defaultBom: false,
   wordWrap: true,
@@ -62,11 +81,26 @@ function applyTheme(): void {
   }
 }
 
+/** Resolve `current.language` to an effective `Locale`, apply it (updates
+ *  `t()` output and `<html lang>`), and best-effort ask the native menu to
+ *  relabel itself. Returns the resolved locale. */
+function applyLanguage(): Locale {
+  const locale = effectiveLocale(current.language);
+  setLocale(locale);
+  document.documentElement.lang = locale;
+  void retitleMenu(locale).catch(() => {
+    // Best-effort; the frontend UI is already correct either way.
+  });
+  return locale;
+}
+
 function applyAll(): void {
   applyFont();
   applyTheme();
+  const locale = applyLanguage();
   editorRef?.setLineWrapping(current.wordWrap);
   editorRef?.setShowInvisibles(current.showInvisibles);
+  editorRef?.setLocale(locale);
 }
 
 const FONT_SIZE_MIN = 9;
@@ -165,14 +199,12 @@ function extensionTable(initial: [string, string][]): {
 
   const heading = document.createElement("div");
   heading.className = "prefs-ext-heading";
-  heading.textContent = "Per-extension encodings";
+  heading.textContent = t("preferences.extHeading");
   section.appendChild(heading);
 
   const hint = document.createElement("div");
   hint.className = "prefs-ext-hint";
-  hint.textContent =
-    "Files with these extensions open with the given encoding; a BOM, " +
-    "valid UTF-8 text, or a byte mismatch still wins.";
+  hint.textContent = t("preferences.extHint");
   section.appendChild(hint);
 
   const rows = document.createElement("div");
@@ -186,11 +218,11 @@ function extensionTable(initial: [string, string][]): {
     const ext = document.createElement("input");
     ext.type = "text";
     ext.className = "prefs-ext-name";
-    ext.placeholder = "txt";
+    ext.placeholder = t("preferences.extPlaceholder");
     ext.value = extension;
 
     const enc = select(
-      REOPEN_ENCODINGS.map((e) => ({ label: e.label, value: e.value })),
+      reopenEncodingChoices().map((e) => ({ label: e.label, value: e.value })),
     );
     enc.className = "prefs-ext-encoding";
     enc.value = encoding;
@@ -200,7 +232,7 @@ function extensionTable(initial: [string, string][]): {
     remove.type = "button";
     remove.className = "prefs-ext-remove";
     remove.textContent = "✕";
-    remove.title = "Remove";
+    remove.title = t("preferences.extRemoveTitle");
     remove.addEventListener("click", () => row.remove());
 
     row.appendChild(ext);
@@ -214,7 +246,7 @@ function extensionTable(initial: [string, string][]): {
   const add = document.createElement("button");
   add.type = "button";
   add.className = "prefs-ext-add";
-  add.textContent = "Add";
+  add.textContent = t("preferences.extAdd");
   add.addEventListener("click", () => {
     addRow("", "UTF-8");
     const inputs = rows.querySelectorAll<HTMLInputElement>(".prefs-ext-name");
@@ -244,35 +276,40 @@ export function showPreferencesDialog(): void {
   dialog.className = "prefs-dialog";
 
   const title = document.createElement("h2");
-  title.textContent = "Preferences";
+  title.textContent = t("preferences.title");
   dialog.appendChild(title);
 
   const fontFamily = document.createElement("input");
   fontFamily.type = "text";
-  fontFamily.placeholder = "System default";
+  fontFamily.placeholder = t("preferences.editorFontPlaceholder");
   fontFamily.value = current.fontFamily;
-  dialog.appendChild(row("Editor font", fontFamily));
+  dialog.appendChild(row(t("preferences.editorFont"), fontFamily));
 
   const fontSize = document.createElement("input");
   fontSize.type = "number";
   fontSize.min = "9";
   fontSize.max = "32";
   fontSize.value = String(current.fontSize);
-  dialog.appendChild(row("Font size", fontSize));
+  dialog.appendChild(row(t("preferences.fontSize"), fontSize));
 
-  const theme = select(THEMES.map((t) => ({ label: t.label, value: t.value })));
+  const theme = select(themeChoices());
   theme.value = current.theme;
-  dialog.appendChild(row("Theme", theme));
+  dialog.appendChild(row(t("preferences.theme"), theme));
+
+  const language = select(languageChoices());
+  language.value = current.language;
+  if (language.selectedIndex < 0) language.selectedIndex = 0;
+  dialog.appendChild(row(t("preferences.language"), language));
 
   const encoding = select(
-    ENCODINGS.map((e) => ({
+    encodingChoices().map((e) => ({
       label: e.label,
       value: `${e.value} ${e.withBom}`,
     })),
   );
   encoding.value = `${current.defaultEncoding} ${current.defaultBom}`;
   if (encoding.selectedIndex < 0) encoding.selectedIndex = 0;
-  dialog.appendChild(row("Encoding for new files", encoding));
+  dialog.appendChild(row(t("preferences.encodingForNewFiles"), encoding));
 
   const extensions = extensionTable(current.extensionEncodings);
   dialog.appendChild(extensions.element);
@@ -280,9 +317,9 @@ export function showPreferencesDialog(): void {
   const buttons = document.createElement("div");
   buttons.className = "prefs-buttons";
   const cancel = document.createElement("button");
-  cancel.textContent = "Cancel";
+  cancel.textContent = t("preferences.cancel");
   const save = document.createElement("button");
-  save.textContent = "Save";
+  save.textContent = t("preferences.save");
   save.className = "prefs-save";
   buttons.appendChild(cancel);
   buttons.appendChild(save);
@@ -303,6 +340,7 @@ export function showPreferencesDialog(): void {
       fontFamily: fontFamily.value,
       fontSize: Number.isFinite(size) ? Math.min(Math.max(size, 9), 32) : 13,
       theme: theme.value,
+      language: language.value,
       defaultEncoding: encValue,
       defaultBom: encBom === "true",
       wordWrap: current.wordWrap,

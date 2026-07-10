@@ -1,5 +1,6 @@
 // Three-way close confirmation (the native dialog plugin only offers two
 // buttons). Modal: clicking outside does nothing; Esc cancels, Enter saves.
+import { t } from "./i18n";
 
 export type CloseChoice = "save" | "discard" | "cancel";
 
@@ -11,7 +12,7 @@ export function showCloseConfirm(title: string): Promise<CloseChoice> {
     dialog.className = "confirm-dialog";
 
     const message = document.createElement("p");
-    message.textContent = `"${title}" has unsaved changes.`;
+    message.textContent = t("confirm.unsavedChanges", title);
     dialog.appendChild(message);
 
     const buttons = document.createElement("div");
@@ -31,9 +32,9 @@ export function showCloseConfirm(title: string): Promise<CloseChoice> {
       return button;
     };
 
-    make("Don't Save", "discard");
-    make("Cancel", "cancel");
-    const save = make("Save", "save");
+    make(t("confirm.dontSave"), "discard");
+    make(t("confirm.cancel"), "cancel");
+    const save = make(t("confirm.save"), "save");
     save.className = "confirm-primary";
 
     const onKey = (event: KeyboardEvent): void => {
