@@ -2,7 +2,9 @@
 
 Operational guidance for working in this repo. The task queue is
 [ROADMAP.md](ROADMAP.md); design principles and hard constraints are in
-[ARCHITECTURE.md](ARCHITECTURE.md). Read both before making changes.
+[ARCHITECTURE.md](ARCHITECTURE.md); strategy, open decision gates, and
+the session handoff protocol are in [DIRECTION.md](DIRECTION.md). Read
+them before making changes.
 Agent judgment specifics — danger domains, verification matrix, permission
 tiers, known dead ends — live in
 [.claude/judgment-overlay.md](.claude/judgment-overlay.md); on conflict,

@@ -1,5 +1,10 @@
 # Roadmap
 
+This is the execution queue only. Strategy, decision gates, phase plan,
+scenario playbook, and the pre-triage feature backlog live in
+[DIRECTION.md](DIRECTION.md) — items are promoted from there into this
+file once the user signs off.
+
 This roadmap is deliberately narrow. The goal of v0.1 is a tool you can genuinely use every day to open, read, and edit text files — not half an IDE.
 
 ## North star
