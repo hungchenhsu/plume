@@ -29,6 +29,23 @@ fn probe_enabled() -> bool {
     std::env::var_os("PLUME_STARTUP_PROBE").is_some()
 }
 
+/// Emit a diagnostic checkpoint to stderr in probe mode only. Used to
+/// locate exactly how far native startup progresses on a CI runner where
+/// the app is otherwise silent (frontend JS never executes). No-op unless
+/// `PLUME_STARTUP_PROBE` is set, so normal launches are unaffected. Writes
+/// to stderr so it never pollutes the `startup_ms=` line the bench parses.
+pub fn checkpoint(label: &str) {
+    if !probe_enabled() {
+        return;
+    }
+    let elapsed_ms = PROCESS_START
+        .get()
+        .map(|start| start.elapsed().as_millis())
+        .unwrap_or(0);
+    eprintln!("startup_probe: {label} (+{elapsed_ms}ms)");
+    let _ = std::io::stderr().flush();
+}
+
 /// Machine-readable report line the bench script parses.
 fn format_report(elapsed_ms: u128) -> String {
     format!("startup_ms={elapsed_ms}")

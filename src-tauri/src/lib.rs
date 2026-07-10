@@ -223,6 +223,7 @@ fn save_document(
 pub fn run() {
     // As early as possible: the startup probe measures from here.
     startup_probe::mark_process_start();
+    startup_probe::checkpoint("run() entered");
 
     let builder = tauri::Builder::default();
 
@@ -258,7 +259,15 @@ pub fn run() {
             // preferences via app.path(), which is unavailable until the
             // path resolver state is managed.
             app.set_menu(menu::build(app.handle())?)?;
+            startup_probe::checkpoint("setup() completed");
             Ok(())
+        })
+        .on_page_load(|_window, payload| {
+            use tauri::webview::PageLoadEvent;
+            match payload.event() {
+                PageLoadEvent::Started => startup_probe::checkpoint("on_page_load: Started"),
+                PageLoadEvent::Finished => startup_probe::checkpoint("on_page_load: Finished"),
+            }
         })
         .on_menu_event(|app, event| {
             let _ = app.emit("plume://menu", event.id().0.as_str());
