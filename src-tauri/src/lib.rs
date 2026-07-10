@@ -217,6 +217,7 @@ pub fn run() {
             session::save_session,
             prefs::load_preferences,
             prefs::save_preferences,
+            menu::sync_theme_menu,
             take_pending_files,
             print_window,
             chunk::read_document_chunk,

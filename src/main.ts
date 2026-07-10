@@ -41,6 +41,7 @@ import {
   adjustFontSize,
   initPreferences,
   preferences,
+  setTheme,
   showPreferencesDialog,
   toggleWordWrap,
 } from "./preferences";
@@ -759,6 +760,13 @@ void listen<string>("plume://menu", (event) => {
         });
       break;
     }
+    default:
+      // The View > Theme submenu emits "theme_<value>" for each of its
+      // radio entries (menu.rs); route those without a case per value.
+      if (event.payload.startsWith("theme_")) {
+        setTheme(event.payload.slice("theme_".length));
+      }
+      break;
   }
 });
 

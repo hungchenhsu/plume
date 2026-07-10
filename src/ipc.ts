@@ -113,6 +113,14 @@ export function savePreferences(preferences: Preferences): Promise<void> {
   return invoke<void>("save_preferences", { preferences });
 }
 
+/** Re-check the matching entry in the View > Theme menu (a native radio
+ *  group) after the theme changes from either the menu itself or the
+ *  Preferences dialog. `theme` is one of the values in preferences.ts
+ *  THEMES ("system" | "light" | "dark" | "paper" | "dusk"). */
+export function syncThemeMenu(theme: string): Promise<void> {
+  return invoke<void>("sync_theme_menu", { theme });
+}
+
 /** Files queued by the OS (file association / CLI) before startup. */
 export function takePendingFiles(): Promise<string[]> {
   return invoke<string[]>("take_pending_files");
