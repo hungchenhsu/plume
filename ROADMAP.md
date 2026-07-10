@@ -74,6 +74,11 @@ distribution) are tracked outside this list.
   window slides through the file with chunk prepend/append plus trimming
   on the opposite edge, bounded at 8 chunks ≈ 16 MB; ◀ ▶ remain as jump
   controls)
+- [x] Full visual refresh — semantic design-token system in styles.css
+  (color, spacing, radius, shadow, type-scale tokens; light/dark via the
+  existing three-layer mechanism) and a token-driven CM6 editor theme
+  (`src/editor-theme.ts`) replacing `@codemirror/theme-one-dark`, so chrome
+  and editor share one visual language
 
 ## v0.2 — feature cycle (approved 2026-07-10)
 

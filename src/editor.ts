@@ -6,7 +6,7 @@ import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
 
 export type EditorBuffer = EditorState;
@@ -38,8 +38,6 @@ export interface EditorHandle {
   openSearch(): void;
   /** Move the cursor to a 1-based line and scroll it into view. */
   goToLine(line: number): void;
-  /** Switch the editor between the light and dark color theme. */
-  setDarkTheme(dark: boolean): void;
   /** Toggle soft wrapping of long lines. */
   setLineWrapping(enabled: boolean): void;
   /**
@@ -72,16 +70,16 @@ export function createEditor(
   onViewportNearStart: () => void,
 ): EditorHandle {
   const language = new Compartment();
-  const theme = new Compartment();
   const wrapping = new Compartment();
-  // Theme and wrapping are global but each tab's EditorState carries its
-  // own compartment values, so both are re-applied on every swap.
-  let currentTheme: Extension = [];
+  // Wrapping is global but each tab's EditorState carries its own
+  // compartment value, so it's re-applied on every swap. The color theme is
+  // fully token-driven (CSS variables), so it needs no compartment or
+  // per-swap reconfiguration — see editor-theme.ts.
   let currentWrapping: Extension = [];
   const extensions = [
     basicSetup,
+    editorTheme,
     language.of([]),
-    theme.of([]),
     wrapping.of([]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onDocChanged();
@@ -120,10 +118,7 @@ export function createEditor(
     swap: (buffer) => {
       view.setState(buffer);
       view.dispatch({
-        effects: [
-          theme.reconfigure(currentTheme),
-          wrapping.reconfigure(currentWrapping),
-        ],
+        effects: wrapping.reconfigure(currentWrapping),
       });
       const head = view.state.selection.main.head;
       const line = view.state.doc.lineAt(head);
@@ -177,10 +172,6 @@ export function createEditor(
         effects: EditorView.scrollIntoView(info.from, { y: "center" }),
       });
       view.focus();
-    },
-    setDarkTheme: (dark) => {
-      currentTheme = dark ? oneDark : [];
-      view.dispatch({ effects: theme.reconfigure(currentTheme) });
     },
     setLineWrapping: (enabled) => {
       currentWrapping = enabled ? EditorView.lineWrapping : [];
