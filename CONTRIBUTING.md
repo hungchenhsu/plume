@@ -24,25 +24,29 @@ Open an issue first if you're unsure.
 
 ## Development setup
 
-Prerequisites: Node.js ≥ 20, Rust stable (via [rustup](https://rustup.rs/)),
-and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for
-your OS.
+Full environment instructions (macOS and Windows), platform-specific
+notes, and troubleshooting live in [docs/dev-setup.md](docs/dev-setup.md).
+Short version:
 
 ```sh
 npm install
+npm run build     # required once before any cargo command
 npm run tauri dev
 ```
 
 ## Before submitting a PR
 
+All of these must pass locally:
+
 ```sh
-# Frontend: must compile cleanly
+# Frontend: typecheck + bundle, then unit tests
 npm run build
+npm test
 
 # Rust: format, lint, test
 cd src-tauri
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
