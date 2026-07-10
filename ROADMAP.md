@@ -75,6 +75,38 @@ distribution) are tracked outside this list.
   on the opposite edge, bounded at 8 chunks ≈ 16 MB; ◀ ▶ remain as jump
   controls)
 
+## v0.2 — feature cycle (approved 2026-07-10)
+
+Scope approved by the user on 2026-07-10 (promoted from DIRECTION.md §6;
+autosave-to-disk explicitly declined, multi-window still awaiting a design
+conversation). One coherent item per PR.
+
+**UI**
+- [ ] Full visual refresh: redesigned visual language (tab bar, status
+  bar, dialogs, find/replace panel) on a CSS design-token foundation;
+  light and dark modes both complete
+- [ ] Built-in theme system: a few curated themes (light / dark /
+  eye-friendly) built on the design tokens; View-menu switching,
+  persisted preference. Built-ins + CSS variables only — no custom
+  theme import
+- [ ] UI i18n, zh-TW first: lightweight typed dictionary module (no
+  runtime dependency), covering UI strings and native menus; language
+  preference follows the system by default with English fallback
+
+**Encoding & editing (Tier 1 promotions)**
+- [ ] Show invisibles toggle (spaces / tabs / EOL marks) — View menu,
+  persisted pref
+- [ ] Hex/bytes preview for undecodable files — read-only view offered
+  from the decode-warning UI; hex dump formatted as text in Rust (raw
+  bytes never cross IPC)
+- [ ] Per-extension default encoding — prefs table ext→encoding;
+  confident detection still wins; round-trip tests
+- [ ] Find/replace history dropdown
+- [ ] Startup-time budget test — scripted cold-start measurement with a
+  tracked threshold
+- [ ] Encoding-detection diagnostics — status-bar popup showing the
+  evidence behind the detection (BOM found, chardetng verdict)
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
