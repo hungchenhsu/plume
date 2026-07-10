@@ -32,6 +32,7 @@ import {
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
+import { showDetectionCard } from "./detectcard";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
@@ -598,6 +599,16 @@ function showEncodingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
   showMenu(anchor, [
+    {
+      label: `Why ${doc.encoding}?`,
+      // Untitled documents have no file on disk to re-read and explain.
+      disabled: doc.path === null,
+      action: () => {
+        if (doc.path) {
+          showDetectionCard(anchor, doc.path, doc.title, doc.encoding);
+        }
+      },
+    },
     {
       label: "Reopen with Encoding",
       disabled: doc.path === null,

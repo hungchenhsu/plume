@@ -109,7 +109,7 @@ conversation). One coherent item per PR.
 - [x] Find/replace history dropdown
 - [ ] Startup-time budget test — scripted cold-start measurement with a
   tracked threshold
-- [ ] Encoding-detection diagnostics — status-bar popup showing the
+- [x] Encoding-detection diagnostics — status-bar popup showing the
   evidence behind the detection (BOM found, chardetng verdict)
 
 ## Explicit non-goals

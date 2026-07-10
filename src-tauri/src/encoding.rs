@@ -14,27 +14,84 @@ pub struct DecodedText {
     pub malformed: bool,
 }
 
-/// Decode bytes by sniffing a BOM first and falling back to chardetng.
-pub fn decode_auto(bytes: &[u8]) -> DecodedText {
-    if let Some((encoding, _bom_len)) = Encoding::for_bom(bytes) {
-        let (content, malformed) = encoding.decode_with_bom_removal(bytes);
-        return DecodedText {
-            content: content.into_owned(),
-            encoding: encoding.name().to_string(),
-            had_bom: true,
-            malformed,
-        };
-    }
+/// Reason `Detection::chosen` was picked: a BOM was found, chardetng made a
+/// statistical call, or there were no bytes to analyze (empty input).
+pub const REASON_BOM: &str = "bom";
+pub const REASON_DETECTOR: &str = "detector";
+pub const REASON_FALLBACK: &str = "fallback";
+
+/// Evidence gathered while auto-detecting an encoding: what BOM (if any)
+/// was found, what chardetng concluded from the sample, and which of the
+/// two `decode_auto` actually used to decode.
+pub struct Detection {
+    pub bom: Option<&'static Encoding>,
+    pub detector_guess: &'static Encoding,
+    pub chosen: &'static Encoding,
+    pub reason: &'static str,
+}
+
+/// Run chardetng over `bytes` and return its guess.
+fn detector_guess(bytes: &[u8]) -> &'static Encoding {
     let mut detector = EncodingDetector::new();
     detector.feed(bytes, true);
-    let encoding = detector.guess(None, true);
-    let (content, malformed) = encoding.decode_without_bom_handling(bytes);
+    detector.guess(None, true)
+}
+
+/// Sniff a BOM and run chardetng over `bytes`, returning the full evidence
+/// behind the detection `decode_auto` would use. Shared by `decode_auto`
+/// (which only needs `chosen`) and the `explain_detection` diagnostics
+/// command (which reports all of it), so both stay in lockstep by
+/// construction.
+pub fn detect(bytes: &[u8]) -> Detection {
+    let guess = detector_guess(bytes);
+    if let Some((encoding, _bom_len)) = Encoding::for_bom(bytes) {
+        return Detection {
+            bom: Some(encoding),
+            detector_guess: guess,
+            chosen: encoding,
+            reason: REASON_BOM,
+        };
+    }
+    let reason = if bytes.is_empty() {
+        REASON_FALLBACK
+    } else {
+        REASON_DETECTOR
+    };
+    Detection {
+        bom: None,
+        detector_guess: guess,
+        chosen: guess,
+        reason,
+    }
+}
+
+/// Decode bytes by sniffing a BOM first and falling back to chardetng.
+pub fn decode_auto(bytes: &[u8]) -> DecodedText {
+    let detection = detect(bytes);
+    let encoding = detection.chosen;
+    let (content, malformed) = if detection.bom.is_some() {
+        encoding.decode_with_bom_removal(bytes)
+    } else {
+        encoding.decode_without_bom_handling(bytes)
+    };
     DecodedText {
         content: content.into_owned(),
         encoding: encoding.name().to_string(),
-        had_bom: false,
+        had_bom: detection.bom.is_some(),
         malformed,
     }
+}
+
+/// Human-readable description of a BOM for diagnostics, e.g.
+/// "UTF-8 BOM (EF BB BF)". Returns `None` when no BOM was found.
+pub fn describe_bom(bytes: &[u8]) -> Option<String> {
+    let (encoding, bom_len) = Encoding::for_bom(bytes)?;
+    let hex = bytes[..bom_len]
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!("{} BOM ({hex})", encoding.name()))
 }
 
 /// Decode bytes with an encoding explicitly chosen by the user.
@@ -155,6 +212,68 @@ mod tests {
     #[test]
     fn explicit_decode_rejects_unknown_label() {
         assert!(decode_with(b"hi", "not-an-encoding").is_err());
+    }
+
+    /// `detect().chosen` must always agree with `decode_auto`'s reported
+    /// encoding — `explain_detection` reports the former, `open_document`
+    /// decodes with the latter, and they must never disagree.
+    #[test]
+    fn detect_agrees_with_decode_auto_utf8_bom() {
+        let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
+        let detection = detect(&bytes);
+        assert_eq!(detection.chosen.name(), decode_auto(&bytes).encoding);
+        assert_eq!(detection.reason, REASON_BOM);
+        assert_eq!(detection.bom.unwrap().name(), "UTF-8");
+        assert_eq!(
+            describe_bom(&bytes).as_deref(),
+            Some("UTF-8 BOM (EF BB BF)")
+        );
+    }
+
+    #[test]
+    fn detect_agrees_with_decode_auto_utf16le_bom() {
+        let (bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        let detection = detect(&bytes);
+        assert_eq!(detection.chosen.name(), decode_auto(&bytes).encoding);
+        assert_eq!(detection.reason, REASON_BOM);
+        assert_eq!(detection.bom.unwrap().name(), "UTF-16LE");
+        assert_eq!(
+            describe_bom(&bytes).as_deref(),
+            Some("UTF-16LE BOM (FF FE)")
+        );
+    }
+
+    #[test]
+    fn detect_agrees_with_decode_auto_plain_ascii() {
+        let bytes = b"hello world, this is plain ascii text with no accents";
+        let detection = detect(bytes);
+        assert_eq!(detection.chosen.name(), decode_auto(bytes).encoding);
+        assert_eq!(detection.reason, REASON_DETECTOR);
+        assert!(detection.bom.is_none());
+        assert_eq!(describe_bom(bytes), None);
+    }
+
+    #[test]
+    fn detect_agrees_with_decode_auto_big5_sample() {
+        let text =
+            "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
+        let (bytes, unmappable) = encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        let detection = detect(&bytes);
+        assert_eq!(detection.chosen.name(), decode_auto(&bytes).encoding);
+        assert_eq!(detection.chosen.name(), "Big5");
+        assert_eq!(detection.reason, REASON_DETECTOR);
+        assert!(detection.bom.is_none());
+    }
+
+    #[test]
+    fn detect_agrees_with_decode_auto_empty_file() {
+        let bytes: [u8; 0] = [];
+        let detection = detect(&bytes);
+        assert_eq!(detection.chosen.name(), decode_auto(&bytes).encoding);
+        assert_eq!(detection.reason, REASON_FALLBACK);
+        assert!(detection.bom.is_none());
+        assert_eq!(describe_bom(&bytes), None);
     }
 
     #[test]

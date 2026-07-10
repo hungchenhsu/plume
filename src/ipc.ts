@@ -60,6 +60,27 @@ export function openDocument(
   return invoke<OpenedDocument>("open_document", { path, encoding });
 }
 
+export interface DetectionExplanation {
+  /** e.g. "UTF-8 BOM (EF BB BF)"; null when no BOM was found. */
+  bom: string | null;
+  /** chardetng's verdict on the sampled bytes. */
+  detectorVerdict: string;
+  sampledBytes: number;
+  totalSize: number;
+  /** "{encoding} ({reason})", reason is "bom" | "detector" | "fallback". */
+  wouldChoose: string;
+}
+
+/**
+ * Diagnostics for the "Why {encoding}?" status-bar popup: re-reads a bounded
+ * prefix of the file and reruns the same detection `open_document` uses,
+ * without decoding or affecting the open document. Read-only, side-effect
+ * free.
+ */
+export function explainDetection(path: string): Promise<DetectionExplanation> {
+  return invoke<DetectionExplanation>("explain_detection", { path });
+}
+
 export function saveDocument(args: {
   path: string;
   content: string;
