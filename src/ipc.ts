@@ -124,6 +124,7 @@ export interface Preferences {
   defaultEncoding: string;
   defaultBom: boolean;
   wordWrap: boolean;
+  showInvisibles: boolean;
 }
 
 export function loadPreferences(): Promise<Preferences> {

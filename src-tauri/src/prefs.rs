@@ -16,6 +16,8 @@ pub struct Preferences {
     pub default_encoding: String,
     pub default_bom: bool,
     pub word_wrap: bool,
+    /// Render invisible characters: space dots, tab arrows, EOL marks.
+    pub show_invisibles: bool,
 }
 
 impl Default for Preferences {
@@ -27,6 +29,7 @@ impl Default for Preferences {
             default_encoding: "UTF-8".into(),
             default_bom: false,
             word_wrap: true,
+            show_invisibles: false,
         }
     }
 }
@@ -70,6 +73,7 @@ mod tests {
         assert_eq!(prefs.theme, "system");
         assert_eq!(prefs.default_encoding, "UTF-8");
         assert!(prefs.word_wrap);
+        assert!(!prefs.show_invisibles);
     }
 
     #[test]
@@ -81,6 +85,7 @@ mod tests {
             default_encoding: "Big5".into(),
             default_bom: false,
             word_wrap: false,
+            show_invisibles: true,
         };
         let json = serde_json::to_vec(&prefs).unwrap();
         let back: Preferences = serde_json::from_slice(&json).unwrap();
@@ -88,6 +93,29 @@ mod tests {
         assert_eq!(back.font_size, 15);
         assert_eq!(back.theme, "dark");
         assert_eq!(back.default_encoding, "Big5");
+        assert!(back.show_invisibles);
+    }
+
+    /// `show_invisibles` was added after `word_wrap`; a `preferences.json`
+    /// written by an older build has no such key at all. `serde(default)`
+    /// on the struct must still deserialize it cleanly, defaulting the new
+    /// field to `false` and leaving every pre-existing field intact.
+    #[test]
+    fn old_preferences_json_without_show_invisibles_loads_with_default_false() {
+        let json = r#"{
+            "fontFamily": "SF Mono",
+            "fontSize": 15,
+            "theme": "dark",
+            "defaultEncoding": "Big5",
+            "defaultBom": false,
+            "wordWrap": false
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert!(!prefs.show_invisibles);
+        assert_eq!(prefs.font_family, "SF Mono");
+        assert_eq!(prefs.theme, "dark");
+        assert_eq!(prefs.default_encoding, "Big5");
+        assert!(!prefs.word_wrap);
     }
 
     /// `theme` is a plain String (no enum/schema), so the new built-in
