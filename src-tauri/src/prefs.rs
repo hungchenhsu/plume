@@ -89,4 +89,22 @@ mod tests {
         assert_eq!(back.theme, "dark");
         assert_eq!(back.default_encoding, "Big5");
     }
+
+    /// `theme` is a plain String (no enum/schema), so the new built-in
+    /// theme system (menu.rs THEME_IDS: paper, dusk) needs no Rust schema
+    /// change — this pins that serde really does accept the new values,
+    /// including round-tripping an old preferences.json written before
+    /// they existed.
+    #[test]
+    fn new_builtin_theme_values_round_trip_through_json() {
+        for theme in ["paper", "dusk"] {
+            let prefs = Preferences {
+                theme: theme.into(),
+                ..Preferences::default()
+            };
+            let json = serde_json::to_vec(&prefs).unwrap();
+            let back: Preferences = serde_json::from_slice(&json).unwrap();
+            assert_eq!(back.theme, theme);
+        }
+    }
 }

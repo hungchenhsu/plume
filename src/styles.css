@@ -778,6 +778,7 @@ html[data-theme="light"] {
   --syn-function: #3b6fc9;
   --syn-type: #a44185;
 
+  color-scheme: light;
   color: var(--fg);
   background-color: var(--bg-base);
 }
@@ -806,6 +807,80 @@ html[data-theme="dark"] {
   --syn-function: #7fb2f0;
   --syn-type: #d683c1;
 
+  color-scheme: dark;
+  color: var(--fg);
+  background-color: var(--bg-base);
+}
+
+/*
+ * Built-in theme: Paper — a warm, low-glare "ink on paper" palette for long
+ * reading sessions. --accent and --fg-faint were nudged a shade darker than
+ * the design anchors (#4E7B6A -> #3E6A59, #98907F -> #8F8672) to clear the
+ * WCAG AA body-text threshold against --bg-base; see PR description for the
+ * measured contrast ratios. --syn-keyword/--syn-comment need no override
+ * here: both are var() references (to --accent / --fg-faint respectively)
+ * defined once in :root, so they pick up this theme's values automatically.
+ */
+html[data-theme="paper"] {
+  --bg-base: #f6f0e4;
+  --bg-surface: #ede6d6;
+  --bg-raised: #fbf7ee;
+  --fg: #3b3630;
+  --fg-muted: #6e6659;
+  --fg-faint: #8f8672;
+  --border: #dcd3bf;
+  --border-strong: #c5bca8;
+  --accent: #3e6a59;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(62, 106, 89, 0.14);
+  --warning: #b35900;
+  --warning-soft: rgba(179, 89, 0, 0.14);
+  --danger: #c4373c;
+  --overlay: rgba(0, 0, 0, 0.3);
+  --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.16);
+  --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.28);
+
+  --syn-string: #567b3e;
+  --syn-number: #a05e1f;
+  --syn-function: #3e6b8a;
+  --syn-type: #96522e;
+
+  color-scheme: light;
+  color: var(--fg);
+  background-color: var(--bg-base);
+}
+
+/*
+ * Built-in theme: Dusk — a soft, low-contrast dark blue for evening use.
+ * Anchors used as specified; --syn-keyword/--syn-comment again fall through
+ * from :root's var(--accent) / var(--fg-faint) references, no override
+ * needed.
+ */
+html[data-theme="dusk"] {
+  --bg-base: #232634;
+  --bg-surface: #2a2e3f;
+  --bg-raised: #303448;
+  --fg: #e3e5f0;
+  --fg-muted: #a8acc4;
+  --fg-faint: #6f7490;
+  --border: #3e4358;
+  --border-strong: #4e5368;
+  --accent: #9ba3f5;
+  --accent-fg: #232634;
+  --accent-soft: rgba(155, 163, 245, 0.16);
+  --warning: #f5b461;
+  --warning-soft: rgba(245, 180, 97, 0.16);
+  --danger: #e5484d;
+  --overlay: rgba(0, 0, 0, 0.45);
+  --shadow-1: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.6);
+
+  --syn-string: #8fd3a8;
+  --syn-number: #f5b461;
+  --syn-function: #8ab8ee;
+  --syn-type: #d79ac8;
+
+  color-scheme: dark;
   color: var(--fg);
   background-color: var(--bg-base);
 }
