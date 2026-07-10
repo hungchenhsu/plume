@@ -84,5 +84,18 @@ jobs:
         run: cargo build --release
         working-directory: src-tauri
 
+      - name: Runner diagnostics
+        run: |
+          uname -m
+          sw_vers
+          echo "user: $(whoami), uid: $(id -u)"
+          echo "console owner: $(stat -f '%Su' /dev/console)"
+          echo "session manager: $(launchctl managername || true)"
+
+      - name: Ad-hoc codesign the bench binary
+        # GitHub macOS runners can restrict WebKit for unsigned binaries;
+        # an ad-hoc signature is enough for launching a local build.
+        run: codesign --force --deep -s - src-tauri/target/release/plume
+
       - name: Startup-time benchmark
         run: node scripts/startup-bench.mjs --threshold=3000

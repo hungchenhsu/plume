@@ -64,8 +64,13 @@ function median(values) {
     : sorted[mid];
 }
 
-/** Launch the binary once in probe mode; resolves with the reported startup_ms. */
-function runOnce(binPath, timeoutMs = 15000) {
+/**
+ * Launch the binary once in probe mode; resolves with the reported
+ * startup_ms. The child's stdout/stderr are streamed to the console in
+ * full (prefixed) so CI logs show exactly what the app printed — or
+ * failed to print — before a timeout.
+ */
+function runOnce(binPath, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const child = spawn(binPath, [], {
       env: { ...process.env, PLUME_STARTUP_PROBE: "1" },
@@ -74,30 +79,44 @@ function runOnce(binPath, timeoutMs = 15000) {
 
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
     const timer = setTimeout(() => {
-      child.kill();
-      reject(
-        new Error(`Timed out after ${timeoutMs}ms waiting for startup_ms`),
-      );
+      timedOut = true;
+      child.kill("SIGKILL");
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
+      process.stdout.write(`  [app stdout] ${chunk}`);
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
+      process.stderr.write(`  [app stderr] ${chunk}`);
     });
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
     });
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       clearTimeout(timer);
+      const status = `exit code ${code}, signal ${signal}`;
+      if (timedOut) {
+        reject(
+          new Error(
+            `Timed out after ${timeoutMs}ms waiting for startup_ms (${status}).\n` +
+              `stdout so far: ${JSON.stringify(stdout)}\n` +
+              `stderr so far: ${JSON.stringify(stderr)}`,
+          ),
+        );
+        return;
+      }
       const match = stdout.match(/startup_ms=(\d+)/);
       if (!match) {
         reject(
           new Error(
-            `No startup_ms in output (exit code ${code}).\nstdout: ${stdout}\nstderr: ${stderr}`,
+            `No startup_ms in output (${status}).\n` +
+              `stdout: ${JSON.stringify(stdout)}\n` +
+              `stderr: ${JSON.stringify(stderr)}`,
           ),
         );
         return;
