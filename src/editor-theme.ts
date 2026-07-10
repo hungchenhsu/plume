@@ -90,6 +90,37 @@ const baseTheme = EditorView.theme({
   ".cm-panel.cm-search label": {
     color: "var(--fg-muted)",
   },
+  // Show-invisibles (editor.ts `highlightWhitespace()` + the custom EOL
+  // widget). CM6's default theme hardcodes gray (#aaa / #888); these
+  // overrides swap in the token-driven "faint" color so invisibles theme
+  // correctly across light/dark/paper/dusk. The tab arrow is an inline SVG
+  // background-image with a baked-in stroke color, so it can't take a CSS
+  // var directly — it's recolored via `mask-image` instead: the SVG shape
+  // becomes a mask over a `background-color` that _is_ a var().
+  ".cm-highlightSpace": {
+    backgroundImage:
+      "radial-gradient(circle at 50% 55%, var(--fg-faint) 20%, transparent 5%)",
+    backgroundPosition: "center",
+  },
+  ".cm-highlightTab": {
+    backgroundImage: "none",
+    backgroundColor: "var(--fg-faint)",
+    WebkitMaskImage:
+      "url('data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"20\"><path stroke=\"black\" stroke-width=\"1\" fill=\"none\" d=\"M1 10H196L190 5M190 15L196 10M197 4L197 16\"/></svg>')",
+    maskImage:
+      "url('data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"20\"><path stroke=\"black\" stroke-width=\"1\" fill=\"none\" d=\"M1 10H196L190 5M190 15L196 10M197 4L197 16\"/></svg>')",
+    WebkitMaskSize: "auto 100%",
+    maskSize: "auto 100%",
+    WebkitMaskPosition: "right 90%",
+    maskPosition: "right 90%",
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat",
+  },
+  ".cm-eol-marker": {
+    color: "var(--fg-faint)",
+    userSelect: "none",
+    pointerEvents: "none",
+  },
 });
 
 const highlightStyle = HighlightStyle.define([

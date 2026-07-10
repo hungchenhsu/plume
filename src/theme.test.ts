@@ -22,7 +22,10 @@ vi.mock("./ipc", () => ({
 // ./ipc is already mocked by the time preferences.ts is evaluated.
 import { initPreferences, preferences, setTheme, THEMES } from "./preferences";
 
-const fakeEditor = { setLineWrapping: vi.fn() } as unknown as EditorHandle;
+const fakeEditor = {
+  setLineWrapping: vi.fn(),
+  setShowInvisibles: vi.fn(),
+} as unknown as EditorHandle;
 
 function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
   return {
@@ -32,6 +35,7 @@ function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
     defaultEncoding: "UTF-8",
     defaultBom: false,
     wordWrap: true,
+    showInvisibles: false,
     ...overrides,
   };
 }

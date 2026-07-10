@@ -143,11 +143,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )
         .build()?;
 
+    let current_prefs = crate::prefs::current(app);
     let view = SubmenuBuilder::with_id(app, "view", "View")
         .item(
             &CheckMenuItemBuilder::with_id("word_wrap", "Word Wrap")
-                .checked(crate::prefs::current(app).word_wrap)
+                .checked(current_prefs.word_wrap)
                 .accelerator("Alt+Z")
+                .build(app)?,
+        )
+        .item(
+            &CheckMenuItemBuilder::with_id("show_invisibles", "Show Invisibles")
+                .checked(current_prefs.show_invisibles)
                 .build(app)?,
         )
         .separator()

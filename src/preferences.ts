@@ -29,6 +29,7 @@ let current: Preferences = {
   defaultEncoding: "UTF-8",
   defaultBom: false,
   wordWrap: true,
+  showInvisibles: false,
 };
 
 let editorRef: EditorHandle | null = null;
@@ -63,6 +64,7 @@ function applyAll(): void {
   applyFont();
   applyTheme();
   editorRef?.setLineWrapping(current.wordWrap);
+  editorRef?.setShowInvisibles(current.showInvisibles);
 }
 
 const FONT_SIZE_MIN = 9;
@@ -85,6 +87,16 @@ export function adjustFontSize(delta: number): void {
 export function toggleWordWrap(): void {
   current.wordWrap = !current.wordWrap;
   editorRef?.setLineWrapping(current.wordWrap);
+  void savePreferences(current).catch(() => {
+    // Best-effort persistence; the in-memory setting still applies.
+  });
+}
+
+/** Toggle showing invisible characters (driven by the View menu check
+ *  item) and persist. */
+export function toggleShowInvisibles(): void {
+  current.showInvisibles = !current.showInvisibles;
+  editorRef?.setShowInvisibles(current.showInvisibles);
   void savePreferences(current).catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
@@ -206,6 +218,7 @@ export function showPreferencesDialog(): void {
       defaultEncoding: encValue,
       defaultBom: encBom === "true",
       wordWrap: current.wordWrap,
+      showInvisibles: current.showInvisibles,
     };
     applyAll();
     void savePreferences(current).catch(() => {

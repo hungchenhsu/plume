@@ -44,6 +44,7 @@ import {
   preferences,
   setTheme,
   showPreferencesDialog,
+  toggleShowInvisibles,
   toggleWordWrap,
 } from "./preferences";
 import { updateCursor, updatePager, updateStatusBar } from "./statusbar";
@@ -739,6 +740,9 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "word_wrap":
       toggleWordWrap();
+      break;
+    case "show_invisibles":
+      toggleShowInvisibles();
       break;
     case "zoom_in":
       adjustFontSize(1);

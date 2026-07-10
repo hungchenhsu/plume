@@ -99,7 +99,7 @@ conversation). One coherent item per PR.
   preference follows the system by default with English fallback
 
 **Encoding & editing (Tier 1 promotions)**
-- [ ] Show invisibles toggle (spaces / tabs / EOL marks) — View menu,
+- [x] Show invisibles toggle (spaces / tabs / EOL marks) — View menu,
   persisted pref
 - [x] Hex/bytes preview for undecodable files — read-only view offered
   from the decode-warning UI; hex dump formatted as text in Rust (raw
