@@ -1,0 +1,18 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sshnaidm/gpt-code-review-action@v4.0
+        with:
+          openai-key: ${{ secrets.OPENAI_API_KEY }}
+          model: 'gpt-4'
