@@ -8,7 +8,7 @@ session — human or agent, regardless of capability — should pick up the
 work. When this document and reality diverge, update this document in the
 same PR that changes course.
 
-Last full review: 2026-07-08.
+Last full review: 2026-07-10.
 
 ---
 
@@ -42,16 +42,19 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-08)
+## 2. Current state (2026-07-10)
 
 - **v0.1.0-alpha.7** released (pre-release, private repo): the entire v0.1
   MVP plus all v0.2 polish candidates are done — 33 PRs, all CI-green.
   Feature inventory lives in [ROADMAP.md](ROADMAP.md) (everything checked).
 - Tests: 29 Rust unit tests + 27 frontend vitest tests; release pipeline
   builds six installers per tag as a draft release.
-- **Development is intentionally paused** for field testing (user decision,
-  2026-06-13): the next feature phase is driven by real usage feedback,
-  not invented scope.
+- **P3 feature cycle active** (user instruction, 2026-07-10): the user
+  explicitly approved a v0.2 scope — full UI visual refresh + design
+  tokens, built-in themes, all six Tier-1 items, UI i18n (zh-TW first) —
+  ending the P0 pause per §8-2. The approved backlog lives in ROADMAP.md.
+  P1/P2 gates (naming, signing, public) remain open and unordered
+  relative to this cycle.
 - Open decision gates: naming (D1), signing/updates (D2), going public
   (D3), distribution (D4) — see §3.
 - Known operational constraints and dead ends live in
@@ -174,7 +177,7 @@ Phases gate on decisions and evidence, not dates. Each phase lists entry
 criteria, work, and exit criteria. Skipping a gate requires an explicit
 user decision recorded in this file.
 
-### P0 — Field testing (current phase)
+### P0 — Field testing (exited 2026-07-10 by user instruction)
 
 - **Entry:** alpha.7 installed on the user's machines. (Done.)
 - **Work:** use the editor for real daily tasks. Every friction point,
@@ -205,10 +208,12 @@ user decision recorded in this file.
 - **Exit:** repo public, beta tagged, at least one distribution channel
   beyond GitHub Releases live.
 
-### P3 — v0.2 feature cycle
+### P3 — v0.2 feature cycle (current phase)
 
 - **Entry:** P0 triage produced a user-approved backlog (promoted from §6
-  into ROADMAP.md as checkboxes).
+  into ROADMAP.md as checkboxes). *(Satisfied 2026-07-10: the user
+  approved the scope directly by session instruction — §8-2 — rather
+  than via issue triage; no issues had been filed during P0.)*
 - **Work:** normal feature PRs under the existing Definition of Done.
   One coherent item per PR; danger domains get the full treatment
   (§5-S1 discipline even without an incident).
@@ -330,6 +335,8 @@ required, not value.
 
 ### Tier 1 — safe for any competent session (small, testable, no design debate)
 
+*All six promoted into ROADMAP.md on 2026-07-10 (user approval).*
+
 | Candidate | Why it fits | Acceptance sketch |
 | --- | --- | --- |
 | Show invisibles toggle (spaces / tabs / EOL marks) | Encoding-first identity: seeing what's really in the file | View-menu toggle, persisted pref; CM6 built-in highlighters; both platforms |
@@ -343,12 +350,13 @@ required, not value.
 
 - **Multi-window** (session model, hot-exit interaction, menu focus —
   known to need discussion since 2026-06).
-- **UI i18n** (zh-TW first; framework choice affects bundle size; also
-  interacts with native menus).
-- **Custom themes / theme import** (scope trap: cap it at "a few good
-  built-ins + CSS variables" unless the user wants more).
-- **Autosave-to-disk option** (hot exit already protects against loss;
-  decide whether real autosave is wanted semantics).
+- **UI i18n** — *promoted 2026-07-10* (zh-TW first; resolved: no runtime
+  dependency, lightweight typed dictionary module; covers native menus).
+- **Custom themes / theme import** — *promoted 2026-07-10 as built-in
+  themes only*, capped at a few good built-ins + CSS variables; no
+  import.
+- **Autosave-to-disk option** — *declined 2026-07-10* (hot exit already
+  protects against loss); revisit only on user request.
 
 ### Tier 3 — blocked on decision gates or infrastructure
 
