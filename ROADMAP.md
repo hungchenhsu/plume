@@ -101,7 +101,7 @@ conversation). One coherent item per PR.
 **Encoding & editing (Tier 1 promotions)**
 - [ ] Show invisibles toggle (spaces / tabs / EOL marks) — View menu,
   persisted pref
-- [ ] Hex/bytes preview for undecodable files — read-only view offered
+- [x] Hex/bytes preview for undecodable files — read-only view offered
   from the decode-warning UI; hex dump formatted as text in Rust (raw
   bytes never cross IPC)
 - [ ] Per-extension default encoding — prefs table ext→encoding;

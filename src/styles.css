@@ -246,6 +246,11 @@ select:focus-visible {
   border-radius: var(--radius-sm);
 }
 
+#status-warning {
+  font: inherit;
+  cursor: pointer;
+}
+
 .status-action {
   padding: 1px 8px;
   font: inherit;
@@ -526,6 +531,62 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--editor-font-family, ui-monospace, monospace);
+}
+
+.hexview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 6vh;
+}
+
+.hexview-panel {
+  display: flex;
+  flex-direction: column;
+  width: 800px;
+  max-width: 94vw;
+  max-height: 84vh;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: panel-in 140ms ease-out;
+}
+
+.hexview-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hexview-title {
+  font-size: var(--font-ui);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hexview-caption {
+  font-size: var(--font-ui-xs);
+  color: var(--fg-faint);
+}
+
+.hexview-content {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  font-size: var(--font-ui-sm);
+  white-space: pre;
+  user-select: text;
+  outline: none;
 }
 
 .confirm-overlay {
