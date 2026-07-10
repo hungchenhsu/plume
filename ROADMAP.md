@@ -115,6 +115,50 @@ conversation). One coherent item per PR.
 - [x] Encoding-detection diagnostics — status-bar popup showing the
   evidence behind the detection (BOM found, chardetng verdict)
 
+## v0.3 — feature cycle (approved 2026-07-11)
+
+Scope approved by the user on 2026-07-11 as four parallel tracks. Tracks
+are independent by design — they map to separable module areas (Rust
+encoding core / editor module / UI chrome / community infra) so multiple
+contributors can work concurrently without colliding. Within a track,
+items are roughly ordered; across tracks, anything unblocked is fair
+game. One coherent item per PR, as always.
+
+**Track A — encoding tools** (the moat; all items are encoding danger
+domain: failing-test-first, round-trip tests mandatory)
+- [ ] Mojibake repair wizard: detect common mis-decode round-trips
+  (e.g. Big5 bytes once decoded as Windows-1252 and re-saved) and offer
+  a previewed, reversible repair — never applied silently
+- [ ] Batch encoding conversion: convert a folder's files to a target
+  encoding with a dry-run report first; atomic per-file saves
+- [ ] Batch line-ending conversion (rides on the same batch UI)
+- [ ] Side-by-side encoding preview: the same bytes decoded under two
+  candidate encodings, read-only, for manual disambiguation
+
+**Track B — large files**
+- [ ] Find/replace inside large-file windows via streaming Rust
+  search/replace over the full file (atomic temp+rename; editor window
+  refreshes after)
+- [ ] Line-offset index for huge files: fast go-to-line and bookmarks
+  beyond the loaded window
+
+**Track C — everyday editing comfort**
+- [ ] Code folding (CM6 fold gutter, wired per language)
+- [ ] Line operations under Edit menu: sort / unique / trim trailing
+  whitespace / upper-lower case (vitest for the pure transforms)
+- [ ] Indent guides (token-driven color, all four themes)
+
+**Track D — release & community**
+- [ ] Issue templates, labels, and a good-first-issue starter set
+  (unblocked; do first — it is the interface for incoming contributors)
+- [ ] i18n dictionaries: ja and zh-CN (builds on the v0.2 i18n module)
+- [ ] D1 official name — user decision, currently deferred (evidence
+  archived in `.claude/archive/d1-naming-final.md`)
+- [ ] D2 signing + auto-update — blocked on D1 and user-held keys
+  (runbook: `.claude/archive/d2-updater-runbook.md`)
+- [ ] D3 going-public sweep — includes purging `.claude/archive/`
+  naming evidence before the repo turns public
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
