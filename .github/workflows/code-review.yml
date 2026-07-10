@@ -1,4 +1,4 @@
-name: Code Review
+name: Jules Code Review
 
 on:
   pull_request:
@@ -9,11 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: sshnaidm/gpt-code-review-action@v4.0
-        if: ${{ secrets.OPENAI_API_KEY != '' }}
+      - uses: google-labs-code/jules-action@v1
+        if: ${{ secrets.JULES_API_KEY != '' }}
         with:
-          openai-key: ${{ secrets.OPENAI_API_KEY }}
-          model: 'gpt-4'
+          prompt: |
+            Please review the recent pull request changes and provide feedback as a code reviewer. Leave a pull request review with comments for any identified issues. Look for logic errors, security vulnerabilities, performance bottlenecks, and general code quality issues.
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
