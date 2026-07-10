@@ -7,6 +7,7 @@ import { formatSize } from "./statusbar";
 
 const REASON_LABELS: Record<string, string> = {
   bom: "a BOM was found",
+  extension: "per-extension preference, decoded cleanly",
   detector: "chardetng statistical detection",
   fallback: "no evidence to analyze (empty file), defaulted",
 };
@@ -105,12 +106,15 @@ function renderCard(panel: HTMLElement, model: DetectionCardModel): void {
  * Show the "Why {encoding}?" diagnostics card for `path`, anchored above
  * `anchor` like the status-bar popup menus (no full-screen overlay — this
  * sits alongside "Reopen with Encoding", not as a separate modal).
+ * `extensionEncoding` is the same per-extension hint `openDocument` gets,
+ * so the card explains the detection that actually ran.
  */
 export function showDetectionCard(
   anchor: HTMLElement,
   path: string,
   title: string,
   currentEncoding: string,
+  extensionEncoding?: string,
 ): void {
   if (document.querySelector(".detectcard-panel")) return;
 
@@ -143,7 +147,7 @@ export function showDetectionCard(
     document.addEventListener("keydown", onKey);
   }, 0);
 
-  void explainDetection(path)
+  void explainDetection(path, extensionEncoding)
     .then((info) => {
       renderCard(panel, formatDetectionCard(title, currentEncoding, info));
     })

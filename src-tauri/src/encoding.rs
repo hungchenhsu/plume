@@ -14,9 +14,11 @@ pub struct DecodedText {
     pub malformed: bool,
 }
 
-/// Reason `Detection::chosen` was picked: a BOM was found, chardetng made a
-/// statistical call, or there were no bytes to analyze (empty input).
+/// Reason `Detection::chosen` was picked: a BOM was found, a per-extension
+/// preference decoded the sample cleanly, chardetng made a statistical
+/// call, or there were no bytes to analyze (empty input).
 pub const REASON_BOM: &str = "bom";
+pub const REASON_EXTENSION: &str = "extension";
 pub const REASON_DETECTOR: &str = "detector";
 pub const REASON_FALLBACK: &str = "fallback";
 
@@ -38,11 +40,38 @@ fn detector_guess(bytes: &[u8]) -> &'static Encoding {
 }
 
 /// Sniff a BOM and run chardetng over `bytes`, returning the full evidence
-/// behind the detection `decode_auto` would use. Shared by `decode_auto`
+/// behind the detection `decode_auto_with_extension` would use — including
+/// a per-extension encoding preference (e.g. the user set ".txt" to always
+/// open as Big5), passed as `ext_encoding` (`None` when the file's
+/// extension has no mapping). Shared by `decode_auto_with_extension`
 /// (which only needs `chosen`) and the `explain_detection` diagnostics
 /// command (which reports all of it), so both stay in lockstep by
-/// construction.
-pub fn detect(bytes: &[u8]) -> Detection {
+/// construction. Decision order:
+///
+/// 1. A BOM always wins, regardless of `ext_encoding` — it is
+///    unambiguous ground truth about the bytes.
+/// 2. With no BOM, if the sample is valid UTF-8 *containing multi-byte
+///    sequences*, it is treated as confident UTF-8 and `ext_encoding` is
+///    not consulted: real-world non-UTF-8 legacy text is essentially
+///    never byte-valid multi-byte UTF-8, whereas short genuine UTF-8
+///    (e.g. "測試", 6 bytes) can decode through Big5/GBK/Shift_JIS with
+///    no malformed sequences yet completely wrong text — the malformed
+///    flag alone cannot catch that, this gate does. Detection proceeds
+///    to the statistical guess (`REASON_DETECTOR`), which reads such
+///    input as UTF-8.
+/// 3. Otherwise (pure ASCII, or bytes that are not valid UTF-8), if
+///    `ext_encoding` names a known encoding and decoding the full sample
+///    with it produces no malformed sequences, it wins
+///    (`REASON_EXTENSION`). For pure ASCII this changes no character —
+///    the listed legacy encodings are ASCII-compatible — but it pins the
+///    save-default encoding the user wants for that extension.
+/// 4. If `ext_encoding` is absent, unknown, or decodes the sample with
+///    malformed sequences, the preference is rejected and detection
+///    falls back to the statistical guess (`REASON_DETECTOR`).
+/// 5. Empty input with no usable `ext_encoding` has no evidence to
+///    analyze (`REASON_FALLBACK`). With one, rule 3 applies — an empty
+///    file trivially decodes cleanly, so the preference names it.
+pub fn detect_with_extension(bytes: &[u8], ext_encoding: Option<&str>) -> Detection {
     let guess = detector_guess(bytes);
     if let Some((encoding, _bom_len)) = Encoding::for_bom(bytes) {
         return Detection {
@@ -51,6 +80,25 @@ pub fn detect(bytes: &[u8]) -> Detection {
             chosen: encoding,
             reason: REASON_BOM,
         };
+    }
+    // UTF-8 gate (rule 2): valid UTF-8 with at least one non-ASCII byte
+    // is confident UTF-8; never let an extension preference reinterpret
+    // it as a legacy encoding.
+    let confident_utf8 = !bytes.is_ascii() && std::str::from_utf8(bytes).is_ok();
+    if !confident_utf8 {
+        if let Some(label) = ext_encoding {
+            if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
+                let (_, malformed) = encoding.decode_without_bom_handling(bytes);
+                if !malformed {
+                    return Detection {
+                        bom: None,
+                        detector_guess: guess,
+                        chosen: encoding,
+                        reason: REASON_EXTENSION,
+                    };
+                }
+            }
+        }
     }
     let reason = if bytes.is_empty() {
         REASON_FALLBACK
@@ -66,8 +114,15 @@ pub fn detect(bytes: &[u8]) -> Detection {
 }
 
 /// Decode bytes by sniffing a BOM first and falling back to chardetng.
+/// Equivalent to `decode_auto_with_extension(bytes, None)`.
 pub fn decode_auto(bytes: &[u8]) -> DecodedText {
-    let detection = detect(bytes);
+    decode_auto_with_extension(bytes, None)
+}
+
+/// Same as `decode_auto`, but honoring a per-extension encoding preference
+/// per the decision order documented on `detect_with_extension`.
+pub fn decode_auto_with_extension(bytes: &[u8], ext_encoding: Option<&str>) -> DecodedText {
+    let detection = detect_with_extension(bytes, ext_encoding);
     let encoding = detection.chosen;
     let (content, malformed) = if detection.bom.is_some() {
         encoding.decode_with_bom_removal(bytes)
@@ -187,6 +242,12 @@ pub fn apply_line_ending(text: &str, line_ending: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Detection with no per-extension preference, as `search.rs` and any
+    /// caller of plain `decode_auto` exercise it.
+    fn detect(bytes: &[u8]) -> Detection {
+        detect_with_extension(bytes, None)
+    }
+
     #[test]
     fn detects_utf8_bom() {
         let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
@@ -304,5 +365,213 @@ mod tests {
     fn applies_crlf_on_save() {
         assert_eq!(apply_line_ending("a\nb", "CRLF"), "a\r\nb");
         assert_eq!(apply_line_ending("a\nb", "LF"), "a\nb");
+    }
+
+    // --- Per-extension encoding preference: decision order -------------
+    //
+    // 1. BOM always wins, even over an extension preference.
+    // 2. Valid non-ASCII UTF-8 is confident UTF-8 -> ext preference is
+    //    not consulted (the malformed flag alone cannot catch short UTF-8
+    //    that happens to be byte-valid in a legacy encoding).
+    // 3. Otherwise, ext preference decoding cleanly -> ext wins.
+    // 4. Ext preference producing malformed output -> falls back to
+    //    statistical detection (never overridden into mojibake).
+    // 5. No ext preference at all -> unchanged from plain `detect`.
+
+    #[test]
+    fn extension_preference_loses_to_bom() {
+        // UTF-8 BOM present, but the extension preference says Big5. The
+        // BOM must win regardless.
+        let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
+        let detection = detect_with_extension(&bytes, Some("Big5"));
+        assert_eq!(detection.reason, REASON_BOM);
+        assert_eq!(detection.chosen.name(), "UTF-8");
+    }
+
+    #[test]
+    fn extension_preference_wins_when_it_decodes_cleanly() {
+        // No BOM; content really is Big5. The extension preference should
+        // be honored and reported as such.
+        let text =
+            "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
+        let (bytes, unmappable) = encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        let detection = detect_with_extension(&bytes, Some("Big5"));
+        assert_eq!(detection.reason, REASON_EXTENSION);
+        assert_eq!(detection.chosen.name(), "Big5");
+        let decoded = decode_auto_with_extension(&bytes, Some("Big5"));
+        assert_eq!(decoded.encoding, "Big5");
+        assert_eq!(decoded.content, text);
+        assert!(!decoded.malformed);
+    }
+
+    #[test]
+    fn long_utf8_text_is_not_hijacked_by_extension_preference() {
+        // No BOM; content is genuine multi-byte UTF-8, but the extension
+        // preference (wrongly) says Big5. The UTF-8 gate must keep this
+        // out of the preference's reach and detection must report UTF-8.
+        // (For this long fixture Big5 decoding also happens to be
+        // malformed, so rule 4 would catch it too — the short-text test
+        // above covers the case where only the gate can.)
+        let text =
+            "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
+        let bytes = text.as_bytes();
+
+        let detection = detect_with_extension(bytes, Some("Big5"));
+        assert_eq!(detection.reason, REASON_DETECTOR);
+        assert_eq!(detection.chosen.name(), "UTF-8");
+
+        let decoded = decode_auto_with_extension(bytes, Some("Big5"));
+        assert_eq!(decoded.encoding, "UTF-8");
+        assert_eq!(decoded.content, text);
+        assert!(!decoded.malformed);
+    }
+
+    #[test]
+    // The from_utf8 call on a known-invalid literal is intentional: it
+    // pins the fixture's premise (clippy::invalid_from_utf8 flags it as
+    // always-erroring, which is exactly the point).
+    #[allow(invalid_from_utf8)]
+    fn extension_preference_falls_back_when_decode_would_be_malformed() {
+        // Bytes that are neither valid UTF-8 (lone 0x80 continuation
+        // byte) nor valid Big5 (0x80 is below the 0x81 lead-byte floor):
+        // the UTF-8 gate does not fire, the preference is tried, decoding
+        // reports malformed, and detection must fall back to the
+        // statistical guess instead of honoring the preference.
+        let bytes = [b'a', 0x80, b'b'];
+        assert!(std::str::from_utf8(&bytes).is_err());
+        let (_, big5_malformed) = encoding_rs::BIG5.decode_without_bom_handling(&bytes);
+        assert!(
+            big5_malformed,
+            "test fixture must actually be malformed as Big5"
+        );
+
+        let detection = detect_with_extension(&bytes, Some("Big5"));
+        assert_eq!(detection.reason, REASON_DETECTOR);
+        assert_ne!(detection.chosen.name(), "Big5");
+    }
+
+    #[test]
+    fn short_utf8_text_is_not_hijacked_by_extension_preference() {
+        // Verifier-found hole in the malformed-flag check alone: short
+        // valid UTF-8 like "測試" (6 bytes) decodes through Big5 with
+        // malformed=false but completely wrong text ("皜祈岫"). Valid
+        // non-ASCII UTF-8 must therefore be treated as confident UTF-8:
+        // the extension preference must not apply, and the file must open
+        // as UTF-8 with its content intact.
+        for text in ["測試", "中", "日本語", "한국어 메모"] {
+            let bytes = text.as_bytes();
+            if text == "測試" {
+                // Pin that this fixture really is the trap: Big5 accepts
+                // the bytes cleanly yet produces different text.
+                let (as_big5, malformed) = encoding_rs::BIG5.decode_without_bom_handling(bytes);
+                assert!(!malformed, "fixture must decode via Big5 without errors");
+                assert_ne!(as_big5, text, "fixture must be mojibake as Big5");
+            }
+
+            let detection = detect_with_extension(bytes, Some("Big5"));
+            assert_eq!(
+                detection.chosen.name(),
+                "UTF-8",
+                "{text:?} must stay UTF-8 despite the Big5 extension preference"
+            );
+            assert_ne!(detection.reason, REASON_EXTENSION);
+
+            let decoded = decode_auto_with_extension(bytes, Some("Big5"));
+            assert_eq!(decoded.encoding, "UTF-8");
+            assert_eq!(decoded.content, text);
+            assert!(!decoded.malformed);
+        }
+    }
+
+    #[test]
+    fn pure_ascii_still_honors_extension_preference() {
+        // The UTF-8 gate only fires on multi-byte sequences: pure ASCII
+        // decodes identically in every ASCII-compatible encoding, so the
+        // preference still applies — it costs nothing on open and pins
+        // the encoding the file will be saved back with.
+        let bytes = b"plain ascii log line, no accents at all";
+        let detection = detect_with_extension(bytes, Some("Big5"));
+        assert_eq!(detection.reason, REASON_EXTENSION);
+        assert_eq!(detection.chosen.name(), "Big5");
+
+        let decoded = decode_auto_with_extension(bytes, Some("Big5"));
+        assert_eq!(decoded.encoding, "Big5");
+        assert_eq!(decoded.content, "plain ascii log line, no accents at all");
+        assert!(!decoded.malformed);
+    }
+
+    #[test]
+    fn extension_preference_ignored_when_unknown_label() {
+        let bytes = b"hello world, this is plain ascii text with no accents";
+        let detection = detect_with_extension(bytes, Some("not-an-encoding"));
+        assert_eq!(detection.reason, REASON_DETECTOR);
+    }
+
+    #[test]
+    fn no_extension_preference_matches_plain_detect() {
+        let bytes = b"hello world, this is plain ascii text with no accents";
+        let with_none = detect_with_extension(bytes, None);
+        let plain = detect(bytes);
+        assert_eq!(with_none.reason, plain.reason);
+        assert_eq!(with_none.chosen.name(), plain.chosen.name());
+    }
+
+    #[test]
+    fn extension_preference_applies_to_empty_input() {
+        // Empty bytes decode cleanly with any encoding, so rule 2 applies:
+        // an empty .txt whose extension maps to Big5 is treated as Big5
+        // (matching what the user wants that file to be), not the
+        // no-evidence fallback — that stays reserved for empty files with
+        // no preference.
+        let detection = detect_with_extension(&[], Some("Big5"));
+        assert_eq!(detection.reason, REASON_EXTENSION);
+        assert_eq!(detection.chosen.name(), "Big5");
+        let plain = detect_with_extension(&[], None);
+        assert_eq!(plain.reason, REASON_FALLBACK);
+    }
+
+    // --- Round-trip tests -------------------------------------------------
+
+    #[test]
+    fn round_trips_big5_via_extension_preference() {
+        // Big5 sample, ".txt" configured to Big5: open (auto-detect with
+        // the preference) -> save -> reopen must preserve content and
+        // encoding.
+        let text = "中文編碼偵測測試，這是繁體中文範例文字。";
+        let (original_bytes, unmappable) = encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+
+        let opened = decode_auto_with_extension(&original_bytes, Some("Big5"));
+        assert_eq!(opened.encoding, "Big5");
+        assert_eq!(opened.content, text);
+
+        let (saved_bytes, unmappable) = encode(&opened.content, &opened.encoding, false).unwrap();
+        assert!(!unmappable);
+        assert_eq!(saved_bytes, original_bytes);
+
+        let reopened = decode_auto_with_extension(&saved_bytes, Some("Big5"));
+        assert_eq!(reopened.encoding, "Big5");
+        assert_eq!(reopened.content, text);
+        assert!(!reopened.malformed);
+    }
+
+    #[test]
+    fn utf8_file_with_wrong_extension_preference_does_not_open_as_mojibake() {
+        // Legitimate UTF-8 multi-byte content, but ".txt" is (wrongly)
+        // configured to Big5. Opening must not silently render mojibake —
+        // detection must fall back and the round trip must preserve the
+        // original UTF-8 text.
+        let text = "中文編碼偵測測試，這是繁體中文範例文字。";
+        let original_bytes = text.as_bytes().to_vec();
+
+        let opened = decode_auto_with_extension(&original_bytes, Some("Big5"));
+        assert_eq!(opened.encoding, "UTF-8");
+        assert_eq!(opened.content, text);
+        assert!(!opened.malformed);
+
+        let (saved_bytes, unmappable) = encode(&opened.content, &opened.encoding, false).unwrap();
+        assert!(!unmappable);
+        assert_eq!(saved_bytes, original_bytes);
     }
 }

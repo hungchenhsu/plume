@@ -53,11 +53,24 @@ export interface SaveResult {
   unmappable: boolean;
 }
 
+/**
+ * `extensionEncoding` is the per-extension default from the preferences
+ * table (see extensionEncodings.ts), forwarded as a hint for
+ * auto-detection. The Rust core only honors it when the file has no BOM,
+ * is not valid non-ASCII UTF-8 (confident UTF-8 always wins), and the
+ * hinted encoding decodes the bytes without malformed sequences; it is
+ * ignored entirely when an explicit `encoding` is passed.
+ */
 export function openDocument(
   path: string,
   encoding?: string,
+  extensionEncoding?: string,
 ): Promise<OpenedDocument> {
-  return invoke<OpenedDocument>("open_document", { path, encoding });
+  return invoke<OpenedDocument>("open_document", {
+    path,
+    encoding,
+    extensionEncoding,
+  });
 }
 
 export interface DetectionExplanation {
@@ -67,7 +80,8 @@ export interface DetectionExplanation {
   detectorVerdict: string;
   sampledBytes: number;
   totalSize: number;
-  /** "{encoding} ({reason})", reason is "bom" | "detector" | "fallback". */
+  /** "{encoding} ({reason})", reason is "bom" | "extension" | "detector"
+   *  | "fallback". */
   wouldChoose: string;
 }
 
@@ -75,10 +89,17 @@ export interface DetectionExplanation {
  * Diagnostics for the "Why {encoding}?" status-bar popup: re-reads a bounded
  * prefix of the file and reruns the same detection `open_document` uses,
  * without decoding or affecting the open document. Read-only, side-effect
- * free.
+ * free. Pass the same `extensionEncoding` hint `openDocument` would get so
+ * the card reflects the per-extension preference decision.
  */
-export function explainDetection(path: string): Promise<DetectionExplanation> {
-  return invoke<DetectionExplanation>("explain_detection", { path });
+export function explainDetection(
+  path: string,
+  extensionEncoding?: string,
+): Promise<DetectionExplanation> {
+  return invoke<DetectionExplanation>("explain_detection", {
+    path,
+    extensionEncoding,
+  });
 }
 
 export function saveDocument(args: {
@@ -125,6 +146,10 @@ export interface Preferences {
   defaultBom: boolean;
   wordWrap: boolean;
   showInvisibles: boolean;
+  /** Per-extension default encodings, e.g. [["txt", "Big5"]]. Extensions
+   *  are lowercase without a leading dot (see extensionEncodings.ts);
+   *  mirrors prefs.rs `extension_encodings: Vec<(String, String)>`. */
+  extensionEncodings: [string, string][];
 }
 
 export function loadPreferences(): Promise<Preferences> {

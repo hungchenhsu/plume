@@ -18,6 +18,14 @@ pub struct Preferences {
     pub word_wrap: bool,
     /// Render invisible characters: space dots, tab arrows, EOL marks.
     pub show_invisibles: bool,
+    /// Per-extension default encoding, e.g. `[("txt", "Big5")]`. Extension
+    /// is stored without a leading dot, lowercase (the frontend normalizes
+    /// before persisting; see `src/extensionEncodings.ts`). Auto-detection
+    /// only honors an entry when the file has no BOM, is not valid
+    /// non-ASCII UTF-8 (confident UTF-8 always wins), and the entry's
+    /// encoding decodes the sample without malformed sequences — see
+    /// `encoding::detect_with_extension`.
+    pub extension_encodings: Vec<(String, String)>,
 }
 
 impl Default for Preferences {
@@ -30,6 +38,7 @@ impl Default for Preferences {
             default_bom: false,
             word_wrap: true,
             show_invisibles: false,
+            extension_encodings: Vec::new(),
         }
     }
 }
@@ -86,6 +95,7 @@ mod tests {
             default_bom: false,
             word_wrap: false,
             show_invisibles: true,
+            extension_encodings: vec![("txt".into(), "Big5".into())],
         };
         let json = serde_json::to_vec(&prefs).unwrap();
         let back: Preferences = serde_json::from_slice(&json).unwrap();
@@ -94,6 +104,10 @@ mod tests {
         assert_eq!(back.theme, "dark");
         assert_eq!(back.default_encoding, "Big5");
         assert!(back.show_invisibles);
+        assert_eq!(
+            back.extension_encodings,
+            vec![("txt".to_string(), "Big5".to_string())]
+        );
     }
 
     /// `show_invisibles` was added after `word_wrap`; a `preferences.json`
@@ -116,6 +130,38 @@ mod tests {
         assert_eq!(prefs.theme, "dark");
         assert_eq!(prefs.default_encoding, "Big5");
         assert!(!prefs.word_wrap);
+    }
+
+    /// `extension_encodings` is new: an old `preferences.json` written
+    /// before this field existed must still load, defaulting to an empty
+    /// table — this is the compatibility case the field's `serde(default)`
+    /// exists for.
+    #[test]
+    fn old_preferences_without_extension_encodings_still_load() {
+        let json = r#"{"fontSize": 16, "theme": "dark"}"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.font_size, 16);
+        assert_eq!(prefs.theme, "dark");
+        assert!(prefs.extension_encodings.is_empty());
+    }
+
+    /// The stored JSON shape is an array of two-element arrays, e.g.
+    /// `[["txt","Big5"],["log","UTF-8"]]` — pin this so the frontend's
+    /// `[string, string][]` type stays in sync with the Rust tuple shape.
+    #[test]
+    fn extension_encodings_serialize_as_array_of_pairs() {
+        let prefs = Preferences {
+            extension_encodings: vec![
+                ("txt".into(), "Big5".into()),
+                ("log".into(), "UTF-8".into()),
+            ],
+            ..Preferences::default()
+        };
+        let json = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(
+            json["extensionEncodings"],
+            serde_json::json!([["txt", "Big5"], ["log", "UTF-8"]])
+        );
     }
 
     /// `theme` is a plain String (no enum/schema), so the new built-in

@@ -728,6 +728,70 @@ select:focus-visible {
   border-radius: var(--radius-md);
 }
 
+.prefs-ext-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: var(--font-ui);
+}
+
+.prefs-ext-heading {
+  font-weight: 600;
+}
+
+.prefs-ext-hint {
+  color: var(--fg-muted);
+  font-size: calc(var(--font-ui) - 1px);
+}
+
+.prefs-ext-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prefs-ext-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prefs-ext-row input,
+.prefs-ext-row select {
+  padding: 4px 6px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.prefs-ext-row .prefs-ext-name {
+  width: 70px;
+}
+
+.prefs-ext-row .prefs-ext-encoding {
+  flex: 1;
+  min-width: 0;
+}
+
+.prefs-ext-remove,
+.prefs-ext-add {
+  padding: 4px 10px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.prefs-ext-add {
+  align-self: flex-start;
+}
+
 .prefs-buttons {
   display: flex;
   justify-content: flex-end;
