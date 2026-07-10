@@ -12,7 +12,7 @@
 //                   run is always executed first and discarded, so total
 //                   process launches = N + 1.
 //   --threshold=MS Optional. If the median exceeds this, exits non-zero
-//                   (for CI gating). Omit for an informational-only run.
+//                   (for automated gating). Omit for an informational run.
 //   --bin=PATH     Override the binary path (e.g. a packaged .app on
 //                   macOS: .../bundle/macos/Plume.app/Contents/MacOS/plume).
 //                   Defaults to the platform release build under
@@ -30,6 +30,15 @@
 //
 // Windows path (src-tauri\target\release\plume.exe) is implemented but
 // not locally verified in this change — noted in the PR description.
+//
+// Dead end (2026-07-10): running this in CI does not work. On GitHub's
+// macOS runners the WKWebView never begins loading the page — the probe
+// checkpoints show native setup completing in ~1.7s and then nothing;
+// on_page_load Started never fires, so frontend JS never runs and no
+// startup_ms line is ever printed. An Aqua session was present, the
+// console was owned by the runner user, and ad-hoc codesigning did not
+// help; root cause undetermined. The same silence occurs locally when
+// the screen is locked. Run this on an unlocked, interactive desktop.
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
