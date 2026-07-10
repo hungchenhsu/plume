@@ -87,9 +87,10 @@ autosave-to-disk explicitly declined, multi-window still awaiting a design
 conversation). One coherent item per PR.
 
 **UI**
-- [ ] Full visual refresh: redesigned visual language (tab bar, status
+- [x] Full visual refresh: redesigned visual language (tab bar, status
   bar, dialogs, find/replace panel) on a CSS design-token foundation;
-  light and dark modes both complete
+  light and dark modes both complete (delivered in #37 together with the
+  polish-candidates token-system entry above)
 - [x] Built-in theme system: a few curated themes (light / dark /
   eye-friendly) built on the design tokens; View-menu switching,
   persisted preference. Built-ins + CSS variables only — no custom
