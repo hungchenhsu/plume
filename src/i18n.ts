@@ -94,8 +94,19 @@ export interface Messages {
   "menu.reopenWithEncoding": string;
   "menu.saveWithEncoding": string;
   "menu.viewRawBytes": string;
+  "menu.repairMojibake": string;
   "menu.lineEndingLf": string;
   "menu.lineEndingCrlf": string;
+
+  "mojibake.title": string;
+  "mojibake.noCandidates": string;
+  "mojibake.pickCandidate": string;
+  "mojibake.candidateDescription": (original: string, intermediate: string) => string;
+  "mojibake.replacementCount": (count: number) => string;
+  "mojibake.before": string;
+  "mojibake.after": string;
+  "mojibake.appliedTitle": string;
+  "mojibake.appliedMessage": string;
 
   "dialog.pagingTitle": string;
   "dialog.fileChangedTitle": string;
@@ -212,8 +223,22 @@ const en: Messages = {
   "menu.reopenWithEncoding": "Reopen with Encoding",
   "menu.saveWithEncoding": "Save with Encoding",
   "menu.viewRawBytes": "View raw bytes…",
+  "menu.repairMojibake": "Repair mojibake…",
   "menu.lineEndingLf": "LF (Unix / macOS)",
   "menu.lineEndingCrlf": "CRLF (Windows)",
+
+  "mojibake.title": "Repair mojibake",
+  "mojibake.noCandidates":
+    "No mis-decode pattern found — this doesn't look like mojibake.",
+  "mojibake.pickCandidate": "Pick a repair to apply:",
+  "mojibake.candidateDescription": (original, intermediate) =>
+    `Looks like ${original} content that was decoded as ${intermediate} by mistake.`,
+  "mojibake.replacementCount": (count) => `changes about ${count} character${count === 1 ? "" : "s"}`,
+  "mojibake.before": "Before",
+  "mojibake.after": "After repair",
+  "mojibake.appliedTitle": "Mojibake repaired",
+  "mojibake.appliedMessage":
+    "The content was repaired in the editor. Use Undo to revert if this wasn't right.",
 
   "dialog.pagingTitle": "Paging",
   "dialog.fileChangedTitle": "File changed on disk",
@@ -338,8 +363,20 @@ const zhTW: Messages = {
   "menu.reopenWithEncoding": "以指定編碼重新開啟",
   "menu.saveWithEncoding": "以指定編碼儲存",
   "menu.viewRawBytes": "檢視原始位元組…",
+  "menu.repairMojibake": "修復亂碼…",
   "menu.lineEndingLf": "LF（Unix / macOS）",
   "menu.lineEndingCrlf": "CRLF（Windows）",
+
+  "mojibake.title": "修復亂碼",
+  "mojibake.noCandidates": "找不到可修復的 mis-decode pattern。",
+  "mojibake.pickCandidate": "選擇一個修復方式套用：",
+  "mojibake.candidateDescription": (original, intermediate) =>
+    `看起來是 ${original} 的內容曾被當 ${intermediate} 解碼。`,
+  "mojibake.replacementCount": (count) => `約變更 ${count} 個字元`,
+  "mojibake.before": "修復前",
+  "mojibake.after": "修復後",
+  "mojibake.appliedTitle": "亂碼已修復",
+  "mojibake.appliedMessage": "編輯器內容已修復，可用 Undo 復原。",
 
   "dialog.pagingTitle": "翻頁",
   "dialog.fileChangedTitle": "檔案已在磁碟上異動",

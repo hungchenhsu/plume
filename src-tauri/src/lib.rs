@@ -3,6 +3,7 @@ mod chunk;
 mod encoding;
 mod hexdump;
 mod menu;
+mod mojibake;
 mod prefs;
 mod recent;
 mod search;
@@ -492,6 +493,8 @@ pub fn run() {
             backup::delete_backup,
             backup::list_backups,
             hexdump::read_hex_dump,
+            mojibake::detect_mojibake,
+            mojibake::apply_mojibake_repair,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())

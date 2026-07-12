@@ -40,6 +40,7 @@ import { showDetectionCard } from "./detectcard";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
+import { showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
@@ -652,6 +653,26 @@ function setLineEnding(lineEnding: string): void {
   updateStatusBar(doc);
 }
 
+/**
+ * Open the mojibake repair wizard for the active document's live editor
+ * content. No-op if there is no active tab or it is a read-only large-file
+ * preview (repair can't act on the whole document there — see
+ * ARCHITECTURE.md's large-file phase 1). Guards against the active tab
+ * changing while the (async) wizard is still open: detection and the
+ * user's pick both take a round trip, and if the user switches tabs in the
+ * meantime, applying the repair to whatever is now live in the editor
+ * would silently corrupt an unrelated document.
+ */
+function showMojibakeRepairWizard(): void {
+  const doc = tabs.active;
+  if (!doc || doc.truncated) return;
+  const docId = doc.id;
+  showMojibakeWizard(editor.content(), (repaired) => {
+    if (tabs.activeId !== docId) return;
+    editor.replaceContent(repaired);
+  });
+}
+
 function showEncodingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
@@ -714,6 +735,14 @@ function showEncodingMenu(anchor: HTMLElement): void {
           })),
         ),
     },
+    {
+      label: t("menu.repairMojibake"),
+      // Mojibake is "legal but wrong" text, not a decode error, so this
+      // entry doesn't depend on doc.malformed — see showDecodeWarningMenu
+      // for the other entry point. Large-file previews are read-only.
+      disabled: doc.truncated,
+      action: () => showMojibakeRepairWizard(),
+    },
   ]);
 }
 
@@ -730,6 +759,11 @@ function showDecodeWarningMenu(anchor: HTMLElement): void {
       action: () => {
         if (doc.path) showHexView(doc.path, doc.title);
       },
+    },
+    {
+      label: t("menu.repairMojibake"),
+      disabled: doc.truncated,
+      action: () => showMojibakeRepairWizard(),
     },
   ]);
 }

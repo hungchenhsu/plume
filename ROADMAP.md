@@ -126,7 +126,7 @@ game. One coherent item per PR, as always.
 
 **Track A — encoding tools** (the moat; all items are encoding danger
 domain: failing-test-first, round-trip tests mandatory)
-- [ ] Mojibake repair wizard: detect common mis-decode round-trips
+- [x] Mojibake repair wizard: detect common mis-decode round-trips
   (e.g. Big5 bytes once decoded as Windows-1252 and re-saved) and offer
   a previewed, reversible repair — never applied silently
 - [ ] Batch encoding conversion: convert a folder's files to a target
