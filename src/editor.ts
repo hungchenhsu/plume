@@ -5,16 +5,22 @@ import { basicSetup, EditorView } from "codemirror";
 import {
   Compartment,
   EditorState,
+  Prec,
   RangeSetBuilder,
+  StateEffect,
+  StateField,
   type Extension,
+  type RangeSet,
   type Text,
 } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
+  GutterMarker,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
+  gutter,
   highlightWhitespace,
 } from "@codemirror/view";
 import { LanguageDescription } from "@codemirror/language";
@@ -98,6 +104,12 @@ export interface EditorHandle {
   openSearch(): void;
   /** Move the cursor to a 1-based line and scroll it into view. */
   goToLine(line: number): void;
+  /** Replace the set of bookmarked lines shown in the gutter for the live
+   *  buffer (buffer-relative, 1-based line numbers — see
+   *  src/bookmarks.ts `windowRelativeBookmarks` for how main.ts derives
+   *  these for a large-file window, or passes `doc.bookmarks` directly for
+   *  a small one). Lines outside the buffer's current range are ignored. */
+  setBookmarks(lines: number[]): void;
   /** Toggle soft wrapping of long lines. */
   setLineWrapping(enabled: boolean): void;
   /** Toggle rendering of invisible characters: space dots, tab arrows
@@ -129,6 +141,11 @@ export function cursorOf(buffer: EditorBuffer): number {
 /** Full text content of a detached buffer. */
 export function contentOf(buffer: EditorBuffer): string {
   return buffer.doc.toString();
+}
+
+/** Line count of a detached buffer (1-based line numbers go up to this). */
+export function lineCountOf(buffer: EditorBuffer): number {
+  return buffer.doc.lines;
 }
 
 const FIND_DATALIST_ID = "plume-find-history";
@@ -289,6 +306,60 @@ const eolMarks = ViewPlugin.fromClass(
  *  built-in for end-of-line marks). */
 const invisiblesExtension: Extension = [highlightWhitespace(), eolMarks];
 
+// ---- Bookmark gutter (ROADMAP.md Track B). Bookmarks are tracked as plain
+// buffer-relative line numbers (see `EditorHandle.setBookmarks` and
+// src/bookmarks.ts), not CM6 positions: the marker set is replaced wholesale
+// by `setBookmarkLines` (tab switches, goto jumps, toggling) rather than
+// mapped through document changes, so it deliberately does *not* "stick" to
+// content the way a tracked RangeSet would — editing lines above a bookmark
+// leaves it pointing at the same line number, not the same text. Each
+// gutter recompute re-resolves line numbers to fresh positions via
+// `state.doc.line(n)`, which is exactly this "line numbers, not positions"
+// semantics for free.
+class BookmarkMarker extends GutterMarker {
+  toDOM(): Node {
+    const span = document.createElement("span");
+    span.className = "cm-bookmark-marker";
+    span.textContent = "●";
+    return span;
+  }
+}
+const bookmarkMarker = new BookmarkMarker();
+
+const setBookmarkLines = StateEffect.define<number[]>();
+
+/** Buffer-relative (1-based) bookmarked line numbers for the live buffer. */
+const bookmarkLinesField = StateField.define<number[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setBookmarkLines)) return effect.value;
+    }
+    return value;
+  },
+});
+
+function bookmarkMarkers(state: EditorState, lines: readonly number[]): RangeSet<GutterMarker> {
+  const builder = new RangeSetBuilder<GutterMarker>();
+  // GutterMarker ranges must be added in ascending position order.
+  for (const line of [...lines].sort((a, b) => a - b)) {
+    if (line < 1 || line > state.doc.lines) continue; // stale/out-of-range
+    const pos = state.doc.line(line).from;
+    builder.add(pos, pos, bookmarkMarker);
+  }
+  return builder.finish();
+}
+
+/** A slim always-present gutter, forced leftmost (of the line-number
+ *  gutter) for the conventional bookmark/breakpoint-margin position; empty
+ *  (no markers) is the common case. */
+const bookmarkGutter = Prec.highest(
+  gutter({
+    class: "cm-bookmark-gutter",
+    markers: (view) => bookmarkMarkers(view.state, view.state.field(bookmarkLinesField)),
+  }),
+);
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
@@ -311,6 +382,8 @@ export function createEditor(
   const extensions = [
     basicSetup,
     editorTheme,
+    bookmarkLinesField,
+    bookmarkGutter,
     language.of([]),
     wrapping.of([]),
     invisibles.of([]),
@@ -416,6 +489,9 @@ export function createEditor(
         effects: EditorView.scrollIntoView(info.from, { y: "center" }),
       });
       view.focus();
+    },
+    setBookmarks: (lines) => {
+      view.dispatch({ effects: setBookmarkLines.of(lines) });
     },
     setLineWrapping: (enabled) => {
       currentWrapping = enabled ? EditorView.lineWrapping : [];

@@ -152,6 +152,16 @@ const baseTheme = EditorView.theme({
     userSelect: "none",
     pointerEvents: "none",
   },
+  // Bookmark gutter (editor.ts `bookmarkGutter`). Fixed width so the
+  // column doesn't jitter as markers on individual lines appear/disappear.
+  ".cm-bookmark-gutter": {
+    width: "0.9em",
+    textAlign: "center",
+  },
+  ".cm-bookmark-marker": {
+    color: "var(--accent)",
+    fontSize: "0.7em",
+  },
 });
 
 const highlightStyle = HighlightStyle.define([

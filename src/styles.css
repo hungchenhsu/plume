@@ -245,7 +245,8 @@ select:focus-visible {
 }
 
 #status-warning,
-#status-readonly {
+#status-readonly,
+#status-indexing {
   padding: 1px 8px;
   color: var(--warning);
   background: var(--warning-soft);

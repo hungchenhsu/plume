@@ -49,6 +49,47 @@ export function readDocumentChunkBefore(
   });
 }
 
+export interface LineIndex {
+  /** `checkpoints[k]` is the byte offset of line `k * 1024` (0-based). */
+  checkpoints: number[];
+  totalLines: number;
+  /** File size when the index was built; compare against `doc.totalSize`
+   *  to detect a stale index (see src-tauri/src/lineindex.rs). */
+  indexedSize: number;
+}
+
+/**
+ * Build a sparse line-offset index for a large file by streaming it once
+ * (see src-tauri/src/lineindex.rs) — used for go-to-line and bookmarks
+ * beyond the currently loaded chunk window. `encoding` should be the
+ * document's own detected encoding (`doc.encoding`); rejects for UTF-16
+ * files, mirroring `readDocumentChunk`'s paging exclusion.
+ */
+export function buildLineIndex(path: string, encoding: string): Promise<LineIndex> {
+  return invoke<LineIndex>("build_line_index", { path, encoding });
+}
+
+/**
+ * Resolve the byte offset of `targetLine`'s first byte by streaming from
+ * `fromOffset` (the byte offset of `fromLine`'s first byte — normally a
+ * `LineIndex` checkpoint). Both line numbers are 0-based. Rejects if
+ * `targetLine` is before `fromLine`; clamps to the last line's start
+ * (never errors) if the file ends before `targetLine` is reached.
+ */
+export function locateLineOffset(
+  path: string,
+  targetLine: number,
+  fromOffset: number,
+  fromLine: number,
+): Promise<number> {
+  return invoke<number>("locate_line_offset", {
+    path,
+    targetLine,
+    fromOffset,
+    fromLine,
+  });
+}
+
 export interface SaveResult {
   unmappable: boolean;
   written: boolean;
