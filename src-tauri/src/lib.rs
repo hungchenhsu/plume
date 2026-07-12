@@ -12,6 +12,7 @@ mod store;
 mod watcher;
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 
@@ -188,9 +189,77 @@ fn explain_detection(
     })
 }
 
-/// Write bytes atomically: write to a temporary file in the same directory
-/// (same filesystem), fsync, then rename over the target. A crash mid-save
-/// leaves either the old file or the new one — never a half-written file.
+/// Process-local counter mixed into temporary-file names (alongside a
+/// timestamp) so that two [`create_tmp_exclusive`] calls in the same
+/// process can never produce the same candidate, even within the same
+/// nanosecond.
+static TMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Build one same-directory temporary-file candidate path for `file_name`.
+/// The name mixes the process id, the current time's subsecond
+/// nanoseconds, and [`TMP_NAME_COUNTER`], so it cannot be guessed from
+/// public information alone the way a bare `.{file_name}.plume-tmp-{pid}`
+/// name could (issue #60). Unpredictability is defense in depth, not the
+/// actual safety guarantee — [`open_exclusive`] is what makes a guessed or
+/// colliding name safe.
+fn tmp_candidate_path(dir: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let counter = TMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        ".{file_name}.plume-tmp-{}-{nanos}-{counter}",
+        std::process::id()
+    ))
+}
+
+/// Open `path` for writing only if it does not already exist:
+/// `O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows. If `path` already
+/// exists — including as a symlink, dangling or not — this fails with
+/// `AlreadyExists` instead of following it. That is the actual fix for
+/// issue #60: an attacker who pre-plants a symlink at a path we are about
+/// to use as a temp file can no longer redirect our write to the
+/// symlink's target, because we never open through it in the first place.
+fn open_exclusive(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+/// Create a same-directory temporary file with an unpredictable name,
+/// refusing to follow any symlink already occupying a candidate path (see
+/// [`open_exclusive`]). Retries up to 16 times on `AlreadyExists` — a
+/// genuine name collision and a pre-planted symlink look identical from
+/// here, and both are handled the same way: try the next unpredictable
+/// candidate. Any other error is returned immediately. On exhausting all
+/// attempts, returns the last `AlreadyExists` error. Returns the open file
+/// together with the path it was created at, since the caller needs the
+/// path for `rename` and for cleanup on a later failure.
+fn create_tmp_exclusive(
+    dir: &std::path::Path,
+    file_name: &str,
+) -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    let mut last_err =
+        std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no candidate attempted");
+    for _ in 0..16 {
+        let candidate = tmp_candidate_path(dir, file_name);
+        match open_exclusive(&candidate) {
+            Ok(file) => return Ok((file, candidate)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err)
+}
+
+/// Write bytes atomically: create a temporary file in the same directory
+/// (same filesystem) — with an unpredictable name and exclusive create, so
+/// the temp-file step can never be redirected through a pre-planted
+/// symlink (see [`create_tmp_exclusive`], [`open_exclusive`]; issue #60) —
+/// write it, fsync, then rename over the target. A crash mid-save leaves
+/// either the old file or the new one — never a half-written file.
 /// Existing file permissions are carried over to the replacement.
 pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -200,10 +269,9 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    let tmp_path = dir.join(format!(".{file_name}.plume-tmp-{}", std::process::id()));
+    let (mut tmp, tmp_path) = create_tmp_exclusive(dir, &file_name)?;
 
     let result = (|| {
-        let mut tmp = std::fs::File::create(&tmp_path)?;
         tmp.write_all(bytes)?;
         tmp.sync_all()?;
         drop(tmp);
@@ -364,8 +432,12 @@ pub fn run() {
 mod tests {
     use super::{
         atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
-        save_document,
+        save_document, tmp_candidate_path,
     };
+    // Only the unix-gated symlink test uses this; an unconditional import
+    // is an unused-import error under -D warnings on Windows.
+    #[cfg(unix)]
+    use super::open_exclusive;
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
@@ -415,6 +487,115 @@ mod tests {
             .join("nested")
             .join("doc.txt");
         assert!(atomic_write(&target, b"x").is_err());
+    }
+
+    /// Issue #60, layer 1 — attack the public `atomic_write` behavior
+    /// directly. Before the fix, `atomic_write` built its temp file path
+    /// from only the target file name and process id
+    /// (`.{file_name}.plume-tmp-{pid}`), then opened it with
+    /// `File::create`, which follows symlinks. A local attacker who can
+    /// write into the save directory could pre-plant a symlink at that
+    /// exact, guessable path pointing at any other file they can write
+    /// (`victim.txt` here), and `atomic_write` would write the new
+    /// document's bytes straight through the symlink into the victim
+    /// file, then `rename` the symlink itself over the real save target —
+    /// a successful-looking save that silently clobbered an unrelated
+    /// file. This test pre-plants that exact symlink and asserts the
+    /// victim's content survives the save untouched. Against the
+    /// unfixed implementation this assertion fails (the victim is
+    /// overwritten with the new document's bytes) — that is the
+    /// failing-test-first red. After the fix this passes because
+    /// `atomic_write` never reuses that predictable name; the
+    /// exclusive-create guarantee that also protects a name collision is
+    /// locked separately by `tmp_file_creation_refuses_preexisting_symlink`.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_refuses_preplanted_symlink_at_predictable_tmp_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("plume-atomic-symlink-attack");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"victim data").unwrap();
+
+        let target = dir.join("doc.txt");
+        // The predictable temp path the pre-fix implementation used:
+        // `.{file_name}.plume-tmp-{pid}`, no randomness at all.
+        let legacy_tmp_path = dir.join(format!(".doc.txt.plume-tmp-{}", std::process::id()));
+        symlink(&victim, &legacy_tmp_path).unwrap();
+
+        let save_result = atomic_write(&target, b"attacker-controlled new content");
+
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"victim data",
+            "atomic_write must never write through a pre-planted symlink at a \
+             predictable temp path onto an unrelated file"
+        );
+        assert!(
+            save_result.is_ok(),
+            "the save itself must still succeed, via an unpredictable candidate \
+             that the attacker could not have pre-occupied"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"attacker-controlled new content"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #60, layer 2 — the unit-level guarantee that actually closes
+    /// the hole: opening a temp-file candidate must refuse to follow a
+    /// symlink already sitting at that path, rather than silently writing
+    /// through it. This is the same open call `create_tmp_exclusive` uses
+    /// for every candidate.
+    #[cfg(unix)]
+    #[test]
+    fn tmp_file_creation_refuses_preexisting_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join("plume-open-exclusive-symlink");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"victim data").unwrap();
+        let candidate = dir.join("preplanted-link");
+        symlink(&victim, &candidate).unwrap();
+
+        match open_exclusive(&candidate) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            other => panic!(
+                "expected Err(AlreadyExists) for a path already occupied by a \
+                 symlink, got {other:?}"
+            ),
+        }
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"victim data",
+            "the symlink must not have been followed — victim content must be untouched"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #60: two candidate names generated back-to-back for the same
+    /// (dir, file_name) must differ (the counter component guarantees it).
+    /// This locks uniqueness only — safety against a pre-planted path does
+    /// not rest on name entropy but on `open_exclusive` refusing to open
+    /// anything that already exists.
+    #[test]
+    fn tmp_candidates_are_unique() {
+        let dir = std::env::temp_dir().join("plume-tmp-candidate-uniqueness");
+        let first = tmp_candidate_path(&dir, "doc.txt");
+        let second = tmp_candidate_path(&dir, "doc.txt");
+        assert_ne!(
+            first, second,
+            "consecutive candidates for the same (dir, file_name) must differ"
+        );
     }
 
     #[test]
