@@ -42,20 +42,25 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-11)
+## 2. Current state (2026-07-12)
 
-- **v0.2 feature cycle complete** (PRs #34–#50, all CI-green): full
-  visual refresh on design tokens, built-in themes, UI i18n (zh-TW
-  first), all six Tier-1 encoding/editing items, plus selection-contrast
-  and markup-highlighting fixes from first real-device feedback.
-  Tagged **v0.2.0-alpha.1**.
-- Tests: 75 Rust unit tests + 92 frontend vitest tests; release pipeline
-  builds six installers per tag as a draft release.
-- **P3 v0.3 cycle active** (user approval, 2026-07-11): four parallel
-  tracks — encoding tools, large files, editing comfort, release &
-  community — approved for concurrent work as contributors join. The
-  committed items live in ROADMAP.md §v0.3. D1 (naming) explicitly
-  deferred by the user; D2 blocked behind it.
+- **v0.2 feature cycle complete** (PRs #34–#50): full visual refresh on
+  design tokens, built-in themes, UI i18n (zh-TW first), all six Tier-1
+  encoding/editing items. Tagged **v0.2.0-alpha.1**.
+- **v0.3 feature cycle complete** (PRs #65–#90, all CI-green): all four
+  parallel tracks delivered — **encoding tools** (mojibake repair
+  wizard, batch encoding + line-ending conversion, side-by-side encoding
+  preview), **large files** (streaming find/replace, line-offset index +
+  bookmarks), **editing comfort** (code folding, line operations, indent
+  guides), **release & community** (issue templates + good-first-issues,
+  ja + zh-CN i18n). Preceded by a P1/P2 data-integrity sweep: five P1
+  fixes (two-phase lossy save, atomic_write symlink hardening,
+  session-index atomicity + orphan recovery, hot-exit backup-failure
+  handling, bounded large-file read) and three P2s. Tagged
+  **v0.3.0-alpha.1**. D1 (naming) explicitly deferred by the user; D2
+  blocked behind it.
+- Tests: 155 Rust unit tests + 206 frontend vitest tests; release
+  pipeline builds six installers per tag as a draft release.
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
