@@ -122,6 +122,11 @@ export function showStreamReplace(
     busy = true;
     updateExecuteEnabled();
     status.textContent = t("streamReplace.replacing");
+    // Whether to close the panel once busy clears below — close() itself
+    // is a no-op while busy is true (see its guard above), so closing on
+    // success can't happen until *after* finally clears busy, not from
+    // inside this try (issue #98).
+    let succeeded = false;
     try {
       const report = await streamReplaceInFile(
         path,
@@ -135,15 +140,16 @@ export function showStreamReplace(
         status.textContent = "";
         await messageDialog(resultMessage, { title, kind: "info" });
         onReplaced();
-        close();
-        return;
+        succeeded = true;
+      } else {
+        status.textContent = resultMessage;
       }
-      status.textContent = resultMessage;
     } catch (error) {
       status.textContent = String(error);
     } finally {
       busy = false;
       updateExecuteEnabled();
+      if (succeeded) close();
     }
   };
   executeButton.addEventListener("click", () => void runReplace());
