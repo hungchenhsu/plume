@@ -231,6 +231,25 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/** A promise plus its resolve/reject, exposed for manual settlement —
+ *  lets a test hold an IPC mock's response open across other synchronous
+ *  actions (e.g. an input change) before deciding when it "arrives". */
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function checkboxes(panel: HTMLElement): HTMLInputElement[] {
   return Array.from(
     panel.querySelectorAll<HTMLInputElement>(".batchconvert-row-checkbox input[type=checkbox]"),
@@ -365,5 +384,145 @@ describe("showBatchConvert — per-row checkbox (DOM)", () => {
     const boxes = checkboxes(panel);
     expect(boxes[0].checked).toBe(true);
     expect(boxes[1].checked).toBe(true);
+  });
+});
+
+// Issue #95 (P1): a scan's dry-run report and Convert's actual execution
+// parameters could decouple. Two independent failure modes, covered
+// separately below: (1) a scan response that arrives after the inputs
+// changed could still render, because invalidateScan did nothing while
+// lastEntries was still empty (e.g. a first scan still in flight); (2)
+// even a legitimately-rendered report's Convert re-read the *current*
+// encoding/line-ending controls instead of the ones the report was
+// scanned with.
+describe("showBatchConvert — stale scan response discarded (issue #95)", () => {
+  afterEach(() => {
+    // Mirrors the per-row checkbox describe block above: let the open
+    // dialog's own Escape handler clean up its document-level listeners.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.querySelector(".batchconvert-overlay")?.remove();
+    scanBatchConversion.mockReset();
+    executeBatchConversion.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+  });
+
+  it("a scan superseded by an input change before it resolves is discarded unrendered, and does not enable Convert", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    const scanA = deferred<{ entries: BatchEntry[] }>();
+    scanBatchConversion.mockReturnValueOnce(scanA.promise);
+
+    showBatchConvert();
+    const panel = document.querySelector(".batchconvert-panel") as HTMLElement;
+    (panel.querySelector(".batchconvert-folder") as HTMLButtonElement).click();
+    await flush();
+
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    const encodingSelect = panel.querySelector(".batchconvert-encoding") as HTMLSelectElement;
+
+    // Start scan A; its IPC promise is left unresolved (still in flight).
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+    expect(scanBatchConversion).toHaveBeenCalledTimes(1);
+
+    // Switch the target to B before A resolves. lastEntries is still []
+    // here — no report has ever rendered — which is exactly the state the
+    // old invalidateScan's `lastEntries.length === 0` early return did
+    // nothing for; it must still invalidate A's in-flight request.
+    encodingSelect.value = "1";
+    encodingSelect.dispatchEvent(new Event("change"));
+
+    // A's stale response now arrives.
+    scanA.resolve({ entries: [entry("convertible", "/a.txt")] });
+    await flush();
+
+    // Discarded outright: no rows rendered, Convert not enabled by a
+    // report scanned for A that nobody reviewed against B.
+    expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(0);
+    expect(convertButton.disabled).toBe(true);
+
+    // A real scan under B completes next and must render/enable
+    // normally — proving the discard above isn't a permanently stuck
+    // state.
+    const scanB = deferred<{ entries: BatchEntry[] }>();
+    scanBatchConversion.mockReturnValueOnce(scanB.promise);
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+    scanB.resolve({ entries: [entry("convertible", "/b.txt")] });
+    await flush();
+
+    expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(1);
+    expect(convertButton.disabled).toBe(false);
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 1));
+  });
+
+  it("a superseded scan that rejects is discarded without disturbing the current state", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    const scanA = deferred<{ entries: BatchEntry[] }>();
+    scanBatchConversion.mockReturnValueOnce(scanA.promise);
+
+    showBatchConvert();
+    const panel = document.querySelector(".batchconvert-panel") as HTMLElement;
+    (panel.querySelector(".batchconvert-folder") as HTMLButtonElement).click();
+    await flush();
+
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    const encodingSelect = panel.querySelector(".batchconvert-encoding") as HTMLSelectElement;
+
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+
+    // Supersede A, then let A's IPC reject: the stale error must not clobber
+    // the (now B-oriented) state — same generation guard as the success path.
+    encodingSelect.value = "1";
+    encodingSelect.dispatchEvent(new Event("change"));
+    scanA.reject(new Error("stale scan failed"));
+    await flush();
+
+    expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(0);
+    expect(convertButton.disabled).toBe(true);
+
+    // A fresh scan under B still works — the discard didn't wedge anything.
+    const scanB = deferred<{ entries: BatchEntry[] }>();
+    scanBatchConversion.mockReturnValueOnce(scanB.promise);
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+    scanB.resolve({ entries: [entry("convertible", "/b.txt")] });
+    await flush();
+
+    expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(1);
+    expect(convertButton.disabled).toBe(false);
+  });
+
+  it("Convert executes with the scan's bound parameter snapshot, not the controls' current values", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt")]);
+    // openAndScan scans with both selects at their default (index 0 —
+    // KEEP_ENCODING — and "keep" line ending).
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    const encodingSelect = panel.querySelector(".batchconvert-encoding") as HTMLSelectElement;
+    const lineEndingSelect = panel.querySelector(
+      ".batchconvert-lineending-select",
+    ) as HTMLSelectElement;
+
+    // Move the controls to a different target directly, without the
+    // change event that would otherwise invalidate the report — isolating
+    // what runConvert itself reads from. It must be the bound snapshot,
+    // never these elements, regardless of how their values came to
+    // differ from what was scanned.
+    encodingSelect.value = "1";
+    lineEndingSelect.value = "CRLF";
+
+    confirmDialog.mockResolvedValue(true);
+    executeBatchConversion.mockResolvedValue([{ path: "/a.txt", ok: true, message: "" }]);
+    convertButton.click();
+    await flush();
+
+    const scannedChoice = batchEncodingChoices()[0];
+    expect(executeBatchConversion).toHaveBeenCalledWith(
+      ["/a.txt"],
+      scannedChoice.value,
+      scannedChoice.withBom,
+      "keep",
+    );
   });
 });
