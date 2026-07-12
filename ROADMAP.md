@@ -131,7 +131,7 @@ domain: failing-test-first, round-trip tests mandatory)
   a previewed, reversible repair — never applied silently
 - [x] Batch encoding conversion: convert a folder's files to a target
   encoding with a dry-run report first; atomic per-file saves
-- [ ] Batch line-ending conversion (rides on the same batch UI)
+- [x] Batch line-ending conversion (rides on the same batch UI)
 - [ ] Side-by-side encoding preview: the same bytes decoded under two
   candidate encodings, read-only, for manual disambiguation
 

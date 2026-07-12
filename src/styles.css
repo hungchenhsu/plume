@@ -798,11 +798,29 @@ select:focus-visible {
   cursor: default;
 }
 
-/* Reserved for the batch line-ending-conversion PR to add a target
-   line-ending picker without reshuffling this dialog's layout — empty
-   (and collapsed) until that PR populates it. */
-.batchconvert-options:empty {
-  display: none;
+.batchconvert-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+
+.batchconvert-lineending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-sm);
+  color: var(--fg-muted);
+}
+
+.batchconvert-lineending-select {
+  padding: 5px 8px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  color: inherit;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
 .batchconvert-status {
@@ -829,7 +847,7 @@ select:focus-visible {
 
 .batchconvert-row {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   gap: 10px;
   align-items: baseline;
   padding: 3px 8px;
@@ -851,6 +869,13 @@ select:focus-visible {
   color: var(--fg-faint);
   font-size: var(--font-ui-xs);
   font-family: var(--editor-font-family, ui-monospace, monospace);
+}
+
+.batchconvert-row-lineending {
+  color: var(--fg-faint);
+  font-size: var(--font-ui-xs);
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  white-space: nowrap;
 }
 
 .batchconvert-row-status {

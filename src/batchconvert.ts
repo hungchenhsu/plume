@@ -1,9 +1,10 @@
-// Batch encoding conversion: scan a folder (dry run), review the per-file
-// classification, then convert the convertible subset — one atomic write
-// per file on the Rust side (see src-tauri/src/batch.rs). Entry point: Edit
-// menu "Batch Encoding Conversion…" (see main.ts's "batch_convert" menu
-// event case). Mirrors the findinfiles.ts / mojibake.ts overlay-panel
-// pattern.
+// Batch encoding and line-ending conversion: scan a folder (dry run),
+// review the per-file classification, then convert the convertible subset
+// — one atomic write per file on the Rust side (see
+// src-tauri/src/batch.rs). Entry point: Edit menu "Batch Encoding
+// Conversion…" (see main.ts's "batch_convert" menu event case; the menu
+// label predates the line-ending axis and is left as-is — same entry
+// point). Mirrors the findinfiles.ts / mojibake.ts overlay-panel pattern.
 //
 // Files already open in a tab: this module never touches the editor or
 // tabs directly. A successful conversion rewrites the file on disk via the
@@ -16,15 +17,18 @@
 // here, and the reload prompt fires as expected. See this PR's report for
 // the full trace.
 //
-// Design note: the controls row, options area, and report/actions layout
-// below are deliberately left roomy for the batch line-ending-conversion
-// PR (ROADMAP.md Track A) to extend into (e.g. a target line-ending
-// picker in `.batchconvert-options`) without reshuffling this dialog.
+// Two orthogonal axes, mirroring src-tauri/src/batch.rs: the encoding
+// dropdown's first option is a "keep current encoding" pseudo-choice
+// (value "keep"), and the line-ending dropdown in `.batchconvert-options`
+// offers Keep/LF/CRLF (default Keep). Either axis alone, or both together,
+// drives the scan/convert calls; "keep"+"keep" naturally reports every
+// file alreadyTarget (nothing to change), which disables Convert without
+// any special-case UI code.
 import {
   confirm as confirmDialog,
   open as openDialog,
 } from "@tauri-apps/plugin-dialog";
-import { encodingChoices } from "./encodings";
+import { encodingChoices, type EncodingChoice } from "./encodings";
 import { t } from "./i18n";
 import {
   executeBatchConversion,
@@ -37,6 +41,49 @@ let lastFolder: string | null = null;
 
 function basename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
+}
+
+/** Sentinel `target_encoding` value meaning "leave each file's own
+ *  encoding untouched" — see src-tauri/src/batch.rs's `resolve_target_encoding`. */
+export const KEEP_ENCODING = "keep";
+
+/**
+ * The batch dialog's target-encoding choices: `encodingChoices()` (shared
+ * with the reopen/save/preferences pickers) with a "keep current encoding"
+ * pseudo-choice prepended. Only meaningful for batch conversion's two-axis
+ * design, so this stays local rather than polluting the shared list.
+ */
+export function batchEncodingChoices(): EncodingChoice[] {
+  return [
+    { label: t("batchConvert.keepEncoding"), value: KEEP_ENCODING, withBom: false },
+    ...encodingChoices(),
+  ];
+}
+
+export interface LineEndingChoice {
+  label: string;
+  value: string;
+}
+
+/** The batch dialog's target-line-ending choices, "keep" first (the
+ *  default selection). Values match src-tauri/src/batch.rs's `line_ending`
+ *  argument ("keep" | "LF" | "CRLF") directly — no index-based lookup
+ *  needed, unlike `batchEncodingChoices`. */
+export function batchLineEndingChoices(): LineEndingChoice[] {
+  return [
+    { value: "keep", label: t("batchConvert.lineEndingKeep") },
+    { value: "LF", label: t("menu.lineEndingLf") },
+    { value: "CRLF", label: t("menu.lineEndingCrlf") },
+  ];
+}
+
+/** Display text for a report row's detected-line-ending cell. "LF"/"CRLF"
+ *  stay as the international abbreviation (same convention as the menu's
+ *  line-ending labels); "Mixed" is localized since it's prose, not a
+ *  standard abbreviation. Empty string (unknown, e.g. `tooLarge`) passes
+ *  through unchanged. */
+export function lineEndingDisplay(value: string): string {
+  return value === "Mixed" ? t("batchConvert.lineEndingMixed") : value;
 }
 
 /**
@@ -140,7 +187,7 @@ export function showBatchConvert(): void {
   targetLabel.textContent = t("batchConvert.targetLabel");
   const encodingSelect = document.createElement("select");
   encodingSelect.className = "batchconvert-encoding";
-  const choices = encodingChoices();
+  const choices = batchEncodingChoices();
   choices.forEach((choice, index) => {
     const option = document.createElement("option");
     option.value = String(index);
@@ -159,10 +206,22 @@ export function showBatchConvert(): void {
   controls.appendChild(scanButton);
   panel.appendChild(controls);
 
-  // Reserved for the batch line-ending-conversion PR (see module doc
-  // comment) — empty and invisible until that PR populates it.
+  const lineEndingLabel = document.createElement("label");
+  lineEndingLabel.className = "batchconvert-lineending";
+  lineEndingLabel.textContent = t("batchConvert.lineEndingLabel");
+  const lineEndingSelect = document.createElement("select");
+  lineEndingSelect.className = "batchconvert-lineending-select";
+  for (const choice of batchLineEndingChoices()) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    lineEndingSelect.appendChild(option);
+  }
+  lineEndingLabel.appendChild(lineEndingSelect);
+
   const optionsArea = document.createElement("div");
   optionsArea.className = "batchconvert-options";
+  optionsArea.appendChild(lineEndingLabel);
   panel.appendChild(optionsArea);
 
   const status = document.createElement("div");
@@ -204,10 +263,10 @@ export function showBatchConvert(): void {
   let lastEntries: BatchEntry[] = [];
 
   // The dry-run report is only trustworthy for the exact inputs it was
-  // scanned with. Changing the folder, the extension filter, or the
-  // target encoding after a scan would let Convert act on a target the
-  // user never reviewed (adversarial-review finding) — so any input
-  // change voids the report and forces a rescan.
+  // scanned with. Changing the folder, the extension filter, the target
+  // encoding, or the target line ending after a scan would let Convert
+  // act on a target the user never reviewed (adversarial-review finding)
+  // — so any input change voids the report and forces a rescan.
   const invalidateScan = (): void => {
     if (lastEntries.length === 0) return;
     lastEntries = [];
@@ -217,6 +276,13 @@ export function showBatchConvert(): void {
     list.replaceChildren();
     status.textContent = t("batchConvert.rescanNeeded");
   };
+  // Every dry-run input is equal-standing: the folder (above), the
+  // extension filter, and both target axes changing after a scan must
+  // void the report — Convert may only ever act on exactly what the
+  // user reviewed.
+  extInput.addEventListener("input", invalidateScan);
+  encodingSelect.addEventListener("change", invalidateScan);
+  lineEndingSelect.addEventListener("change", invalidateScan);
 
   const renderReport = (entries: BatchEntry[]): void => {
     lastEntries = entries;
@@ -243,11 +309,15 @@ export function showBatchConvert(): void {
       const detectedEl = document.createElement("span");
       detectedEl.className = "batchconvert-row-detected";
       detectedEl.textContent = entry.detected;
+      const lineEndingEl = document.createElement("span");
+      lineEndingEl.className = "batchconvert-row-lineending";
+      lineEndingEl.textContent = lineEndingDisplay(entry.lineEnding);
       const statusEl = document.createElement("span");
       statusEl.className = "batchconvert-row-status";
       statusEl.textContent = statusLabel(entry.status);
       row.appendChild(pathEl);
       row.appendChild(detectedEl);
+      row.appendChild(lineEndingEl);
       row.appendChild(statusEl);
       list.appendChild(row);
     }
@@ -302,6 +372,7 @@ export function showBatchConvert(): void {
         parseExtensions(extInput.value),
         choice.value,
         choice.withBom,
+        lineEndingSelect.value,
       );
       status.textContent = "";
       renderReport(report.entries);
@@ -330,7 +401,12 @@ export function showBatchConvert(): void {
     status.textContent = t("batchConvert.converting");
     try {
       const choice = choices[Number(encodingSelect.value)];
-      const results = await executeBatchConversion(paths, choice.value, choice.withBom);
+      const results = await executeBatchConversion(
+        paths,
+        choice.value,
+        choice.withBom,
+        lineEndingSelect.value,
+      );
       renderResults(results);
     } catch (error) {
       status.textContent = String(error);
