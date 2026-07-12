@@ -40,6 +40,7 @@ use encoding_rs::{CoderResult, Decoder, Encoder, Encoding, UTF_16BE, UTF_16LE};
 use serde::Serialize;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::time::SystemTime;
 
 /// Source-side read granularity: large enough that per-chunk overhead is
 /// negligible even for multi-GB files, small enough that memory use stays
@@ -349,6 +350,95 @@ fn run_replace_loop(
     Ok((replacements, bytes_written))
 }
 
+/// Snapshot of a file's on-disk identity, captured once at the start of a
+/// long streaming operation and re-checked immediately before the final
+/// commit (`rename`), so an external replacement of the file mid-run (log
+/// rotation, a formatter, a sync tool doing an atomic rename over the same
+/// path — see issue #94) is detected and aborted instead of being silently
+/// overwritten by this command finishing its read of the now-stale open
+/// handle. See [`capture_fingerprint`] and [`verify_unchanged`].
+///
+/// Cross-platform identity: on Unix, `(dev, ino)` — from
+/// `std::os::unix::fs::MetadataExt` — uniquely identifies the underlying
+/// inode no matter what path currently names it, and is captured from the
+/// already-open source `File` handle, so it always describes the
+/// *original* file even after the path is renamed out from under it. On
+/// Windows, the equivalent identity (`nFileIndex` / `dwVolumeSerialNumber`,
+/// exposed by `std::os::windows::fs::MetadataExt::file_index` /
+/// `volume_serial_number`) is still gated behind the unstable
+/// `windows_by_handle` feature (rust-lang/rust#63010 — the tracking issue
+/// is still open, and `file_index`/`volume_serial_number` are marked
+/// `#[unstable]` in the standard library source as of this writing), so it
+/// is not available on stable Rust and this struct carries no Windows
+/// identity field at all. Windows therefore relies on `len` + `modified`
+/// alone. That is a weaker signal than inode identity — a replacement
+/// could in principle land with the same size and the same
+/// filesystem-timestamp-resolution mtime — but it is sufficient for the
+/// actual threat model: a rename that replaces a file after this command
+/// has already been streaming it for any non-trivial time is exceedingly
+/// unlikely to reproduce both the exact original byte length and the exact
+/// original mtime.
+struct FileFingerprint {
+    len: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    identity: (u64, u64), // (dev, ino)
+}
+
+/// Capture `file`'s fingerprint from its already-open handle rather than
+/// re-`stat`ing the path, so the snapshot is tied to the exact file this
+/// command opened and can never be confused with whatever the path
+/// happens to resolve to later.
+fn capture_fingerprint(file: &std::fs::File) -> std::io::Result<FileFingerprint> {
+    let meta = file.metadata()?;
+    Ok(FileFingerprint {
+        len: meta.len(),
+        modified: meta.modified()?,
+        #[cfg(unix)]
+        identity: unix_identity(&meta),
+    })
+}
+
+#[cfg(unix)]
+fn unix_identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(unix)]
+fn identity_unchanged(meta: &std::fs::Metadata, original: &FileFingerprint) -> bool {
+    unix_identity(meta) == original.identity
+}
+
+/// No inode-equivalent identity is available on stable Rust for this
+/// platform (see [`FileFingerprint`]'s doc comment) — `len` and `modified`
+/// alone decide the outcome, so identity never contributes a mismatch.
+#[cfg(not(unix))]
+fn identity_unchanged(_meta: &std::fs::Metadata, _original: &FileFingerprint) -> bool {
+    true
+}
+
+/// Fail closed if the file at `path` is no longer the file described by
+/// `original`: re-`stat`s `path` and compares size, mtime, and (Unix only)
+/// inode identity (see [`FileFingerprint`]). Any mismatch — including
+/// `path` no longer existing at all — is treated as "changed": there is no
+/// case where proceeding anyway is the safe choice once the on-disk
+/// contents can no longer be shown to be the ones this run started with.
+fn verify_unchanged(path: &Path, original: &FileFingerprint) -> Result<(), String> {
+    const CHANGED_MSG: &str =
+        "file changed on disk during replace; aborted, your file was not modified";
+    let meta = std::fs::metadata(path).map_err(|_| CHANGED_MSG.to_string())?;
+    let modified = meta.modified().map_err(|_| CHANGED_MSG.to_string())?;
+    let unchanged = meta.len() == original.len
+        && modified == original.modified
+        && identity_unchanged(&meta, original);
+    if unchanged {
+        Ok(())
+    } else {
+        Err(CHANGED_MSG.to_string())
+    }
+}
+
 /// Search-and-replace across an entire file on disk, streamed in bounded
 /// chunks so memory use stays flat regardless of file size. Backend for
 /// the large-file preview window's "Replace in Large File…" command.
@@ -378,12 +468,28 @@ fn run_replace_loop(
 ///    output still aborts rather than ever writing a lossy byte the caller
 ///    didn't explicitly agree to (mirrors `save_document`'s `allow_lossy`
 ///    gate in `lib.rs`, just with no lossy path offered here at all).
-/// 6. Zero matches leaves the file completely untouched — no temp file
+/// 6. Before that commit, the file at `path` is re-stat'd and compared
+///    against the [`FileFingerprint`] captured right after the source was
+///    opened: if its size, mtime, or (Unix) inode identity no longer
+///    match — including the file having been deleted outright — the temp
+///    file is discarded and this returns `Err` without ever touching
+///    `path`. This is what stops an external process that atomically
+///    replaces the same path while a multi-GB stream is still in flight
+///    (log rotation, a formatter, a sync tool) from having its newer
+///    content silently overwritten once this command finally finishes
+///    reading the now-stale open handle (issue #94). This narrows the race
+///    to the microsecond-scale check-to-rename window rather than
+///    eliminating it — no portable rename has an identity-conditional
+///    variant — but that is a vast improvement over leaving the whole
+///    multi-minute stream unguarded. See [`capture_fingerprint`] /
+///    [`verify_unchanged`].
+/// 7. Zero matches leaves the file completely untouched — no temp file
 ///    persists, no rename, `mtime` unchanged. Only a run with at least one
-///    replacement commits: `sync_all`, carry over the original file's
-///    permissions, then `rename` over the target — the same atomic
-///    discipline as `lib.rs::atomic_write`, just fed by a temp file filled
-///    incrementally instead of from one in-memory buffer.
+///    replacement commits: `sync_all`, the fingerprint check above, carry
+///    over the original file's permissions, then `rename` over the
+///    target — the same atomic discipline as `lib.rs::atomic_write`, just
+///    fed by a temp file filled incrementally instead of from one
+///    in-memory buffer.
 ///
 /// BOM handling: up to 3 bytes (the longest BOM any encoding here uses —
 /// UTF-8's `EF BB BF`) are peeked from the source first. If they form a
@@ -434,6 +540,14 @@ pub fn stream_replace_in_file(
     let path_ref = Path::new(&path);
     let mut source =
         std::fs::File::open(path_ref).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    // Captured immediately after opening, from this exact handle, so it
+    // describes the file this command is about to spend a potentially
+    // long time streaming — not whatever the path resolves to later.
+    // Compared against a fresh stat of `path` right before commit (see the
+    // `replacements > 0` arm below) to fail closed if anything external
+    // replaced the file in between (issue #94).
+    let fingerprint =
+        capture_fingerprint(&source).map_err(|e| format!("Failed to read {path}: {e}"))?;
 
     let mut peek = [0u8; 3];
     let peek_n =
@@ -479,6 +593,10 @@ pub fn stream_replace_in_file(
                 return Err(format!("Failed to write {path}: {e}"));
             }
             drop(tmp_file);
+            if let Err(e) = verify_unchanged(path_ref, &fingerprint) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e);
+            }
             if let Ok(meta) = std::fs::metadata(path_ref) {
                 let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
             }
@@ -1019,6 +1137,164 @@ mod tests {
         assert_eq!(on_disk, "hi world, hi again, hi café hi_CAFÉ done");
 
         assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Happy-path pin for the fingerprint mechanism added for issue #94:
+    /// an ordinary replace with no external interference must still
+    /// succeed end-to-end through the real public command — the
+    /// commit-time `verify_unchanged` check must not false-positive on a
+    /// file nobody else touched.
+    #[test]
+    fn replace_succeeds_when_file_unchanged() {
+        let dir = fixture_dir("fingerprint-happy-path");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, "alpha NEEDLE beta NEEDLE gamma\n").unwrap();
+
+        let report = stream_replace_in_file(
+            file.to_string_lossy().into_owned(),
+            "NEEDLE".to_string(),
+            "FOUND".to_string(),
+            "UTF-8".to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(report.replacements, 2);
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(on_disk, "alpha FOUND beta FOUND gamma\n");
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Core red-to-green regression for issue #94 (P1 data loss): a file
+    /// externally replaced via atomic rename — the exact mechanism log
+    /// rotation, formatters, and sync tools use — while a stream_replace
+    /// run is (hypothetically) still in flight must be detected at
+    /// commit time and must never be overwritten.
+    ///
+    /// `stream_replace_in_file` itself is synchronous end-to-end, so there
+    /// is no real yield point to interleave an external rename mid-run
+    /// without either (a) racing a background thread against it — flaky,
+    /// since on a fast filesystem the whole streaming pass can complete
+    /// before the race window opens — or (b) adding test-only
+    /// instrumentation (a hook or a generic `Read` parameter) to
+    /// `run_replace_loop` purely to enable this test, which is more
+    /// production-code surface than a P1 fail-closed fix should carry.
+    /// Both were rejected in favor of the approach the task's own design
+    /// pre-approved: exercise `capture_fingerprint` /
+    /// `verify_unchanged` — the exact two functions
+    /// `stream_replace_in_file` calls at the start and right before
+    /// `rename` — directly, against a *real* external rename (not a
+    /// hand-constructed mismatch; that is covered separately by the
+    /// `verify_unchanged_detects_*` tests below). This proves the
+    /// detection logic is correct against the genuine OS-level mechanism.
+    /// The remaining gap — that `stream_replace_in_file` actually calls
+    /// these two functions at the right spots with the right arguments —
+    /// is a few lines, directly readable in the diff, and is also
+    /// covered indirectly: `replace_succeeds_when_file_unchanged` would
+    /// fail if the wiring called `verify_unchanged` with a stale or wrong
+    /// path/fingerprint.
+    #[cfg(unix)]
+    #[test]
+    fn replace_aborts_when_file_replaced_during_operation() {
+        let dir = fixture_dir("external-replace");
+        let file = dir.join("target.txt");
+        std::fs::write(&file, b"original content, unchanged\n").unwrap();
+
+        // Mirrors stream_replace_in_file's own opening sequence: open the
+        // source handle, then immediately capture its fingerprint.
+        let source = std::fs::File::open(&file).unwrap();
+        let fingerprint = capture_fingerprint(&source).unwrap();
+
+        // While the replace is (hypothetically) still streaming, another
+        // process atomically replaces the same path — e.g. log rotation,
+        // a formatter, a sync tool — via rename, exactly as issue #94
+        // describes. `source` keeps referring to the original inode (Unix
+        // fd semantics), which is precisely the hazard: naively finishing
+        // the read and renaming the temp file over `path` would clobber
+        // this newer content.
+        let replacement = dir.join("replacement.txt");
+        std::fs::write(&replacement, b"newer content from another process\n").unwrap();
+        std::fs::rename(&replacement, &file).unwrap();
+
+        let result = verify_unchanged(&file, &fingerprint);
+        assert!(
+            result.is_err(),
+            "an externally-renamed-in file must be detected as changed"
+        );
+
+        let on_disk = std::fs::read(&file).unwrap();
+        assert_eq!(
+            on_disk, b"newer content from another process\n",
+            "the externally-written content must survive untouched"
+        );
+
+        drop(source);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn verify_unchanged_detects_size_change() {
+        let dir = fixture_dir("verify-size");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let source = std::fs::File::open(&file).unwrap();
+        let mut fingerprint = capture_fingerprint(&source).unwrap();
+
+        fingerprint.len += 1;
+
+        assert!(verify_unchanged(&file, &fingerprint).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn verify_unchanged_detects_mtime_change() {
+        let dir = fixture_dir("verify-mtime");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let source = std::fs::File::open(&file).unwrap();
+        let mut fingerprint = capture_fingerprint(&source).unwrap();
+
+        fingerprint.modified -= std::time::Duration::from_secs(3600);
+
+        assert!(verify_unchanged(&file, &fingerprint).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_unchanged_detects_identity_change() {
+        let dir = fixture_dir("verify-identity");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let source = std::fs::File::open(&file).unwrap();
+        let mut fingerprint = capture_fingerprint(&source).unwrap();
+
+        fingerprint.identity = (
+            fingerprint.identity.0,
+            fingerprint.identity.1.wrapping_add(1),
+        );
+
+        assert!(verify_unchanged(&file, &fingerprint).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Design point 2's other fail-closed case: the path disappearing
+    /// entirely mid-run (not just being replaced) must also abort rather
+    /// than proceed.
+    #[test]
+    fn verify_unchanged_detects_deleted_file() {
+        let dir = fixture_dir("verify-deleted");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let source = std::fs::File::open(&file).unwrap();
+        let fingerprint = capture_fingerprint(&source).unwrap();
+
+        std::fs::remove_file(&file).unwrap();
+
+        assert!(verify_unchanged(&file, &fingerprint).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }
