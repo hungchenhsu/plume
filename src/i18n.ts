@@ -108,6 +108,32 @@ export interface Messages {
   "mojibake.appliedTitle": string;
   "mojibake.appliedMessage": string;
 
+  "batchConvert.title": string;
+  "batchConvert.chooseFolder": string;
+  "batchConvert.chooseFolderFirst": string;
+  "batchConvert.extPlaceholder": string;
+  "batchConvert.targetLabel": string;
+  "batchConvert.scanButton": string;
+  "batchConvert.scanning": string;
+  "batchConvert.noResults": string;
+  "batchConvert.summary": (
+    convertible: number,
+    alreadyTarget: number,
+    lossy: number,
+    undecodable: number,
+    tooLarge: number,
+  ) => string;
+  "batchConvert.statusConvertible": string;
+  "batchConvert.statusAlreadyTarget": string;
+  "batchConvert.statusLossy": string;
+  "batchConvert.statusUndecodable": string;
+  "batchConvert.statusTooLarge": string;
+  "batchConvert.convertButton": (count: number) => string;
+  "batchConvert.confirmMessage": (count: number) => string;
+  "batchConvert.rescanNeeded": string;
+  "batchConvert.converting": string;
+  "batchConvert.resultSummary": (ok: number, failed: number) => string;
+
   "dialog.pagingTitle": string;
   "dialog.fileChangedTitle": string;
   "dialog.fileChangedMessage": (title: string) => string;
@@ -239,6 +265,35 @@ const en: Messages = {
   "mojibake.appliedTitle": "Mojibake repaired",
   "mojibake.appliedMessage":
     "The content was repaired in the editor. Use Undo to revert if this wasn't right.",
+
+  "batchConvert.title": "Batch Encoding Conversion",
+  "batchConvert.chooseFolder": "Choose folder…",
+  "batchConvert.chooseFolderFirst": "Choose a folder first.",
+  "batchConvert.extPlaceholder":
+    "Extensions, comma-separated (e.g. txt,md) — empty means all files",
+  "batchConvert.targetLabel": "Target encoding",
+  "batchConvert.scanButton": "Scan (dry run)",
+  "batchConvert.scanning": "Scanning…",
+  "batchConvert.noResults": "No matching files found.",
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+    `${convertible} convertible, ${alreadyTarget} already this encoding, ` +
+    `${lossy} would lose data, ${undecodable} undecodable, ${tooLarge} too large`,
+  "batchConvert.statusConvertible": "Convertible",
+  "batchConvert.statusAlreadyTarget": "Already this encoding",
+  "batchConvert.statusLossy": "Would lose data",
+  "batchConvert.statusUndecodable": "Undecodable",
+  "batchConvert.statusTooLarge": "Too large",
+  "batchConvert.convertButton": (count) => `Convert ${count} file${count === 1 ? "" : "s"}`,
+  "batchConvert.confirmMessage": (count) =>
+    `Convert ${count} file${count === 1 ? "" : "s"} in place? Each file is ` +
+    `re-encoded from the auto-detected encoding shown in the report — ` +
+    `review the Detected column first. This cannot be undone.`,
+  "batchConvert.rescanNeeded": "Settings changed — scan again before converting.",
+  "batchConvert.converting": "Converting…",
+  "batchConvert.resultSummary": (ok, failed) =>
+    failed === 0
+      ? `Converted ${ok} file${ok === 1 ? "" : "s"}.`
+      : `Converted ${ok} file${ok === 1 ? "" : "s"}, ${failed} failed.`,
 
   "dialog.pagingTitle": "Paging",
   "dialog.fileChangedTitle": "File changed on disk",
@@ -377,6 +432,31 @@ const zhTW: Messages = {
   "mojibake.after": "修復後",
   "mojibake.appliedTitle": "亂碼已修復",
   "mojibake.appliedMessage": "編輯器內容已修復，可用 Undo 復原。",
+
+  "batchConvert.title": "批次轉換編碼",
+  "batchConvert.chooseFolder": "選擇資料夾…",
+  "batchConvert.chooseFolderFirst": "請先選擇資料夾。",
+  "batchConvert.extPlaceholder": "副檔名，逗號分隔（如 txt,md）——留空代表所有檔案",
+  "batchConvert.targetLabel": "目標編碼",
+  "batchConvert.scanButton": "掃描（僅預覽）",
+  "batchConvert.scanning": "掃描中…",
+  "batchConvert.noResults": "找不到符合的檔案。",
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+    `可轉換 ${convertible}、已是目標編碼 ${alreadyTarget}、會遺失資料 ${lossy}、` +
+    `無法解碼 ${undecodable}、檔案過大 ${tooLarge}`,
+  "batchConvert.statusConvertible": "可轉換",
+  "batchConvert.statusAlreadyTarget": "已是目標編碼",
+  "batchConvert.statusLossy": "會遺失資料",
+  "batchConvert.statusUndecodable": "無法解碼",
+  "batchConvert.statusTooLarge": "檔案過大",
+  "batchConvert.convertButton": (count) => `轉換 ${count} 個檔案`,
+  "batchConvert.confirmMessage": (count) =>
+    `即將就地轉換 ${count} 個檔案？每個檔案將依報告中自動偵測的編碼` +
+    `（Detected 欄）重新編碼——請先確認偵測結果。此操作無法復原。`,
+  "batchConvert.rescanNeeded": "設定已變更——請重新掃描後再轉換。",
+  "batchConvert.converting": "轉換中…",
+  "batchConvert.resultSummary": (ok, failed) =>
+    failed === 0 ? `已轉換 ${ok} 個檔案。` : `已轉換 ${ok} 個檔案，失敗 ${failed} 個。`,
 
   "dialog.pagingTitle": "翻頁",
   "dialog.fileChangedTitle": "檔案已在磁碟上異動",

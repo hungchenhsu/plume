@@ -335,3 +335,64 @@ export function applyMojibakeRepair(
     original,
   });
 }
+
+export interface BatchEntry {
+  path: string;
+  /** Detected source encoding name, e.g. "Big5". Empty for `tooLarge`. */
+  detected: string;
+  /** "convertible" | "alreadyTarget" | "lossy" | "undecodable" | "tooLarge" */
+  status: string;
+  /** Reserved for the batch line-ending-conversion PR; always null today. */
+  lineEnding: string | null;
+}
+
+export interface BatchScanReport {
+  entries: BatchEntry[];
+}
+
+/**
+ * Dry-run scan of `dir` for batch encoding conversion: classifies every
+ * matching file against `targetEncoding`/`targetWithBom` without changing
+ * anything on disk. `extensions` is a list of lowercase, dot-less
+ * extensions (e.g. ["txt", "md"]); an empty list matches every file.
+ * Rejects if the folder contains more than 2000 matching files.
+ */
+export function scanBatchConversion(
+  dir: string,
+  extensions: string[],
+  targetEncoding: string,
+  targetWithBom: boolean,
+): Promise<BatchScanReport> {
+  return invoke<BatchScanReport>("scan_batch_conversion", {
+    dir,
+    extensions,
+    targetEncoding,
+    targetWithBom,
+  });
+}
+
+export interface BatchConvertResult {
+  path: string;
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Convert every path in `paths` to `targetEncoding`/`withBom`, one atomic
+ * write per file. Never trusts a prior scan's snapshot — each file is
+ * re-detected and re-decoded fresh from disk; a file that no longer
+ * decodes cleanly or would lose data under the target encoding comes back
+ * with `ok: false` and is left untouched. One file's failure never stops
+ * the rest of the batch.
+ */
+export function executeBatchConversion(
+  paths: string[],
+  targetEncoding: string,
+  withBom: boolean,
+): Promise<BatchConvertResult[]> {
+  return invoke<BatchConvertResult[]>("execute_batch_conversion", {
+    paths,
+    targetEncoding,
+    withBom,
+  });
+}

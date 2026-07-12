@@ -129,7 +129,7 @@ domain: failing-test-first, round-trip tests mandatory)
 - [x] Mojibake repair wizard: detect common mis-decode round-trips
   (e.g. Big5 bytes once decoded as Windows-1252 and re-saved) and offer
   a previewed, reversible repair — never applied silently
-- [ ] Batch encoding conversion: convert a folder's files to a target
+- [x] Batch encoding conversion: convert a folder's files to a target
   encoding with a dry-run report first; atomic per-file saves
 - [ ] Batch line-ending conversion (rides on the same batch UI)
 - [ ] Side-by-side encoding preview: the same bytes decoded under two

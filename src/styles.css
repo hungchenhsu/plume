@@ -695,6 +695,215 @@ select:focus-visible {
   border-radius: var(--radius-sm);
 }
 
+.batchconvert-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 6vh;
+}
+
+.batchconvert-panel {
+  display: flex;
+  flex-direction: column;
+  width: 760px;
+  max-width: 94vw;
+  max-height: 86vh;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: panel-in 140ms ease-out;
+}
+
+.batchconvert-header {
+  padding: 10px 14px;
+  font-size: var(--font-ui);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.batchconvert-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.batchconvert-folder {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.batchconvert-ext {
+  flex: 1;
+  min-width: 160px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: var(--font-ui);
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.batchconvert-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-sm);
+  color: var(--fg-muted);
+}
+
+.batchconvert-encoding {
+  padding: 5px 8px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  color: inherit;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.batchconvert-scan {
+  padding: 5px 12px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  font-weight: 500;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.batchconvert-scan:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Reserved for the batch line-ending-conversion PR to add a target
+   line-ending picker without reshuffling this dialog's layout — empty
+   (and collapsed) until that PR populates it. */
+.batchconvert-options:empty {
+  display: none;
+}
+
+.batchconvert-status {
+  padding: 4px 14px;
+  font-size: var(--font-ui-xs);
+  color: var(--fg-faint);
+  min-height: 16px;
+}
+
+.batchconvert-summary {
+  padding: 0 14px 6px;
+  font-size: var(--font-ui-sm);
+  color: var(--fg-muted);
+}
+
+.batchconvert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 14px 10px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.batchconvert-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-ui-sm);
+}
+
+.batchconvert-row:hover {
+  background: var(--bg-surface);
+}
+
+.batchconvert-row-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batchconvert-row-detected {
+  color: var(--fg-faint);
+  font-size: var(--font-ui-xs);
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+}
+
+.batchconvert-row-status {
+  font-size: var(--font-ui-xs);
+  white-space: nowrap;
+}
+
+.batchconvert-row-failed .batchconvert-row-detected {
+  grid-column: 2 / -1;
+  white-space: normal;
+}
+
+.batchconvert-row-lossy .batchconvert-row-status,
+.batchconvert-row-undecodable .batchconvert-row-status,
+.batchconvert-row-failed .batchconvert-row-path {
+  color: var(--danger);
+}
+
+.batchconvert-row-tooLarge .batchconvert-row-status {
+  color: var(--warning);
+}
+
+.batchconvert-row-alreadyTarget .batchconvert-row-status {
+  color: var(--fg-faint);
+}
+
+.batchconvert-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.batchconvert-convert {
+  padding: 6px 14px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  font-weight: 500;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.batchconvert-convert:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--bg-surface);
+  color: var(--fg-faint);
+  border-color: var(--border);
+}
+
 .detectcard-panel {
   position: fixed;
   z-index: 100;

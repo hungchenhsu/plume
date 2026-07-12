@@ -32,6 +32,7 @@ import {
   type SessionData,
   type SessionFile,
 } from "./ipc";
+import { showBatchConvert } from "./batchconvert";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
@@ -867,6 +868,9 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "goto_line":
       showGoToLine((line) => editor.goToLine(line));
+      break;
+    case "batch_convert":
+      showBatchConvert();
       break;
     case "print": {
       // The editor's viewport only renders visible lines, so printing goes
