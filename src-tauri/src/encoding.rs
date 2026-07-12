@@ -149,6 +149,49 @@ pub fn describe_bom(bytes: &[u8]) -> Option<String> {
     Some(format!("{} BOM ({hex})", encoding.name()))
 }
 
+/// Which UTF-16 byte order a document uses, when known. Only the two
+/// UTF-16 variants need this distinction: they are the only encodings this
+/// app supports where one logical newline is a two-byte code unit rather
+/// than a single byte, so a raw byte window (as `lib.rs::preview_slice`
+/// cuts for a large-file preview) must be aligned to code-unit boundaries
+/// instead of searched for a lone `0x0A` — see `utf16_variant` below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Utf16Variant {
+    Le,
+    Be,
+}
+
+/// Decide which UTF-16 byte order (if any) a large-file preview should
+/// align its cut point to — called on the raw bytes *before* decoding,
+/// using the same signal precedence the real decode uses:
+///
+/// 1. An explicit encoding label (set when the user reopens a file with a
+///    chosen encoding) wins outright. `decode_with` never consults the BOM
+///    to *pick* an encoding, only to decide whether to strip it, so this
+///    must not fall back to sniffing the BOM when a label is present, even
+///    if that label names a non-UTF-16 encoding.
+/// 2. With no explicit label, auto-detection's own first signal applies: a
+///    BOM sniff, exactly as `detect_with_extension` checks `Encoding::
+///    for_bom` before anything else.
+/// 3. Otherwise `None` — including a BOM-less UTF-16 file with no explicit
+///    label. chardetng's statistical guess never calls UTF-16, so treating
+///    unlabeled, BOM-less bytes as UTF-16 here would be a guess this
+///    function has no basis for.
+pub fn utf16_variant(raw: &[u8], explicit_label: Option<&str>) -> Option<Utf16Variant> {
+    if let Some(label) = explicit_label {
+        return match Encoding::for_label(label.as_bytes()) {
+            Some(enc) if enc == UTF_16LE => Some(Utf16Variant::Le),
+            Some(enc) if enc == UTF_16BE => Some(Utf16Variant::Be),
+            _ => None,
+        };
+    }
+    match Encoding::for_bom(raw) {
+        Some((enc, _)) if enc == UTF_16LE => Some(Utf16Variant::Le),
+        Some((enc, _)) if enc == UTF_16BE => Some(Utf16Variant::Be),
+        _ => None,
+    }
+}
+
 /// Decode bytes with an encoding explicitly chosen by the user.
 pub fn decode_with(bytes: &[u8], label: &str) -> Result<DecodedText, String> {
     let encoding = Encoding::for_label(label.as_bytes())
@@ -351,6 +394,37 @@ mod tests {
         let decoded = decode_auto(&bytes);
         assert_eq!(decoded.content, "中文");
         assert!(decoded.had_bom);
+    }
+
+    #[test]
+    fn utf16_variant_prefers_explicit_label_over_bom() {
+        // Explicit "UTF-16BE" wins even though the bytes carry a UTF-16LE
+        // BOM: `decode_with` never consults the BOM to pick an encoding,
+        // only to decide whether to strip it, so this must match.
+        let (bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        assert_eq!(
+            utf16_variant(&bytes, Some("UTF-16BE")),
+            Some(Utf16Variant::Be)
+        );
+        assert_eq!(
+            utf16_variant(&bytes, Some("UTF-16LE")),
+            Some(Utf16Variant::Le)
+        );
+    }
+
+    #[test]
+    fn utf16_variant_explicit_non_utf16_label_does_not_fall_back_to_bom() {
+        let (bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        assert_eq!(utf16_variant(&bytes, Some("Big5")), None);
+    }
+
+    #[test]
+    fn utf16_variant_sniffs_bom_when_no_explicit_label() {
+        let (le_bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        assert_eq!(utf16_variant(&le_bytes, None), Some(Utf16Variant::Le));
+        let (be_bytes, _) = encode("hi", "UTF-16BE", true).unwrap();
+        assert_eq!(utf16_variant(&be_bytes, None), Some(Utf16Variant::Be));
+        assert_eq!(utf16_variant(b"plain ascii", None), None);
     }
 
     #[test]
