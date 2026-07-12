@@ -108,6 +108,9 @@ export interface Messages {
   "dialog.lossyEncodingTitle": string;
   "dialog.lossyEncodingMessage": (encoding: string) => string;
   "dialog.lossyEncodingConfirm": string;
+  "dialog.backupFailedTitle": string;
+  "dialog.backupFailedMessage": (titles: string[]) => string;
+  "dialog.backupFailedDiscard": string;
   "dialog.unsavedChangesTitle": string;
   "dialog.reopenMessage": (title: string) => string;
   "dialog.reopen": string;
@@ -227,6 +230,12 @@ const en: Messages = {
     `Some characters can't be represented in ${encoding}. Continuing to save ` +
     `will write replacement characters in their place, and this can't be undone.`,
   "dialog.lossyEncodingConfirm": "Save Anyway",
+  "dialog.backupFailedTitle": "Backup failed",
+  "dialog.backupFailedMessage": (titles) =>
+    `Unsaved changes in ${titles.join(", ")} could not be written to their ` +
+    `backup (disk full or folder not writable?). Closing now cannot keep ` +
+    `these changes. Close anyway?`,
+  "dialog.backupFailedDiscard": "Discard and Close",
   "dialog.unsavedChangesTitle": "Unsaved changes",
   "dialog.reopenMessage": (title) =>
     `Reopening will discard unsaved changes in "${title}". Continue?`,
@@ -346,6 +355,11 @@ const zhTW: Messages = {
   "dialog.lossyEncodingMessage": (encoding) =>
     `有字元無法以 ${encoding} 表示，繼續儲存將以替代字元寫入且無法復原。`,
   "dialog.lossyEncodingConfirm": "仍要儲存",
+  "dialog.backupFailedTitle": "備份寫入失敗",
+  "dialog.backupFailedMessage": (titles) =>
+    `${titles.join("、")} 的未儲存變更無法寫入備份（磁碟已滿或資料夾` +
+    `無法寫入？），現在關閉的話，這些變更將無法保留。仍要關閉？`,
+  "dialog.backupFailedDiscard": "放棄變更並關閉",
   "dialog.unsavedChangesTitle": "未儲存的變更",
   "dialog.reopenMessage": (title) =>
     `重新開啟將捨棄「${title}」中未儲存的變更，是否繼續？`,
