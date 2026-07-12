@@ -20,6 +20,16 @@
   --fg-faint: #8e8e99;
   --border: #dcdbda;
   --border-strong: #c7c5c3;
+  /* Indent-guide vertical lines (src/editor-theme.ts `.cm-indent-guide`,
+     ROADMAP.md Track C / issue #74). Deliberately just an alias for
+     --border-strong rather than its own hex value: that's already this
+     app's "visible but structural, not content" visual weight, and — like
+     --syn-keyword/--syn-comment below — a var() reference defined once
+     here automatically tracks each of the four built-in themes' own
+     --border-strong value with no per-theme redeclaration needed (see the
+     "Paper" theme block's comment further down for the same mechanism
+     spelled out in more detail). */
+  --editor-indent-guide: var(--border-strong);
   --accent: #5757d1;
   --accent-fg: #ffffff;
   --accent-soft: rgba(87, 87, 209, 0.14);

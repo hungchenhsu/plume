@@ -202,6 +202,9 @@ export interface Preferences {
   defaultBom: boolean;
   wordWrap: boolean;
   showInvisibles: boolean;
+  /** Indent-guide vertical lines (View menu, default on — see
+   *  src/editor.ts `indentGuideLevels`/`setIndentGuides`). */
+  indentGuides: boolean;
   /** Per-extension default encodings, e.g. [["txt", "Big5"]]. Extensions
    *  are lowercase without a leading dot (see extensionEncodings.ts);
    *  mirrors prefs.rs `extension_encodings: Vec<(String, String)>`. */

@@ -62,6 +62,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("view", "View", "檢視"),
     ("word_wrap", "Word Wrap", "自動換行"),
     ("show_invisibles", "Show Invisibles", "顯示不可見字元"),
+    ("indent_guides", "Indent Guides", "縮排輔助線"),
     ("fold_all", "Fold All", "全部摺疊"),
     ("unfold_all", "Unfold All", "全部展開"),
     ("theme", "Theme", "主題"),
@@ -295,6 +296,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .checked(current_prefs.show_invisibles)
                 .build(app)?,
         )
+        .item(
+            &CheckMenuItemBuilder::with_id("indent_guides", l("indent_guides"))
+                .checked(current_prefs.indent_guides)
+                .build(app)?,
+        )
         .separator()
         // No accelerator: CM6's own `foldKeymap` (bundled into editor.ts's
         // `basicSetup`) already binds Mod-Alt-[ / Mod-Alt-] inside the
@@ -454,7 +460,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
 
     if let Some(view) = menu.get("view").and_then(|item| item.as_submenu().cloned()) {
         view.set_text(l("view")).map_err(|e| e.to_string())?;
-        for id in ["word_wrap", "show_invisibles"] {
+        for id in ["word_wrap", "show_invisibles", "indent_guides"] {
             if let Some(item) = view
                 .get(id)
                 .and_then(|item| item.as_check_menuitem().cloned())

@@ -64,6 +64,7 @@ import {
   preferences,
   setTheme,
   showPreferencesDialog,
+  toggleIndentGuides,
   toggleShowInvisibles,
   toggleWordWrap,
 } from "./preferences";
@@ -1106,6 +1107,9 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "show_invisibles":
       toggleShowInvisibles();
+      break;
+    case "indent_guides":
+      toggleIndentGuides();
       break;
     case "fold_all":
       editor.foldAll();

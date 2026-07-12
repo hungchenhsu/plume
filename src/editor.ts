@@ -4,6 +4,7 @@
 import { basicSetup, EditorView } from "codemirror";
 import {
   Compartment,
+  countColumn,
   EditorState,
   Prec,
   RangeSetBuilder,
@@ -136,6 +137,11 @@ export interface EditorHandle {
    *  every line that has a trailing newline. Purely visual — never touches
    *  the document, so it is safe to use in large-file/chunked mode. */
   setShowInvisibles(enabled: boolean): void;
+  /** Toggle indent-guide vertical lines (one per full tab-stop of leading
+   *  whitespace on a line; see `indentGuideLevels` below for the column
+   *  math and its blank-line/tab-space design notes). Purely visual, like
+   *  `setShowInvisibles` above — never touches the document. */
+  setIndentGuides(enabled: boolean): void;
   /** Localize the CM6 find/replace panel's built-in strings (labels,
    *  placeholders, screen-reader announcements) via `EditorState.phrases`.
    *  Purely presentational, like show-invisibles/word-wrap above. */
@@ -361,6 +367,115 @@ const eolMarks = ViewPlugin.fromClass(
  *  built-in for end-of-line marks). */
 const invisiblesExtension: Extension = [highlightWhitespace(), eolMarks];
 
+// ---- Indent guides (ROADMAP.md Track C / issue #74): vertical lines at
+// each full tab-stop of a line's leading whitespace, so deeply nested code
+// stays visually readable. No new runtime dependency (the issue explicitly
+// flags `@replit/codemirror-indentation-markers` and asks that it be
+// evaluated against CLAUDE.md's no-new-dependency constraint first) — this
+// is a small hand-rolled ViewPlugin instead, following the exact shape of
+// `eolMarks` above: a pure per-line calculation (unit-testable without a
+// live EditorView, see editor.test.ts), a `view => DecorationSet` builder
+// that only walks `view.visibleRanges`, and a ViewPlugin that recomputes on
+// `docChanged`/`viewportChanged`.
+
+/**
+ * Number of indent-guide levels to draw for a line: how many full
+ * `tabSize`-column-wide runs its leading whitespace spans. E.g. with
+ * tabSize 4, 8 leading columns is 2 levels, 5 is only 1 — the remaining
+ * single column is not a full level and draws no guide (`Math.floor`).
+ * Column width delegates to `@codemirror/state`'s own `countColumn`
+ * (rather than a hand-rolled loop) so tab expansion matches exactly how
+ * CM6 itself measures tabs: a tab advances to the *next* multiple of
+ * tabSize, not a fixed width, so its width depends on the columns already
+ * counted before it — e.g. tabSize 4, "   \tx" (3 spaces then a tab) is
+ * column 4 (one level), not column 7, because the tab only needed to
+ * advance one column to reach the next stop.
+ *
+ * Design decision (first version, see ROADMAP.md / issue #74): blank
+ * lines (empty or all-whitespace) always return 0, never inheriting the
+ * indent level of surrounding lines the way some editors extend a guide
+ * "through" a blank line in a block. That context-aware extension is left
+ * for a future iteration; skipping it keeps this a simple, local,
+ * per-line computation with no lookahead/lookbehind across lines, and
+ * keeps the ViewPlugin below a pure function of `view.visibleRanges`
+ * (large-file windows change which lines are even loaded, so anything
+ * that peeked outside the current line would need to special-case
+ * truncated buffers too).
+ *
+ * Exported for unit testing (see editor.test.ts); everything downstream
+ * of it needs a real `EditorView` and is exercised manually instead (see
+ * that test file's header comment on why — no layout engine in jsdom).
+ */
+export function indentGuideLevels(lineText: string, tabSize: number): number {
+  if (lineText.trim() === "") return 0;
+  let end = 0;
+  while (end < lineText.length && (lineText[end] === " " || lineText[end] === "\t")) {
+    end++;
+  }
+  return Math.floor(countColumn(lineText, tabSize, end) / tabSize);
+}
+
+/** Only decorates the visible ranges, not the whole document — same
+ *  large-file rationale as `eolDecorations` above. Large-file (truncated)
+ *  buffers get no language loaded but are plain text, so indent guides
+ *  work on them same as anywhere else: the calculation is purely textual,
+ *  never touches the syntax tree. */
+function indentGuideDecorations(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  const { doc, tabSize } = view.state;
+  for (const { from, to } of view.visibleRanges) {
+    let pos = from;
+    while (pos <= to) {
+      const line = doc.lineAt(pos);
+      const levels = indentGuideLevels(line.text, tabSize);
+      if (levels > 0) {
+        builder.add(
+          line.from,
+          line.from,
+          Decoration.line({
+            attributes: {
+              class: "cm-indent-guide",
+              style: `--indent-guide-levels:${levels}`,
+            },
+          }),
+        );
+      }
+      if (line.to >= to) break;
+      pos = line.to + 1;
+    }
+  }
+  return builder.finish();
+}
+
+const indentGuidePlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      // Tab size is document-wide, not per-line, so it's set once on the
+      // editor root here rather than repeated in every line's inline
+      // style — editor-theme.ts's `.cm-indent-guide` rule reads it back
+      // via `var(--indent-guide-tabsize, 4)`.
+      view.dom.style.setProperty("--indent-guide-tabsize", String(view.state.tabSize));
+      this.decorations = indentGuideDecorations(view);
+    }
+    update(update: ViewUpdate): void {
+      if (update.docChanged || update.viewportChanged) {
+        update.view.dom.style.setProperty(
+          "--indent-guide-tabsize",
+          String(update.view.state.tabSize),
+        );
+        this.decorations = indentGuideDecorations(update.view);
+      }
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
+
+/** Indent-guides extension, gated behind the `indentGuides` compartment in
+ *  `createEditor` below (View menu toggle, default on — see
+ *  `preferences.ts`). */
+const indentGuidesExtension: Extension = indentGuidePlugin;
+
 // ---- Bookmark gutter (ROADMAP.md Track B). Bookmarks are tracked as plain
 // buffer-relative line numbers (see `EditorHandle.setBookmarks` and
 // src/bookmarks.ts), not CM6 positions: the marker set is replaced wholesale
@@ -425,14 +540,16 @@ export function createEditor(
   const language = new Compartment();
   const wrapping = new Compartment();
   const invisibles = new Compartment();
+  const indentGuides = new Compartment();
   const phrases = new Compartment();
-  // Wrapping, show-invisibles, and the search-panel locale are global but
-  // each tab's EditorState carries its own compartment value, so they're
-  // re-applied on every swap. The color theme is fully token-driven (CSS
-  // variables), so it needs no compartment or per-swap reconfiguration —
-  // see editor-theme.ts.
+  // Wrapping, show-invisibles, indent-guides, and the search-panel locale
+  // are global but each tab's EditorState carries its own compartment
+  // value, so they're re-applied on every swap. The color theme is fully
+  // token-driven (CSS variables), so it needs no compartment or per-swap
+  // reconfiguration — see editor-theme.ts.
   let currentWrapping: Extension = [];
   let currentInvisibles: Extension = [];
+  let currentIndentGuides: Extension = [];
   let currentPhrases: Extension = [];
   const extensions = [
     // `basicSetup` bundles CM6's fold gutter and fold keymap out of the box
@@ -457,6 +574,7 @@ export function createEditor(
     language.of([]),
     wrapping.of([]),
     invisibles.of([]),
+    indentGuides.of([]),
     phrases.of([]),
     EditorView.updateListener.of((update) => {
       wireSearchHistory(update.view);
@@ -499,6 +617,7 @@ export function createEditor(
         effects: [
           wrapping.reconfigure(currentWrapping),
           invisibles.reconfigure(currentInvisibles),
+          indentGuides.reconfigure(currentIndentGuides),
           phrases.reconfigure(currentPhrases),
         ],
       });
@@ -570,6 +689,10 @@ export function createEditor(
     setShowInvisibles: (enabled) => {
       currentInvisibles = enabled ? invisiblesExtension : [];
       view.dispatch({ effects: invisibles.reconfigure(currentInvisibles) });
+    },
+    setIndentGuides: (enabled) => {
+      currentIndentGuides = enabled ? indentGuidesExtension : [];
+      view.dispatch({ effects: indentGuides.reconfigure(currentIndentGuides) });
     },
     setLocale: (locale) => {
       currentPhrases = EditorState.phrases.of(cm6Phrases(locale));
