@@ -407,3 +407,39 @@ export function executeBatchConversion(
     lineEnding,
   });
 }
+
+export interface EncodingPreviewSide {
+  /** Canonical encoding name actually used to decode, e.g. "Big5". */
+  encoding: string;
+  /** Decoded text, truncated to at most 4000 characters. */
+  content: string;
+  malformed: boolean;
+}
+
+export interface TwoEncodingPreview {
+  a: EncodingPreviewSide;
+  b: EncodingPreviewSide;
+  /** How many bytes were actually read from disk (at most 64 KiB). */
+  sampledBytes: number;
+  totalSize: number;
+}
+
+/**
+ * Decode a bounded prefix (at most 64 KiB) of `path` under two candidate
+ * encodings side by side, for manual disambiguation when automatic
+ * detection can't confidently choose between look-alike legacy encodings
+ * (e.g. Big5 vs GBK). Read-only and side-effect free — raw bytes never
+ * cross IPC, only the decoded text. Rejects if either label is not a known
+ * encoding.
+ */
+export function previewTwoEncodings(
+  path: string,
+  encodingA: string,
+  encodingB: string,
+): Promise<TwoEncodingPreview> {
+  return invoke<TwoEncodingPreview>("preview_two_encodings", {
+    path,
+    encodingA,
+    encodingB,
+  });
+}

@@ -132,7 +132,7 @@ domain: failing-test-first, round-trip tests mandatory)
 - [x] Batch encoding conversion: convert a folder's files to a target
   encoding with a dry-run report first; atomic per-file saves
 - [x] Batch line-ending conversion (rides on the same batch UI)
-- [ ] Side-by-side encoding preview: the same bytes decoded under two
+- [x] Side-by-side encoding preview: the same bytes decoded under two
   candidate encodings, read-only, for manual disambiguation
 
 **Track B — large files**

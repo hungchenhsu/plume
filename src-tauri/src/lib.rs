@@ -1,6 +1,7 @@
 mod backup;
 mod batch;
 mod chunk;
+mod comparepreview;
 mod encoding;
 mod hexdump;
 mod menu;
@@ -498,6 +499,7 @@ pub fn run() {
             mojibake::apply_mojibake_repair,
             batch::scan_batch_conversion,
             batch::execute_batch_conversion,
+            comparepreview::preview_two_encodings,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())

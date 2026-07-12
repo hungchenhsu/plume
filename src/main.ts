@@ -34,6 +34,7 @@ import {
 } from "./ipc";
 import { showBatchConvert } from "./batchconvert";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
+import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
@@ -706,6 +707,20 @@ function showEncodingMenu(anchor: HTMLElement): void {
             action: () => void reopenWithEncoding(e.value),
           })),
         ),
+    },
+    {
+      label: t("menu.compareEncodings"),
+      // Read-only side-by-side preview needs a file on disk to re-read;
+      // an untitled document has none (mirrors the other doc.path === null
+      // guards in this menu).
+      disabled: doc.path === null,
+      action: () => {
+        if (doc.path) {
+          showComparePreview(doc.path, doc.encoding, (encoding) =>
+            void reopenWithEncoding(encoding),
+          );
+        }
+      },
     },
     {
       label: t("menu.saveWithEncoding"),
