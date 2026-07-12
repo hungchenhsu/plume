@@ -128,9 +128,13 @@ describe("batchLineEndingChoices", () => {
 });
 
 describe("lineEndingDisplay", () => {
-  it("passes LF and CRLF through unchanged", () => {
+  it("passes LF, CRLF, and CR through unchanged", () => {
     expect(lineEndingDisplay("LF")).toBe("LF");
     expect(lineEndingDisplay("CRLF")).toBe("CRLF");
+    // "CR" (lone \r, Classic Mac line endings — issue #82): batch
+    // conversion never targets CR, but a source file's *detected* line
+    // ending can be CR and must still render in the scan report.
+    expect(lineEndingDisplay("CR")).toBe("CR");
   });
 
   it("looks up Mixed through the i18n dictionary rather than passing it through raw", () => {

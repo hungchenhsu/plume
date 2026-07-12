@@ -284,27 +284,52 @@ fn encode_utf16(text: &str, big_endian: bool, with_bom: bool) -> Vec<u8> {
     out
 }
 
-/// Classify the dominant line ending of raw decoded text.
+/// Classify the dominant line ending of raw decoded text: a pure style —
+/// `"LF"`, `"CRLF"`, or `"CR"` (lone `\r` not followed by `\n`: Classic Mac
+/// line endings, or a stray CR) — when exactly one style is present in the
+/// text, `"Mixed"` when more than one is, and `"LF"` (the pre-existing
+/// default) when the text has no line endings at all.
+///
+/// Byte-scanning (not char-scanning) is safe here: `\r` and `\n` are ASCII,
+/// and no UTF-8 continuation or lead byte of a multi-byte sequence can
+/// equal an ASCII byte value, so splitting on them never misreads a
+/// multi-byte character as a line ending.
 pub fn detect_line_ending(text: &str) -> &'static str {
+    let bytes = text.as_bytes();
     let mut crlf = 0usize;
-    let mut lf = 0usize;
-    let mut prev_cr = false;
-    for byte in text.bytes() {
-        match byte {
-            b'\n' if prev_cr => crlf += 1,
-            b'\n' => lf += 1,
-            _ => {}
+    let mut lone_cr = 0usize;
+    let mut lone_lf = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => {
+                crlf += 1;
+                i += 2;
+            }
+            b'\r' => {
+                lone_cr += 1;
+                i += 1;
+            }
+            b'\n' => {
+                lone_lf += 1;
+                i += 1;
+            }
+            _ => i += 1,
         }
-        prev_cr = byte == b'\r';
     }
-    match (crlf, lf) {
-        (0, _) => "LF",
-        (_, 0) => "CRLF",
+    match (crlf > 0, lone_cr > 0, lone_lf > 0) {
+        (false, false, false) => "LF", // no line endings at all; pre-existing default
+        (true, false, false) => "CRLF",
+        (false, true, false) => "CR",
+        (false, false, true) => "LF",
         _ => "Mixed",
     }
 }
 
-/// Normalize CRLF and lone CR to LF for the in-memory document.
+/// Normalize CRLF and lone CR to LF for the in-memory document. The order
+/// matters: collapsing `\r\n` pairs first guarantees every `\r` left over
+/// for the second `replace` is a lone CR, so it too becomes a single `\n`
+/// rather than contributing to a double newline.
 pub fn normalize_to_lf(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
@@ -313,6 +338,7 @@ pub fn normalize_to_lf(text: &str) -> String {
 pub fn apply_line_ending(text: &str, line_ending: &str) -> String {
     match line_ending {
         "CRLF" => text.replace('\n', "\r\n"),
+        "CR" => text.replace('\n', "\r"),
         _ => text.to_string(),
     }
 }
@@ -471,10 +497,39 @@ mod tests {
         assert_eq!(detect_line_ending("no newline"), "LF");
     }
 
+    /// Issue #82: lone `\r` (Classic Mac / stray CR) was entirely
+    /// invisible to `detect_line_ending`, which only ever counted `\n`.
+    /// A CR-only file misreported "LF", and a file mixing CR with any
+    /// other style misreported whatever `\n`-based verdict fell out of
+    /// the old two-counter logic.
+    #[test]
+    fn classifies_lone_cr_and_cr_mixes() {
+        assert_eq!(detect_line_ending("a\rb\r"), "CR");
+        assert_eq!(detect_line_ending("a\r\nb\r"), "Mixed");
+        assert_eq!(detect_line_ending("a\rb\n"), "Mixed");
+        assert_eq!(detect_line_ending("a\rb\r\nc"), "Mixed");
+    }
+
     #[test]
     fn applies_crlf_on_save() {
         assert_eq!(apply_line_ending("a\nb", "CRLF"), "a\r\nb");
         assert_eq!(apply_line_ending("a\nb", "LF"), "a\nb");
+        assert_eq!(apply_line_ending("a\nb", "CR"), "a\rb");
+    }
+
+    /// Round trip through the same path a CR-only file takes when its
+    /// line ending is unified on save/batch-convert: decode -> normalize
+    /// to LF for the in-memory buffer -> re-apply "CR" on save must
+    /// reproduce the original bytes exactly.
+    #[test]
+    fn cr_round_trips_through_normalize_and_apply() {
+        let original = "a\rb\rc\r";
+        let normalized = normalize_to_lf(original);
+        assert_eq!(
+            normalized, "a\nb\nc\n",
+            "normalize_to_lf must turn lone CR into LF"
+        );
+        assert_eq!(apply_line_ending(&normalized, "CR"), original);
     }
 
     // --- Per-extension encoding preference: decision order -------------
