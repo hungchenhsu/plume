@@ -113,6 +113,9 @@ export interface Messages {
   "batchConvert.chooseFolderFirst": string;
   "batchConvert.extPlaceholder": string;
   "batchConvert.targetLabel": string;
+  "batchConvert.keepEncoding": string;
+  "batchConvert.lineEndingLabel": string;
+  "batchConvert.lineEndingKeep": string;
   "batchConvert.scanButton": string;
   "batchConvert.scanning": string;
   "batchConvert.noResults": string;
@@ -128,6 +131,7 @@ export interface Messages {
   "batchConvert.statusLossy": string;
   "batchConvert.statusUndecodable": string;
   "batchConvert.statusTooLarge": string;
+  "batchConvert.lineEndingMixed": string;
   "batchConvert.convertButton": (count: number) => string;
   "batchConvert.confirmMessage": (count: number) => string;
   "batchConvert.rescanNeeded": string;
@@ -272,6 +276,9 @@ const en: Messages = {
   "batchConvert.extPlaceholder":
     "Extensions, comma-separated (e.g. txt,md) — empty means all files",
   "batchConvert.targetLabel": "Target encoding",
+  "batchConvert.keepEncoding": "Keep current encoding",
+  "batchConvert.lineEndingLabel": "Line ending",
+  "batchConvert.lineEndingKeep": "Keep",
   "batchConvert.scanButton": "Scan (dry run)",
   "batchConvert.scanning": "Scanning…",
   "batchConvert.noResults": "No matching files found.",
@@ -283,6 +290,7 @@ const en: Messages = {
   "batchConvert.statusLossy": "Would lose data",
   "batchConvert.statusUndecodable": "Undecodable",
   "batchConvert.statusTooLarge": "Too large",
+  "batchConvert.lineEndingMixed": "Mixed",
   "batchConvert.convertButton": (count) => `Convert ${count} file${count === 1 ? "" : "s"}`,
   "batchConvert.confirmMessage": (count) =>
     `Convert ${count} file${count === 1 ? "" : "s"} in place? Each file is ` +
@@ -438,6 +446,9 @@ const zhTW: Messages = {
   "batchConvert.chooseFolderFirst": "請先選擇資料夾。",
   "batchConvert.extPlaceholder": "副檔名，逗號分隔（如 txt,md）——留空代表所有檔案",
   "batchConvert.targetLabel": "目標編碼",
+  "batchConvert.keepEncoding": "保持目前編碼",
+  "batchConvert.lineEndingLabel": "行尾",
+  "batchConvert.lineEndingKeep": "保持不變",
   "batchConvert.scanButton": "掃描（僅預覽）",
   "batchConvert.scanning": "掃描中…",
   "batchConvert.noResults": "找不到符合的檔案。",
@@ -449,6 +460,7 @@ const zhTW: Messages = {
   "batchConvert.statusLossy": "會遺失資料",
   "batchConvert.statusUndecodable": "無法解碼",
   "batchConvert.statusTooLarge": "檔案過大",
+  "batchConvert.lineEndingMixed": "混合換行",
   "batchConvert.convertButton": (count) => `轉換 ${count} 個檔案`,
   "batchConvert.confirmMessage": (count) =>
     `即將就地轉換 ${count} 個檔案？每個檔案將依報告中自動偵測的編碼` +

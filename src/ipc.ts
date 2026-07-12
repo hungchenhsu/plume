@@ -342,8 +342,9 @@ export interface BatchEntry {
   detected: string;
   /** "convertible" | "alreadyTarget" | "lossy" | "undecodable" | "tooLarge" */
   status: string;
-  /** Reserved for the batch line-ending-conversion PR; always null today. */
-  lineEnding: string | null;
+  /** The file's own detected line ending: "LF" | "CRLF" | "Mixed". Empty
+   *  for `tooLarge` or a file whose bytes couldn't be read at all. */
+  lineEnding: string;
 }
 
 export interface BatchScanReport {
@@ -351,9 +352,13 @@ export interface BatchScanReport {
 }
 
 /**
- * Dry-run scan of `dir` for batch encoding conversion: classifies every
- * matching file against `targetEncoding`/`targetWithBom` without changing
- * anything on disk. `extensions` is a list of lowercase, dot-less
+ * Dry-run scan of `dir` for batch encoding/line-ending conversion:
+ * classifies every matching file against `targetEncoding`/`targetWithBom`
+ * (the encoding axis) and `lineEnding` (the line-ending axis) without
+ * changing anything on disk. `targetEncoding` is a canonical encoding name
+ * or the sentinel `"keep"` (leave each file's own encoding alone —
+ * `targetWithBom` is then ignored). `lineEnding` is one of `"keep"` |
+ * `"LF"` | `"CRLF"`. `extensions` is a list of lowercase, dot-less
  * extensions (e.g. ["txt", "md"]); an empty list matches every file.
  * Rejects if the folder contains more than 2000 matching files.
  */
@@ -362,12 +367,14 @@ export function scanBatchConversion(
   extensions: string[],
   targetEncoding: string,
   targetWithBom: boolean,
+  lineEnding: string,
 ): Promise<BatchScanReport> {
   return invoke<BatchScanReport>("scan_batch_conversion", {
     dir,
     extensions,
     targetEncoding,
     targetWithBom,
+    lineEnding,
   });
 }
 
@@ -378,7 +385,9 @@ export interface BatchConvertResult {
 }
 
 /**
- * Convert every path in `paths` to `targetEncoding`/`withBom`, one atomic
+ * Convert every path in `paths` to `targetEncoding`/`withBom` (or leave
+ * each file's own encoding alone with `targetEncoding: "keep"`), unifying
+ * line endings per `lineEnding` (`"keep"` | `"LF"` | `"CRLF"`), one atomic
  * write per file. Never trusts a prior scan's snapshot — each file is
  * re-detected and re-decoded fresh from disk; a file that no longer
  * decodes cleanly or would lose data under the target encoding comes back
@@ -389,10 +398,12 @@ export function executeBatchConversion(
   paths: string[],
   targetEncoding: string,
   withBom: boolean,
+  lineEnding: string,
 ): Promise<BatchConvertResult[]> {
   return invoke<BatchConvertResult[]>("execute_batch_conversion", {
     paths,
     targetEncoding,
     withBom,
+    lineEnding,
   });
 }

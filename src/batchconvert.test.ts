@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { convertiblePaths, countByStatus, parseExtensions } from "./batchconvert";
+import {
+  batchEncodingChoices,
+  batchLineEndingChoices,
+  convertiblePaths,
+  countByStatus,
+  lineEndingDisplay,
+  parseExtensions,
+} from "./batchconvert";
+import { encodingChoices } from "./encodings";
+import { t } from "./i18n";
 import type { BatchEntry } from "./ipc";
 
 describe("parseExtensions", () => {
@@ -31,7 +40,7 @@ describe("parseExtensions", () => {
 });
 
 function entry(status: string, path = `/f-${status}.txt`, detected = "Big5"): BatchEntry {
-  return { path, detected, status, lineEnding: null };
+  return { path, detected, status, lineEnding: "LF" };
 }
 
 describe("countByStatus", () => {
@@ -91,5 +100,44 @@ describe("convertiblePaths", () => {
 
   it("returns an empty array for an empty report", () => {
     expect(convertiblePaths([])).toEqual([]);
+  });
+});
+
+describe("batchEncodingChoices", () => {
+  it("prepends a keep-current-encoding pseudo-choice as the first option", () => {
+    const choices = batchEncodingChoices();
+    expect(choices[0].value).toBe("keep");
+  });
+
+  it("otherwise matches the shared encodingChoices list exactly", () => {
+    expect(batchEncodingChoices().slice(1)).toEqual(encodingChoices());
+  });
+});
+
+describe("batchLineEndingChoices", () => {
+  it("defaults to keep, followed by LF and CRLF", () => {
+    const choices = batchLineEndingChoices();
+    expect(choices.map((c) => c.value)).toEqual(["keep", "LF", "CRLF"]);
+  });
+
+  it("gives every choice a non-empty label", () => {
+    for (const choice of batchLineEndingChoices()) {
+      expect(choice.label.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("lineEndingDisplay", () => {
+  it("passes LF and CRLF through unchanged", () => {
+    expect(lineEndingDisplay("LF")).toBe("LF");
+    expect(lineEndingDisplay("CRLF")).toBe("CRLF");
+  });
+
+  it("looks up Mixed through the i18n dictionary rather than passing it through raw", () => {
+    expect(lineEndingDisplay("Mixed")).toBe(t("batchConvert.lineEndingMixed"));
+  });
+
+  it("passes an empty (unknown) value through unchanged", () => {
+    expect(lineEndingDisplay("")).toBe("");
   });
 });
