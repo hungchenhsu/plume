@@ -1,4 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const scanBatchConversion = vi.fn();
+const executeBatchConversion = vi.fn();
+vi.mock("./ipc", () => ({
+  scanBatchConversion: (...args: unknown[]) =>
+    (scanBatchConversion as (...a: unknown[]) => unknown)(...args),
+  executeBatchConversion: (...args: unknown[]) =>
+    (executeBatchConversion as (...a: unknown[]) => unknown)(...args),
+}));
+
+const openDialog = vi.fn();
+const confirmDialog = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => (openDialog as (...a: unknown[]) => unknown)(...args),
+  confirm: (...args: unknown[]) => (confirmDialog as (...a: unknown[]) => unknown)(...args),
+}));
+
+// vi.mock calls above are hoisted above this static import by vitest, so
+// ./ipc and @tauri-apps/plugin-dialog are already mocked by the time
+// ./batchconvert is evaluated — same pattern as theme.test.ts.
 import {
   batchEncodingChoices,
   batchLineEndingChoices,
@@ -6,6 +26,8 @@ import {
   countByStatus,
   lineEndingDisplay,
   parseExtensions,
+  selectedConvertiblePaths,
+  showBatchConvert,
 } from "./batchconvert";
 import { encodingChoices } from "./encodings";
 import { t } from "./i18n";
@@ -103,6 +125,62 @@ describe("convertiblePaths", () => {
   });
 });
 
+describe("selectedConvertiblePaths", () => {
+  it("returns every convertible path when nothing is unchecked (all-checked, matches pre-checkbox behavior)", () => {
+    const entries = [
+      entry("convertible", "/a.txt"),
+      entry("alreadyTarget", "/b.txt"),
+      entry("convertible", "/c.txt"),
+    ];
+    expect(selectedConvertiblePaths(entries, new Set())).toEqual(["/a.txt", "/c.txt"]);
+  });
+
+  it("excludes only the unchecked convertible paths, preserving report order (partially checked)", () => {
+    const entries = [
+      entry("convertible", "/a.txt"),
+      entry("convertible", "/b.txt"),
+      entry("convertible", "/c.txt"),
+    ];
+    expect(selectedConvertiblePaths(entries, new Set(["/b.txt"]))).toEqual(["/a.txt", "/c.txt"]);
+  });
+
+  it("returns an empty array when every convertible path is unchecked (all-unchecked)", () => {
+    const entries = [entry("convertible", "/a.txt"), entry("convertible", "/b.txt")];
+    expect(selectedConvertiblePaths(entries, new Set(["/a.txt", "/b.txt"]))).toEqual([]);
+  });
+
+  it("never lets a non-convertible row's path affect the result, even if it appears in unchecked", () => {
+    const entries = [
+      entry("convertible", "/a.txt"),
+      entry("alreadyTarget", "/b.txt"),
+      entry("lossy", "/c.txt"),
+    ];
+    // /b.txt and /c.txt were never eligible in the first place — marking
+    // them "unchecked" is a no-op since convertiblePaths() already drops
+    // them; only a convertible row's checkbox can change the outcome.
+    expect(selectedConvertiblePaths(entries, new Set(["/b.txt", "/c.txt"]))).toEqual(["/a.txt"]);
+  });
+
+  it("ignores stale paths in unchecked that don't appear in entries at all", () => {
+    const entries = [entry("convertible", "/a.txt")];
+    expect(selectedConvertiblePaths(entries, new Set(["/nonexistent.txt"]))).toEqual(["/a.txt"]);
+  });
+
+  it("returns an empty array for an empty report regardless of unchecked contents", () => {
+    expect(selectedConvertiblePaths([], new Set(["/a.txt"]))).toEqual([]);
+  });
+
+  it("treats a fresh empty Set (the post-reset state after invalidateScan/renderReport) as fully selected again", () => {
+    const entries = [entry("convertible", "/a.txt"), entry("convertible", "/b.txt")];
+    const staleUnchecked = new Set(["/a.txt"]);
+    expect(selectedConvertiblePaths(entries, staleUnchecked)).toEqual(["/b.txt"]);
+    // A rescan replaces the closure's uncheckedPaths with `new Set()`
+    // (see invalidateScan/renderReport in batchconvert.ts) rather than
+    // carrying the old exclusion forward — simulate that reset here.
+    expect(selectedConvertiblePaths(entries, new Set())).toEqual(["/a.txt", "/b.txt"]);
+  });
+});
+
 describe("batchEncodingChoices", () => {
   it("prepends a keep-current-encoding pseudo-choice as the first option", () => {
     const choices = batchEncodingChoices();
@@ -143,5 +221,149 @@ describe("lineEndingDisplay", () => {
 
   it("passes an empty (unknown) value through unchanged", () => {
     expect(lineEndingDisplay("")).toBe("");
+  });
+});
+
+// showBatchConvert builds its own DOM (no framework), and batchconvert.ts
+// never touches the WebView directly, so this is driveable in jsdom same
+// as theme.test.ts drives preferences.ts — see the vi.mock block up top.
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function checkboxes(panel: HTMLElement): HTMLInputElement[] {
+  return Array.from(
+    panel.querySelectorAll<HTMLInputElement>(".batchconvert-row-checkbox input[type=checkbox]"),
+  );
+}
+
+async function openAndScan(entries: BatchEntry[]): Promise<HTMLElement> {
+  openDialog.mockResolvedValue("/some/folder");
+  scanBatchConversion.mockResolvedValue({ entries });
+  showBatchConvert();
+  const panel = document.querySelector(".batchconvert-panel") as HTMLElement;
+  (panel.querySelector(".batchconvert-folder") as HTMLButtonElement).click();
+  await flush();
+  (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+  await flush();
+  return panel;
+}
+
+describe("showBatchConvert — per-row checkbox (DOM)", () => {
+  afterEach(() => {
+    // Let the currently-open dialog's own Escape handler clean up its
+    // document-level listeners (mirrors a real dismiss); the overlay
+    // removal is a fallback in case nothing was open.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.querySelector(".batchconvert-overlay")?.remove();
+    scanBatchConversion.mockReset();
+    executeBatchConversion.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+  });
+
+  it("gives every convertible row a checked checkbox, and non-convertible rows none", async () => {
+    const panel = await openAndScan([
+      entry("convertible", "/a.txt"),
+      entry("alreadyTarget", "/b.txt"),
+      entry("lossy", "/c.txt"),
+    ]);
+    expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(3);
+    const boxes = checkboxes(panel);
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0].checked).toBe(true);
+  });
+
+  it("unchecking a row lowers the Convert button's count; re-checking restores it", async () => {
+    const panel = await openAndScan([
+      entry("convertible", "/a.txt"),
+      entry("convertible", "/b.txt"),
+    ]);
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 2));
+    expect(convertButton.disabled).toBe(false);
+
+    const boxes = checkboxes(panel);
+    boxes[0].checked = false;
+    boxes[0].dispatchEvent(new Event("change"));
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 1));
+    expect(convertButton.disabled).toBe(false);
+
+    boxes[0].checked = true;
+    boxes[0].dispatchEvent(new Event("change"));
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 2));
+  });
+
+  it("disables Convert once every row is unchecked", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt")]);
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    const box = checkboxes(panel)[0];
+    box.checked = false;
+    box.dispatchEvent(new Event("change"));
+    expect(convertButton.disabled).toBe(true);
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 0));
+  });
+
+  it("Convert sends only the checked subset, and the confirm prompt counts only those", async () => {
+    const panel = await openAndScan([
+      entry("convertible", "/a.txt"),
+      entry("convertible", "/b.txt"),
+      entry("convertible", "/c.txt"),
+    ]);
+    const boxes = checkboxes(panel);
+    boxes[1].checked = false; // exclude /b.txt
+    boxes[1].dispatchEvent(new Event("change"));
+
+    confirmDialog.mockResolvedValue(true);
+    executeBatchConversion.mockResolvedValue([
+      { path: "/a.txt", ok: true, message: "" },
+      { path: "/c.txt", ok: true, message: "" },
+    ]);
+    (panel.querySelector(".batchconvert-convert") as HTMLButtonElement).click();
+    await flush();
+
+    expect(confirmDialog).toHaveBeenCalledWith(
+      t("batchConvert.confirmMessage", 2),
+      expect.objectContaining({ title: t("batchConvert.title") }),
+    );
+    expect(executeBatchConversion).toHaveBeenCalledWith(
+      ["/a.txt", "/c.txt"],
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("invalidating the scan after an exclusion clears checkbox state — the next report starts fully selected", async () => {
+    const panel = await openAndScan([
+      entry("convertible", "/a.txt"),
+      entry("convertible", "/b.txt"),
+    ]);
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    checkboxes(panel)[0].checked = false;
+    checkboxes(panel)[0].dispatchEvent(new Event("change"));
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 1));
+
+    // Changing the extension filter voids the report (existing
+    // invalidateScan behavior, unrelated to this feature) — Convert must
+    // go back to disabled/0 and every row must disappear.
+    const extInput = panel.querySelector(".batchconvert-ext") as HTMLInputElement;
+    extInput.value = "md";
+    extInput.dispatchEvent(new Event("input"));
+    expect(convertButton.disabled).toBe(true);
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 0));
+    expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(0);
+
+    // Rescanning must start fully selected again: /a.txt's earlier
+    // exclusion must not survive invalidateScan into the new report.
+    scanBatchConversion.mockResolvedValueOnce({
+      entries: [entry("convertible", "/a.txt"), entry("convertible", "/b.txt")],
+    });
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+    expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 2));
+    const boxes = checkboxes(panel);
+    expect(boxes[0].checked).toBe(true);
+    expect(boxes[1].checked).toBe(true);
   });
 });
