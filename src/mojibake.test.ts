@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeCandidate, truncatePreview } from "./mojibake";
+import { describeCandidate, isMojibakeSnapshotStale, truncatePreview } from "./mojibake";
 import type { RepairCandidate } from "./ipc";
 
 describe("truncatePreview", () => {
@@ -53,5 +53,47 @@ describe("describeCandidate", () => {
     };
     expect(describeCandidate(candidate)).toContain("EUC-KR");
     expect(describeCandidate(candidate)).toContain("Shift_JIS");
+  });
+});
+
+// Issue #93: detection and the user's candidate pick are both async, so the
+// same tab's content can keep changing while the wizard is open. Applying a
+// repair computed from a stale snapshot would silently overwrite whatever
+// the user typed in the meantime — these are the failing-first tests for
+// the guard that rejects that instead of a plain tab-id check.
+describe("isMojibakeSnapshotStale", () => {
+  it("is not stale when the live content still matches the snapshot", () => {
+    const content = "these violets are actually 這是亂碼";
+    expect(isMojibakeSnapshotStale(content, content)).toBe(false);
+  });
+
+  it("is not stale when an edit was undone back to the exact snapshot", () => {
+    // A value comparison (not a generation counter) means content edited
+    // and then reverted to byte-for-byte the snapshot is correctly not
+    // stale — the repair still applies to identical content.
+    const snapshot = "these violets are actually 這是亂碼";
+    const editedThenReverted = snapshot.slice();
+    expect(isMojibakeSnapshotStale(snapshot, editedThenReverted)).toBe(false);
+  });
+
+  it("is stale for the smallest possible single-character edit", () => {
+    const snapshot = "these violets are actually 這是亂碼";
+    expect(isMojibakeSnapshotStale(snapshot, snapshot + " ")).toBe(true);
+  });
+
+  it("is stale when the same tab was edited after the snapshot was taken", () => {
+    const snapshot = "original mojibake content";
+    // Simulates the user typing in the same tab while the wizard's async
+    // detect -> pick -> repair round trip was still in flight.
+    const liveContent = "original mojibake content, plus a new sentence.";
+    expect(isMojibakeSnapshotStale(snapshot, liveContent)).toBe(true);
+  });
+
+  it("is stale even for a whitespace-only change", () => {
+    expect(isMojibakeSnapshotStale("line one\nline two", "line one\n\nline two")).toBe(true);
+  });
+
+  it("is not stale when both snapshot and live content are empty", () => {
+    expect(isMojibakeSnapshotStale("", "")).toBe(false);
   });
 });

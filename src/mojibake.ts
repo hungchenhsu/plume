@@ -30,6 +30,32 @@ export function describeCandidate(candidate: RepairCandidate): string {
   );
 }
 
+/**
+ * Whether the live editor content has drifted from `snapshot` — the content
+ * captured once when the wizard opened and used, unchanged, for both
+ * `detectMojibake` and `applyMojibakeRepair` below. Detection and the
+ * user's candidate pick are both async round trips, so the *same* tab's
+ * content can keep changing while the wizard sits open (typing, a line
+ * operation, a reload); if it has, the repair in hand was computed from a
+ * version of the document the user can no longer see on screen, and the
+ * caller must reject applying it rather than silently overwrite whatever
+ * they've since typed (see issue #93).
+ *
+ * A plain string comparison, not a hash or a CM6 changeset/generation
+ * counter: the whole content already round-trips through IPC as a string
+ * for detection and repair, so comparing the same string again costs
+ * nothing extra and needs no new state to create or keep in sync.
+ *
+ * This only catches drift within the same document. Whether the user
+ * switched to a *different* tab entirely is a separate, pre-existing check
+ * (`tabs.activeId !== docId` in main.ts's `showMojibakeRepairWizard`) that
+ * this function knows nothing about — the two guards are independent and
+ * both must pass before a repair is applied.
+ */
+export function isMojibakeSnapshotStale(snapshot: string, liveContent: string): boolean {
+  return snapshot !== liveContent;
+}
+
 const BEFORE_PREVIEW_CHARS = 200;
 
 function renderCandidates(
