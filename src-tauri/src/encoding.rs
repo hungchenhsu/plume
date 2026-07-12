@@ -3,6 +3,28 @@
 //! Detection order: BOM sniffing first, then statistical detection via
 //! chardetng. Decoded text is normalized to LF; the original line ending is
 //! reported separately so it can be restored on save.
+//!
+//! ## Round-trip contract
+//!
+//! What this module — and every whole-buffer save path built on it
+//! (`lib.rs::save_document`, `batch.rs::convert_one`,
+//! `streamreplace.rs`'s whole-file decode/re-encode) — actually
+//! guarantees on a decode -> encode cycle is: the decoded *text*, the
+//! *encoding label*, the *BOM flag*, and the *line ending* all survive
+//! unchanged. It does **not** guarantee byte-for-byte identity of the
+//! re-encoded output against the original on-disk bytes. `encoding_rs`
+//! (0.8.35, per `Cargo.lock`) follows the WHATWG Encoding Standard, and
+//! for a handful of legacy multi-byte encodings that standard's decode
+//! mapping is not injective: more than one on-disk byte sequence can
+//! decode to the same Unicode character (duplicate or vendor-extension
+//! mappings), while `encode` always emits only that character's single
+//! canonical byte sequence. So `encode(decode(bytes)) != bytes` is
+//! possible even when decoding reports no malformed data and encoding
+//! reports nothing unmappable — a non-canonical input sequence is
+//! silently canonicalized. See the `tests` module below (`big5_`,
+//! `shift_jis_`, `gbk_non_canonical_bytes_are_canonicalized_on_encode`)
+//! for three currently-observed, pinned examples, and issue #96 for the
+//! full analysis and the product-level decision this leaves open.
 
 use chardetng::EncodingDetector;
 use encoding_rs::{Encoding, UTF_16BE, UTF_16LE, UTF_8};
@@ -348,6 +370,10 @@ pub fn decode_with(bytes: &[u8], label: &str) -> Result<DecodedText, String> {
 
 /// Encode text for saving. Returns the bytes and whether any character was
 /// unmappable in the target encoding (the caller should warn the user).
+///
+/// Not guaranteed to be byte-identical to whatever bytes (if any) `text`
+/// was originally decoded from — see the module doc's "Round-trip
+/// contract" section for the known non-injective-mapping gap (issue #96).
 pub fn encode(text: &str, label: &str, with_bom: bool) -> Result<(Vec<u8>, bool), String> {
     let encoding = Encoding::for_label(label.as_bytes())
         .ok_or_else(|| format!("Unknown encoding label: {label}"))?;
@@ -1123,5 +1149,86 @@ mod tests {
         );
         assert_eq!(preview_utf16_variant(&bytes, None, Some("UTF-16LE")), None);
         assert_eq!(preview_utf16_variant(&bytes, None, Some("UTF-16BE")), None);
+    }
+
+    // --- Issue #96: legacy multi-byte encodings are not injective -------
+    //
+    // These are *characterization* tests, not bug reports: they pin
+    // `encoding_rs` 0.8.35's actual, current canonicalizing behavior for
+    // three known non-injective byte sequences (verified directly against
+    // the version this workspace's `Cargo.lock` locks), so that a future
+    // `encoding_rs` upgrade that silently changes this behavior fails a
+    // test instead of drifting unnoticed. They deliberately do NOT assert
+    // `encode(decode(bytes)) == bytes` — that equality is exactly what
+    // does not hold here. See the module doc's "Round-trip contract"
+    // section and issue #96 for what this project does and does not
+    // guarantee.
+
+    #[test]
+    fn big5_non_canonical_bytes_are_canonicalized_on_encode() {
+        // 0x8E 0x69 is a duplicate Big5 mapping for "箸" (U+7BB8): it
+        // decodes cleanly (no malformed sequence), but `encode` always
+        // emits that character's canonical byte pair, 0xBA 0xE6 — not the
+        // original bytes.
+        let original = [0x8Eu8, 0x69];
+        let (text, malformed) = encoding_rs::BIG5.decode_without_bom_handling(&original);
+        assert!(!malformed, "0x8E 0x69 must decode cleanly as Big5");
+        assert_eq!(text, "箸");
+
+        let (canonical, unmappable) = encode(&text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_ne!(
+            canonical.as_slice(),
+            &original[..],
+            "characterizes current canonicalizing behavior: encode(decode(bytes)) \
+             != bytes for this non-injective Big5 mapping, even though decoding \
+             was clean and nothing was unmappable"
+        );
+        assert_eq!(canonical, vec![0xBA, 0xE6]);
+    }
+
+    #[test]
+    fn shift_jis_non_canonical_bytes_are_canonicalized_on_encode() {
+        // 0x87 0x90 is a duplicate Shift_JIS mapping for "≒" (U+2252): it
+        // decodes cleanly, but `encode` always emits the canonical pair
+        // 0x81 0xE0 — not the original bytes.
+        let original = [0x87u8, 0x90];
+        let (text, malformed) = encoding_rs::SHIFT_JIS.decode_without_bom_handling(&original);
+        assert!(!malformed, "0x87 0x90 must decode cleanly as Shift_JIS");
+        assert_eq!(text, "≒");
+
+        let (canonical, unmappable) = encode(&text, "Shift_JIS", false).unwrap();
+        assert!(!unmappable);
+        assert_ne!(
+            canonical.as_slice(),
+            &original[..],
+            "characterizes current canonicalizing behavior: encode(decode(bytes)) \
+             != bytes for this non-injective Shift_JIS mapping, even though \
+             decoding was clean and nothing was unmappable"
+        );
+        assert_eq!(canonical, vec![0x81, 0xE0]);
+    }
+
+    #[test]
+    fn gbk_non_canonical_bytes_are_canonicalized_on_encode() {
+        // 0xA2 0xE3 is a duplicate GBK mapping for "€" (U+20AC): it
+        // decodes cleanly, but `encode` always emits the single-byte
+        // vendor-extension canonical form, 0x80 — not the original two
+        // bytes.
+        let original = [0xA2u8, 0xE3];
+        let (text, malformed) = encoding_rs::GBK.decode_without_bom_handling(&original);
+        assert!(!malformed, "0xA2 0xE3 must decode cleanly as GBK");
+        assert_eq!(text, "€");
+
+        let (canonical, unmappable) = encode(&text, "GBK", false).unwrap();
+        assert!(!unmappable);
+        assert_ne!(
+            canonical.as_slice(),
+            &original[..],
+            "characterizes current canonicalizing behavior: encode(decode(bytes)) \
+             != bytes for this non-injective GBK mapping, even though decoding \
+             was clean and nothing was unmappable"
+        );
+        assert_eq!(canonical, vec![0x80]);
     }
 }
