@@ -143,7 +143,7 @@ domain: failing-test-first, round-trip tests mandatory)
   beyond the loaded window
 
 **Track C — everyday editing comfort**
-- [ ] Code folding (CM6 fold gutter, wired per language)
+- [x] Code folding (CM6 fold gutter, wired per language)
 - [ ] Line operations under Edit menu: sort / unique / trim trailing
   whitespace / upper-lower case (vitest for the pure transforms)
 - [ ] Indent guides (token-driven color, all four themes)

@@ -52,6 +52,8 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("view", "View", "檢視"),
     ("word_wrap", "Word Wrap", "自動換行"),
     ("show_invisibles", "Show Invisibles", "顯示不可見字元"),
+    ("fold_all", "Fold All", "全部摺疊"),
+    ("unfold_all", "Unfold All", "全部展開"),
     ("theme", "Theme", "主題"),
     ("theme_system", "Follow system", "跟隨系統"),
     ("theme_light", "Light", "亮色"),
@@ -267,6 +269,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .build(app)?,
         )
         .separator()
+        // No accelerator: CM6's own `foldKeymap` (bundled into editor.ts's
+        // `basicSetup`) already binds Mod-Alt-[ / Mod-Alt-] inside the
+        // editor. A native menu accelerator on the same keys would give the
+        // shortcut two owners, same pitfall this module's header comment
+        // warns about for the file shortcuts.
+        .item(&MenuItemBuilder::with_id("fold_all", l("fold_all")).build(app)?)
+        .item(&MenuItemBuilder::with_id("unfold_all", l("unfold_all")).build(app)?)
+        .separator()
         .item(&theme_menu)
         .separator()
         .item(
@@ -400,6 +410,11 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 .get(id)
                 .and_then(|item| item.as_check_menuitem().cloned())
             {
+                item.set_text(l(id)).map_err(|e| e.to_string())?;
+            }
+        }
+        for id in ["fold_all", "unfold_all"] {
+            if let Some(item) = view.get(id).and_then(|item| item.as_menuitem().cloned()) {
                 item.set_text(l(id)).map_err(|e| e.to_string())?;
             }
         }

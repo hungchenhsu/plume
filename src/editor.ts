@@ -23,7 +23,11 @@ import {
   gutter,
   highlightWhitespace,
 } from "@codemirror/view";
-import { LanguageDescription } from "@codemirror/language";
+import {
+  LanguageDescription,
+  foldAll as cmFoldAll,
+  unfoldAll as cmUnfoldAll,
+} from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
@@ -37,13 +41,21 @@ import {
 } from "./searchhistory";
 
 /**
- * Traditional-Chinese phrases for the @codemirror/search find/replace
- * panel, keyed by the exact English source phrases CM6 looks up via
- * `EditorState.phrases` (see @codemirror/search's `phrase(view, "...")`
- * calls) — this is CM6's own built-in translation mechanism, not a new
- * dependency. English needs no entries: it is CM6's built-in default.
+ * Traditional-Chinese phrases for CM6's own translatable UI strings, keyed
+ * by the exact English source phrases CM6 looks up via `EditorState.phrases`
+ * (see @codemirror/search's and @codemirror/language's own
+ * `phrase(view, "...")` calls) — this is CM6's own built-in translation
+ * mechanism, not a new dependency. English needs no entries: it is CM6's
+ * built-in default. Covers two surfaces: the @codemirror/search find/replace
+ * panel, and the @codemirror/language fold gutter (the marker tooltip, the
+ * "…" placeholder's accessible name/tooltip, and the folded/unfolded-range
+ * screen-reader announcement) — every key below was confirmed unique to its
+ * one call site by grepping every @codemirror package's dist/index.js, so
+ * none of these collides with an unrelated phrase() call elsewhere in CM6
+ * (checked across @codemirror/commands, /autocomplete, /lint, /search,
+ * /state, and /view).
  */
-const SEARCH_PANEL_PHRASES_ZH_TW: Record<string, string> = {
+const CM6_PHRASES_ZH_TW: Record<string, string> = {
   Find: "尋找",
   Replace: "取代",
   next: "下一個",
@@ -61,10 +73,17 @@ const SEARCH_PANEL_PHRASES_ZH_TW: Record<string, string> = {
   "replaced $ matches": "已取代 $ 筆符合項目",
   "current match": "目前符合項目",
   "on line": "位於行",
+  "Fold line": "摺疊此行",
+  "Unfold line": "展開此行",
+  "folded code": "已摺疊的程式碼",
+  unfold: "展開",
+  "Folded lines": "已摺疊行",
+  "Unfolded lines": "已展開行",
+  to: "至",
 };
 
-function searchPanelPhrases(locale: Locale): Record<string, string> {
-  return locale === "zh-TW" ? SEARCH_PANEL_PHRASES_ZH_TW : {};
+function cm6Phrases(locale: Locale): Record<string, string> {
+  return locale === "zh-TW" ? CM6_PHRASES_ZH_TW : {};
 }
 
 export type EditorBuffer = EditorState;
@@ -127,6 +146,15 @@ export interface EditorHandle {
    * package chunk is loading.
    */
   setLanguage(filename: string | null, stillWanted: () => boolean): Promise<void>;
+  /** Fold every top-level foldable range (CM6's `foldAll` command, also
+   *  bound to Mod-Alt-[ by `foldKeymap` — see the View menu's "Fold All").
+   *  A safe no-op when the live buffer has no syntax tree to fold from,
+   *  e.g. plain text or a truncated large-file buffer (see `setLanguage`
+   *  and the `basicSetup` comment above `createEditor`'s `extensions`). */
+  foldAll(): void;
+  /** Unfold every folded range (CM6's `unfoldAll` command, Mod-Alt-] —
+   *  View menu's "Unfold All"). */
+  unfoldAll(): void;
 }
 
 export function isEmptyBuffer(buffer: EditorBuffer): boolean {
@@ -380,6 +408,21 @@ export function createEditor(
   let currentInvisibles: Extension = [];
   let currentPhrases: Extension = [];
   const extensions = [
+    // `basicSetup` bundles CM6's fold gutter and fold keymap out of the box
+    // (see node_modules/codemirror/dist/index.js: `foldGutter()` and
+    // `...foldKeymap` are already in its array) — ROADMAP.md's "code
+    // folding" item is therefore mostly free, and this file must NOT call
+    // `foldGutter()` or add `foldKeymap` again anywhere else: `gutter()`
+    // extensions aren't deduplicated by class name, so a second
+    // `foldGutter()` call would render a second, empty fold-gutter column
+    // beside this one. Folding depends on the syntax tree, exactly like the
+    // syntax-highlighting `language` compartment below, so it needs no
+    // compartment of its own: truncated (large-file) buffers never get a
+    // language loaded (`doc.truncated ? null : doc.title` in main.ts's
+    // `showActive`), so their fold gutter shows no arrows and
+    // `foldAll`/`unfoldAll` are no-ops — the same "no foldable ranges, no
+    // arrows" behavior a small plain-text file with no recognized language
+    // already gets for free.
     basicSetup,
     editorTheme,
     bookmarkLinesField,
@@ -502,7 +545,7 @@ export function createEditor(
       view.dispatch({ effects: invisibles.reconfigure(currentInvisibles) });
     },
     setLocale: (locale) => {
-      currentPhrases = EditorState.phrases.of(searchPanelPhrases(locale));
+      currentPhrases = EditorState.phrases.of(cm6Phrases(locale));
       view.dispatch({ effects: phrases.reconfigure(currentPhrases) });
     },
     async setLanguage(filename, stillWanted) {
@@ -512,6 +555,12 @@ export function createEditor(
       const support = description ? await description.load() : [];
       if (!stillWanted()) return;
       view.dispatch({ effects: language.reconfigure(support) });
+    },
+    foldAll: () => {
+      cmFoldAll(view);
+    },
+    unfoldAll: () => {
+      cmUnfoldAll(view);
     },
   };
 }
