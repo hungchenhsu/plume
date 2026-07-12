@@ -1088,6 +1088,105 @@ select:focus-visible {
   background: var(--accent-soft);
 }
 
+.streamreplace-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+
+.streamreplace-panel {
+  display: flex;
+  flex-direction: column;
+  width: 480px;
+  max-width: 92vw;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: panel-in 140ms ease-out;
+}
+
+.streamreplace-header {
+  padding: 10px 14px;
+  overflow: hidden;
+  font-size: var(--font-ui);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.streamreplace-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 0;
+}
+
+.streamreplace-fields input[type="text"] {
+  padding: 6px 8px;
+  font: inherit;
+  font-size: var(--font-ui);
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.streamreplace-case {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 0;
+  font-size: var(--font-ui-sm);
+  user-select: none;
+}
+
+.streamreplace-hint {
+  padding: 2px 14px 0;
+  font-size: var(--font-ui-xs);
+  color: var(--fg-faint);
+}
+
+.streamreplace-status {
+  padding: 8px 14px 0;
+  font-size: var(--font-ui-sm);
+  color: var(--fg-muted);
+  min-height: 18px;
+}
+
+.streamreplace-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 14px 14px;
+}
+
+.streamreplace-execute {
+  padding: 6px 14px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  font-weight: 500;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.streamreplace-execute:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--bg-surface);
+  color: var(--fg-faint);
+  border-color: var(--border);
+}
+
 .detectcard-panel {
   position: fixed;
   z-index: 100;

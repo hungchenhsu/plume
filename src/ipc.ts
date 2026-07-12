@@ -443,3 +443,37 @@ export function previewTwoEncodings(
     encodingB,
   });
 }
+
+export interface StreamReplaceReport {
+  replacements: number;
+  bytesWritten: number;
+}
+
+/**
+ * Search-and-replace across an entire file on disk, streamed in bounded
+ * chunks on the Rust side so memory use stays flat regardless of file size
+ * (see src-tauri/src/streamreplace.rs) — the large-file preview window's
+ * equivalent of Find/Replace, since only a bounded slice of a large file is
+ * ever loaded into the editor and saving that slice back would destroy the
+ * rest of the file. `encoding` should be the document's own detected
+ * encoding (`doc.encoding`); this never converts between encodings. Zero
+ * matches, or any error, leaves the file completely untouched — the caller
+ * only needs to reload the document from disk when `replacements > 0`.
+ * Rejects for UTF-16 files (no streaming UTF-16 encoder — see the Rust
+ * module doc comment) and when `search` is empty.
+ */
+export function streamReplaceInFile(
+  path: string,
+  search: string,
+  replace: string,
+  encoding: string,
+  caseSensitive: boolean,
+): Promise<StreamReplaceReport> {
+  return invoke<StreamReplaceReport>("stream_replace_in_file", {
+    path,
+    search,
+    replace,
+    encoding,
+    caseSensitive,
+  });
+}

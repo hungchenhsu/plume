@@ -12,6 +12,7 @@ mod search;
 mod session;
 mod startup_probe;
 mod store;
+mod streamreplace;
 mod watcher;
 
 use serde::Serialize;
@@ -500,6 +501,7 @@ pub fn run() {
             batch::scan_batch_conversion,
             batch::execute_batch_conversion,
             comparepreview::preview_two_encodings,
+            streamreplace::stream_replace_in_file,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())

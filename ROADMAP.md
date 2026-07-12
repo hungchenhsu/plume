@@ -136,7 +136,7 @@ domain: failing-test-first, round-trip tests mandatory)
   candidate encodings, read-only, for manual disambiguation
 
 **Track B — large files**
-- [ ] Find/replace inside large-file windows via streaming Rust
+- [x] Find/replace inside large-file windows via streaming Rust
   search/replace over the full file (atomic temp+rename; editor window
   refreshes after)
 - [ ] Line-offset index for huge files: fast go-to-line and bookmarks
