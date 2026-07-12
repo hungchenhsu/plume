@@ -83,6 +83,7 @@ fn preview_slice(bytes: &[u8], max: usize) -> &[u8] {
 #[serde(rename_all = "camelCase")]
 pub struct SaveResult {
     unmappable: bool,
+    written: bool,
 }
 
 /// Read a file from disk, decoding with the given encoding label or with
@@ -221,8 +222,15 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 }
 
 /// Encode LF-normalized content with the given encoding and line ending,
-/// then write it to disk atomically. `unmappable` is true when characters
-/// could not be represented in the target encoding.
+/// then write it to disk atomically.
+///
+/// This is a two-phase save. `unmappable` is true when characters could not
+/// be represented in the target encoding. When that happens and
+/// `allow_lossy` is `false`, nothing is written — the file on disk is left
+/// exactly as it was, and the caller must re-invoke with `allow_lossy: true`
+/// (after explicit user confirmation) to actually write the lossy bytes.
+/// This guarantees a save can never silently overwrite the user's original
+/// text with lossy replacement bytes before they've agreed to that trade.
 #[tauri::command]
 fn save_document(
     path: String,
@@ -230,12 +238,22 @@ fn save_document(
     encoding: String,
     with_bom: bool,
     line_ending: String,
+    allow_lossy: bool,
 ) -> Result<SaveResult, String> {
     let text = encoding::apply_line_ending(&content, &line_ending);
     let (bytes, unmappable) = encoding::encode(&text, &encoding, with_bom)?;
+    if unmappable && !allow_lossy {
+        return Ok(SaveResult {
+            unmappable: true,
+            written: false,
+        });
+    }
     atomic_write(std::path::Path::new(&path), &bytes)
         .map_err(|e| format!("Failed to write {path}: {e}"))?;
-    Ok(SaveResult { unmappable })
+    Ok(SaveResult {
+        unmappable,
+        written: true,
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -597,9 +615,11 @@ mod tests {
             opened.encoding.clone(),
             opened.had_bom,
             opened.line_ending.clone(),
+            false,
         )
         .unwrap();
         assert!(!saved.unmappable);
+        assert!(saved.written);
         assert_eq!(std::fs::read(&file).unwrap(), original_bytes);
 
         let reopened = open_document(path, None, Some("Big5".into())).unwrap();
@@ -637,14 +657,89 @@ mod tests {
             opened.encoding.clone(),
             opened.had_bom,
             opened.line_ending.clone(),
+            false,
         )
         .unwrap();
         assert!(!saved.unmappable);
+        assert!(saved.written);
         assert_eq!(std::fs::read(&file).unwrap(), original_bytes);
 
         let reopened = open_document(path, None, Some("Big5".into())).unwrap();
         assert_eq!(reopened.encoding, "UTF-8");
         assert_eq!(reopened.content, text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #64: saving content with characters unmappable in the target
+    /// encoding must never touch disk until the caller opts in via
+    /// `allow_lossy`. This is the core data-integrity assertion — comparing
+    /// the bytes on disk to the pre-save original, not just checking the
+    /// return value.
+    #[test]
+    fn save_document_refuses_lossy_write_without_consent() {
+        let dir = std::env::temp_dir().join("plume-save-lossy-refuse");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+
+        let original = "hello 🚀 世界".as_bytes().to_vec();
+        std::fs::write(&target, &original).unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        let result = save_document(
+            path,
+            "hello 🚀 世界".to_string(),
+            "Big5".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+        )
+        .unwrap();
+
+        assert!(result.unmappable);
+        assert!(!result.written);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            original,
+            "refused save must leave the original bytes on disk untouched"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The consenting counterpart: once the caller re-invokes with
+    /// `allow_lossy: true`, the write proceeds and the bytes on disk become
+    /// the lossy Big5 encoding of the content.
+    #[test]
+    fn save_document_writes_lossy_with_consent() {
+        let dir = std::env::temp_dir().join("plume-save-lossy-consent");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+
+        let original = "hello 🚀 世界".as_bytes().to_vec();
+        std::fs::write(&target, &original).unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        let result = save_document(
+            path,
+            "hello 🚀 世界".to_string(),
+            "Big5".to_string(),
+            false,
+            "LF".to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert!(result.unmappable);
+        assert!(result.written);
+        let on_disk = std::fs::read(&target).unwrap();
+        assert_ne!(on_disk, original);
+        let (expected_bytes, unmappable) =
+            crate::encoding::encode("hello 🚀 世界", "Big5", false).unwrap();
+        assert!(unmappable);
+        assert_eq!(on_disk, expected_bytes);
 
         std::fs::remove_dir_all(&dir).ok();
     }

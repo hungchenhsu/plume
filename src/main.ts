@@ -513,31 +513,53 @@ async function openFileFlow(): Promise<void> {
   }
 }
 
-async function saveFlow(saveAs: boolean): Promise<void> {
+/** Save the active document. Resolves to true only when bytes actually
+ *  reached the disk — callers that speculatively changed doc state (e.g.
+ *  the save-with-encoding menu) roll back on false. */
+async function saveFlow(saveAs: boolean): Promise<boolean> {
   const doc = tabs.active;
-  if (!doc) return;
+  if (!doc) return false;
   if (doc.truncated) {
     // Writing the preview slice back would destroy the rest of the file.
     await messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
       title: t("dialog.readonlyPreviewTitle"),
       kind: "warning",
     });
-    return;
+    return false;
   }
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
     path = await saveDialog({ defaultPath: path ?? doc.title });
-    if (path === null) return;
+    if (path === null) return false;
   }
   try {
-    const result = await saveDocument({
+    const content = editor.content();
+    const saveParams = {
       path,
-      content: editor.content(),
+      content,
       encoding: doc.encoding,
       withBom: doc.withBom,
       lineEnding: doc.lineEnding,
-    });
+    };
+    let result = await saveDocument({ ...saveParams, allowLossy: false });
+    if (result.unmappable && !result.written) {
+      const proceed = await confirmDialog(
+        t("dialog.lossyEncodingMessage", doc.encoding),
+        {
+          title: t("dialog.lossyEncodingTitle"),
+          kind: "warning",
+          okLabel: t("dialog.lossyEncodingConfirm"),
+        },
+      );
+      // Cancelled: the doc stays exactly as it was before Save was
+      // invoked — dirty, on its old path, no watcher/session changes.
+      if (!proceed) return false;
+      result = await saveDocument({ ...saveParams, allowLossy: true });
+    }
+    // Only once the bytes are actually on disk do we touch doc state or
+    // run any of the success side effects below.
+    if (!result.written) return false;
     recentSaves.set(path, Date.now());
     dropBackup(doc);
     if (oldPath !== path) {
@@ -558,17 +580,13 @@ async function saveFlow(saveAs: boolean): Promise<void> {
       void editor.setLanguage(doc.title, () => tabs.activeId === doc.id);
     }
     persistSession();
-    if (result.unmappable) {
-      await messageDialog(t("dialog.encodingWarningMessage", doc.encoding), {
-        title: t("dialog.encodingWarningTitle"),
-        kind: "warning",
-      });
-    }
+    return true;
   } catch (error) {
     await messageDialog(String(error), {
       title: t("dialog.saveFailedTitle"),
       kind: "error",
     });
+    return false;
   }
 }
 
@@ -668,10 +686,22 @@ function showEncodingMenu(anchor: HTMLElement): void {
             label: e.label,
             checked: e.value === doc.encoding && e.withBom === doc.withBom,
             action: () => {
+              // Applied speculatively so the save encodes with the new
+              // choice; rolled back if nothing was written (lossy save
+              // declined, dialog cancelled, or write failure) so a
+              // "clean" doc never shows an encoding the disk doesn't have.
+              const prevEncoding = doc.encoding;
+              const prevWithBom = doc.withBom;
               doc.encoding = e.value;
               doc.withBom = e.withBom;
               updateStatusBar(doc);
-              void saveFlow(false);
+              void saveFlow(false).then((written) => {
+                if (!written) {
+                  doc.encoding = prevEncoding;
+                  doc.withBom = prevWithBom;
+                  updateStatusBar(doc);
+                }
+              });
             },
           })),
         ),

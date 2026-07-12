@@ -105,8 +105,9 @@ export interface Messages {
   "dialog.readonlyPreviewTitle": string;
   "dialog.readonlyPreviewMessage": (title: string) => string;
   "dialog.saveFailedTitle": string;
-  "dialog.encodingWarningTitle": string;
-  "dialog.encodingWarningMessage": (encoding: string) => string;
+  "dialog.lossyEncodingTitle": string;
+  "dialog.lossyEncodingMessage": (encoding: string) => string;
+  "dialog.lossyEncodingConfirm": string;
   "dialog.unsavedChangesTitle": string;
   "dialog.reopenMessage": (title: string) => string;
   "dialog.reopen": string;
@@ -221,9 +222,11 @@ const en: Messages = {
   "dialog.readonlyPreviewMessage": (title) =>
     `"${title}" is a read-only preview of a large file; saving is disabled.`,
   "dialog.saveFailedTitle": "Save failed",
-  "dialog.encodingWarningTitle": "Encoding warning",
-  "dialog.encodingWarningMessage": (encoding) =>
-    `Some characters could not be represented in ${encoding} and were replaced.`,
+  "dialog.lossyEncodingTitle": "Encoding warning",
+  "dialog.lossyEncodingMessage": (encoding) =>
+    `Some characters can't be represented in ${encoding}. Continuing to save ` +
+    `will write replacement characters in their place, and this can't be undone.`,
+  "dialog.lossyEncodingConfirm": "Save Anyway",
   "dialog.unsavedChangesTitle": "Unsaved changes",
   "dialog.reopenMessage": (title) =>
     `Reopening will discard unsaved changes in "${title}". Continue?`,
@@ -339,9 +342,10 @@ const zhTW: Messages = {
   "dialog.readonlyPreviewMessage": (title) =>
     `「${title}」是大型檔案的唯讀預覽，無法儲存。`,
   "dialog.saveFailedTitle": "儲存失敗",
-  "dialog.encodingWarningTitle": "編碼警告",
-  "dialog.encodingWarningMessage": (encoding) =>
-    `部分字元無法以 ${encoding} 表示，已被取代。`,
+  "dialog.lossyEncodingTitle": "編碼警告",
+  "dialog.lossyEncodingMessage": (encoding) =>
+    `有字元無法以 ${encoding} 表示，繼續儲存將以替代字元寫入且無法復原。`,
+  "dialog.lossyEncodingConfirm": "仍要儲存",
   "dialog.unsavedChangesTitle": "未儲存的變更",
   "dialog.reopenMessage": (title) =>
     `重新開啟將捨棄「${title}」中未儲存的變更，是否繼續？`,
