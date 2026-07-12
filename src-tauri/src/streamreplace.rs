@@ -462,12 +462,23 @@ fn verify_unchanged(path: &Path, original: &FileFingerprint) -> Result<(), Strin
 ///    than writing back a partially-repaired file — matching
 ///    ARCHITECTURE.md's "decode errors are surfaced, never silently
 ///    rendered as if the text were fine".
-/// 5. Re-encoding is defensively checked too, even though every unreplaced
-///    byte round-trips losslessly through the same encoding it was decoded
-///    from and `replace` was already validated in step 2: any unmappable
-///    output still aborts rather than ever writing a lossy byte the caller
-///    didn't explicitly agree to (mirrors `save_document`'s `allow_lossy`
-///    gate in `lib.rs`, just with no lossy path offered here at all).
+/// 5. Re-encoding is defensively checked too: `replace` was already
+///    validated in step 2, and every unreplaced *character* came from
+///    decoding this file's own bytes in `encoding`, so it is by
+///    construction representable in `encoding` again — this check exists
+///    for defense in depth, not because failure is expected. Any
+///    unmappable output still aborts rather than ever writing a lossy
+///    byte the caller didn't explicitly agree to (mirrors
+///    `save_document`'s `allow_lossy` gate in `lib.rs`, just with no lossy
+///    path offered here at all). Representable is not the same as
+///    byte-identical, though: several legacy encodings (Big5, Shift_JIS
+///    and GBK among them — see `encoding::encode`'s round-trip contract
+///    note and issue #96 for the full analysis) are not injective, so an
+///    unreplaced byte sequence can
+///    still come back out re-encoded to a different, canonical byte
+///    sequence for the same character. This whole-file decode -> replace
+///    -> re-encode was never scoped to leave non-matching bytes
+///    untouched — see the module doc.
 /// 6. Before that commit, the file at `path` is re-stat'd and compared
 ///    against the [`FileFingerprint`] captured right after the source was
 ///    opened: if its size, mtime, or (Unix) inode identity no longer

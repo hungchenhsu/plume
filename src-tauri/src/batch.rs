@@ -15,8 +15,16 @@
 //!   ending exactly as found on disk.
 //!
 //! `"keep"` + `"keep"` classifies every file `alreadyTarget` (nothing on
-//! either axis would change), and converting is a no-op everywhere thanks
-//! to the byte-identical skip in `convert_one`.
+//! either axis is *asked* to change). Converting such a file is usually a
+//! no-op: `convert_one`'s byte-identical skip (`out_bytes == bytes`)
+//! detects when re-encoding reproduced the file's own bytes exactly and
+//! leaves it untouched. That skip is a detection, not a guarantee, though
+//! — for the legacy non-injective encodings documented on
+//! `encoding::encode` (Big5, Shift_JIS, GBK; see issue #96), a file that
+//! already contains non-canonical bytes fails that identity check and
+//! gets silently rewritten with canonicalized bytes even under
+//! `"keep"` + `"keep"`, with nothing in the report distinguishing that
+//! from a real conversion.
 //!
 //! Folder walking mirrors `search.rs`'s find-in-files traversal (same
 //! `SKIP_DIRS`, same dotdir/symlink skip rules) so batch conversion never
@@ -30,9 +38,9 @@
 //! normalizes for the editor buffer — *unless* `line_ending != "keep"`, in
 //! which case `convert_one` normalizes to LF and re-applies the requested
 //! ending before re-encoding. With `line_ending: "keep"`, a CRLF file
-//! stays CRLF and an LF file stays LF; only the byte-level encoding
-//! changes (or nothing at all changes, with `target_encoding: "keep"`
-//! too).
+//! stays CRLF and an LF file stays LF; only the byte-level encoding is
+//! meant to change (or nothing at all, with `target_encoding: "keep"` too
+//! — modulo the non-canonical-byte caveat above).
 //!
 //! Deviation from the original task sketch: `scan_batch_conversion` takes
 //! an explicit `target_with_bom: bool` parameter (mirroring
@@ -354,7 +362,10 @@ pub fn scan_batch_conversion(
 /// `line_ending` first (`"keep"` leaves them exactly as decoded), then
 /// atomically writes the result. Never partially writes: a decode or
 /// encode failure returns `ok: false` with the original file left
-/// untouched.
+/// untouched. Re-encoding is not guaranteed to reproduce the original
+/// bytes even when the conversion request should change nothing — see the
+/// module doc's `"keep"` + `"keep"` caveat and `encoding::encode`'s
+/// round-trip contract note.
 fn convert_one(
     path: &str,
     target: Option<&'static Encoding>,

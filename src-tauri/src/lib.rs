@@ -426,6 +426,14 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 /// (after explicit user confirmation) to actually write the lossy bytes.
 /// This guarantees a save can never silently overwrite the user's original
 /// text with lossy replacement bytes before they've agreed to that trade.
+///
+/// That guarantee is about *unmappable* characters specifically, not
+/// byte-for-byte fidelity in general: every save re-encodes the entire
+/// document from scratch (there is no per-region diffing), so for the
+/// legacy encodings `encoding::encode`'s round-trip contract note
+/// documents, saving can silently canonicalize bytes the user never
+/// touched even when nothing is unmappable and `allow_lossy` never comes
+/// into play. See `encoding.rs`'s module doc.
 #[tauri::command]
 fn save_document(
     path: String,
