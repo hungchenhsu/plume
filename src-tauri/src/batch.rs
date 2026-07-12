@@ -983,6 +983,57 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Regression lock for issue #82: `detect_line_ending` was blind to
+    /// lone CR (Classic Mac line endings), so a CR-only file classified
+    /// `alreadyTarget` against an "LF" target — misreported as already
+    /// "LF" — and batch conversion silently skipped it, leaving CR bytes
+    /// on disk despite the user asking to convert everything to LF.
+    #[test]
+    fn cr_only_file_classifies_convertible_and_converts_to_lf() {
+        let dir = fixture_dir("cr-only");
+        let text = "第一行\r第二行\r第三行\r";
+        let file = dir.join("a.txt");
+        // Written as raw bytes directly, independent of any encoding/
+        // line-ending helper this test is meant to exercise.
+        std::fs::write(&file, text.as_bytes()).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let report = scan_batch_conversion(
+            dir.to_string_lossy().into_owned(),
+            vec![],
+            "keep".to_string(),
+            false,
+            "LF".to_string(),
+        )
+        .unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(
+            report.entries[0].line_ending, "CR",
+            "lone CR must be detected and reported, not misreported as LF"
+        );
+        assert_eq!(
+            report.entries[0].status, STATUS_CONVERTIBLE,
+            "a CR file must never classify alreadyTarget against an LF target"
+        );
+
+        let results = execute_batch_conversion(
+            vec![path.clone()],
+            "keep".to_string(),
+            false,
+            "LF".to_string(),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].ok, "{:?}", results[0]);
+
+        let out_bytes = std::fs::read(&file).unwrap();
+        let decoded = encoding::decode_auto(&out_bytes);
+        assert_eq!(encoding::detect_line_ending(&decoded.content), "LF");
+        assert_eq!(decoded.content, encoding::normalize_to_lf(text));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The line-ending axis alone decides `alreadyTarget` vs `convertible`
     /// when the encoding axis is `keep` throughout.
     #[test]

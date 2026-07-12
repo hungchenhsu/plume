@@ -1021,6 +1021,11 @@ function showLineEndingMenu(anchor: HTMLElement): void {
       checked: doc.lineEnding === "CRLF",
       action: () => setLineEnding("CRLF"),
     },
+    {
+      label: t("menu.lineEndingCr"),
+      checked: doc.lineEnding === "CR",
+      action: () => setLineEnding("CR"),
+    },
   ]);
 }
 

@@ -100,6 +100,7 @@ export interface Messages {
   "menu.repairMojibake": string;
   "menu.lineEndingLf": string;
   "menu.lineEndingCrlf": string;
+  "menu.lineEndingCr": string;
 
   "mojibake.title": string;
   "mojibake.noCandidates": string;
@@ -281,6 +282,7 @@ const en: Messages = {
   "menu.repairMojibake": "Repair mojibake…",
   "menu.lineEndingLf": "LF (Unix / macOS)",
   "menu.lineEndingCrlf": "CRLF (Windows)",
+  "menu.lineEndingCr": "CR (Classic Mac)",
 
   "mojibake.title": "Repair mojibake",
   "mojibake.noCandidates":
@@ -482,6 +484,7 @@ const zhTW: Messages = {
   "menu.repairMojibake": "修復亂碼…",
   "menu.lineEndingLf": "LF（Unix / macOS）",
   "menu.lineEndingCrlf": "CRLF（Windows）",
+  "menu.lineEndingCr": "CR（Classic Mac）",
 
   "mojibake.title": "修復亂碼",
   "mojibake.noCandidates": "找不到可修復的 mis-decode pattern。",
@@ -671,6 +674,7 @@ const ja: Messages = {
   "menu.repairMojibake": "文字化けを修復…",
   "menu.lineEndingLf": "LF（Unix / macOS）",
   "menu.lineEndingCrlf": "CRLF（Windows）",
+  "menu.lineEndingCr": "CR（Classic Mac）",
 
   "mojibake.title": "文字化けを修復",
   "mojibake.noCandidates":
@@ -871,6 +875,7 @@ const zhCN: Messages = {
   "menu.repairMojibake": "修复乱码…",
   "menu.lineEndingLf": "LF（Unix / macOS）",
   "menu.lineEndingCrlf": "CRLF（Windows）",
+  "menu.lineEndingCr": "CR（Classic Mac）",
 
   "mojibake.title": "修复乱码",
   "mojibake.noCandidates": "未找到可修复的误解码模式——这看起来不像乱码。",
