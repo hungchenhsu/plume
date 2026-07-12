@@ -29,15 +29,17 @@ export function themeChoices(): { value: string; label: string }[] {
 }
 
 /** Language preference choices. "System" is localized (it's a UI concept,
- *  like the theme's "Follow system"); "English" and "繁體中文" are language
- *  endonyms and intentionally not translated — the same convention used by
- *  every OS language picker, so a user can always find their language
- *  regardless of the UI's current language. */
+ *  like the theme's "Follow system"); "English", "繁體中文", "日本語", and
+ *  "简体中文" are language endonyms and intentionally not translated — the
+ *  same convention used by every OS language picker, so a user can always
+ *  find their language regardless of the UI's current language. */
 export function languageChoices(): { value: string; label: string }[] {
   return [
     { value: "system", label: t("preferences.langSystemOption") },
     { value: "en", label: "English" },
     { value: "zh-TW", label: "繁體中文" },
+    { value: "ja", label: "日本語" },
+    { value: "zh-CN", label: "简体中文" },
   ];
 }
 

@@ -12,8 +12,9 @@ pub struct Preferences {
     pub font_size: u32,
     /// "system" | "light" | "dark"
     pub theme: String,
-    /// UI language: "system" | "en" | "zh-TW". "system" resolves via the OS
-    /// locale (see `menu::resolve_lang`, `src/i18n.ts` on the frontend).
+    /// UI language: "system" | "en" | "zh-TW" | "ja" | "zh-CN". "system"
+    /// resolves via the OS locale (see `menu::resolve_lang`, `src/i18n.ts`
+    /// on the frontend).
     pub language: String,
     /// Default encoding for new (untitled) documents.
     pub default_encoding: String,
@@ -199,12 +200,13 @@ mod tests {
         assert!(prefs.show_invisibles);
     }
 
-    /// `language` accepts "en" and "zh-TW" and round-trips through JSON —
-    /// pins the values the frontend's language select and menu.rs's
-    /// `resolve_lang` agree on (see src/i18n.ts `Locale`).
+    /// `language` accepts "en", "zh-TW", "ja", and "zh-CN" and round-trips
+    /// through JSON — pins the values the frontend's language select and
+    /// menu.rs's `resolve_lang` agree on (see src/i18n.ts `Locale`). "ja"
+    /// and "zh-CN" were added in v0.3 Track D.
     #[test]
     fn language_values_round_trip_through_json() {
-        for language in ["system", "en", "zh-TW"] {
+        for language in ["system", "en", "zh-TW", "ja", "zh-CN"] {
             let prefs = Preferences {
                 language: language.into(),
                 ..Preferences::default()

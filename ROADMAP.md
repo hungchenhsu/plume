@@ -151,7 +151,7 @@ domain: failing-test-first, round-trip tests mandatory)
 **Track D — release & community**
 - [x] Issue templates, labels, and a good-first-issue starter set
   (unblocked; do first — it is the interface for incoming contributors)
-- [ ] i18n dictionaries: ja and zh-CN (builds on the v0.2 i18n module)
+- [x] i18n dictionaries: ja and zh-CN (builds on the v0.2 i18n module)
 - [ ] D1 official name — user decision, currently deferred (evidence
   archived in `.claude/archive/d1-naming-final.md`)
 - [ ] D2 signing + auto-update — blocked on D1 and user-held keys
