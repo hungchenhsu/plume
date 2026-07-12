@@ -228,6 +228,106 @@ pub fn utf16_variant(raw: &[u8], explicit_label: Option<&str>) -> Option<Utf16Va
     }
 }
 
+/// Trim a trailing UTF-8 multibyte sequence that is incomplete *only
+/// because the input was truncated at its end*, returning the longest
+/// valid-UTF-8 prefix in that case and `bytes` unchanged otherwise. The
+/// discriminator is the shape of `str::from_utf8`'s error, not a byte
+/// count: an `Err` whose `error_len()` is `None` is the documented
+/// "unexpected end of input" case — the bytes are valid UTF-8 up to
+/// `valid_up_to()` (then guaranteed 1..=3 bytes from the end) and only
+/// the final multibyte sequence was cut off. An `Err` with `error_len()
+/// == Some(_)` is a genuine invalid byte in the *interior* and is left
+/// in place, as is fully-valid UTF-8. (`error_len()` is preferred over a
+/// "how far from the end" heuristic precisely because it stays correct
+/// for short inputs, where an interior error can coincidentally sit near
+/// the end.)
+///
+/// This exists for the large-file preview path (issues #47 / #71). That
+/// path detects an encoding on a bounded ~2 MiB window whose tail can
+/// fall mid-character; run directly, `detect_with_extension` would see
+/// that window as invalid UTF-8, miss its confident-UTF-8 gate (rule 2),
+/// and let a UTF-16 (or any) extension hint reinterpret a perfectly good
+/// UTF-8 file as mojibake with `malformed == false` and no U+FFFD — the
+/// exact silent-corruption hole the #47 gate closes for small files.
+/// Trimming the truncated tail first realigns the window's UTF-8
+/// validity with the whole file's, so detection reaches the verdict it
+/// would on the complete file. The distinction from genuine BOM-less
+/// UTF-16 is exactly what `error_len()` captures: real UTF-16 of any
+/// non-ASCII text has an invalid *interior* byte within its first code
+/// units, so it is never mistaken for a truncated-UTF-8 tail and its
+/// hint still resolves. Trimming at most 3 bytes at an already-arbitrary
+/// truncation boundary is cosmetically negligible for any other encoding.
+pub fn trim_truncated_utf8_tail(bytes: &[u8]) -> &[u8] {
+    match std::str::from_utf8(bytes) {
+        Err(e) if e.error_len().is_none() => &bytes[..e.valid_up_to()],
+        _ => bytes,
+    }
+}
+
+/// Decide which UTF-16 byte order (if any) a large-file preview should
+/// align its cut point to, additionally folding in a per-extension
+/// encoding preference (`ext_encoding`) when auto-detecting. Closes the
+/// gap `utf16_variant` alone leaves open for issue #71: a BOM-less
+/// UTF-16 file that auto-detection picks up only through `ext_encoding`
+/// (see `detect_with_extension` rule 4) still needs its preview cut
+/// aligned to UTF-16 code units, but `utf16_variant`'s signal set —
+/// explicit label, else BOM — never sees that hint at all, so the
+/// preview fell back to a raw `0x0A` search that (issue #61) lands mid
+/// code-unit on real UTF-16 content almost every time.
+///
+/// 1. An explicit reopen label wins outright, delegated to
+///    `utf16_variant` unchanged — this only adds a signal, it does not
+///    reorder the existing ones.
+/// 2. No explicit label and no `ext_encoding`: the only signal left is
+///    the BOM, so this also just delegates to `utf16_variant` rather
+///    than pay for a `detect_with_extension` pass that cannot conclude
+///    anything new.
+/// 3. No explicit label but `ext_encoding` is present: run the real
+///    `detect_with_extension` — the exact function and precedence (BOM,
+///    then the #47 UTF-8 gate, then the hint, then the statistical
+///    fallback) the eventual decode uses — and translate a UTF-16LE/BE
+///    verdict into the matching variant. Because it is the *same*
+///    guarded function, a hint over content that is valid UTF-8 is
+///    rejected here exactly as it would be for the real decode.
+///
+/// The sample handed to step 3 is `raw` conditioned two ways, both so
+/// the probe judges the *content* rather than an artifact of where the
+/// preview bound fell:
+///
+/// - Trimmed to even length (`len & !1`). `lib.rs::open_document`'s
+///   bounded read carries one sentinel byte past the window when the
+///   file continues; an odd length always trials as a *malformed*
+///   UTF-16 decode (a dangling code unit) and would wrongly reject a
+///   genuine UTF-16 hint.
+/// - Then `trim_truncated_utf8_tail`. Without it, a large *valid* UTF-8
+///   file whose 2 MiB tail merely splits a multibyte character reads as
+///   invalid UTF-8 here, dodges the confident-UTF-8 gate, and — because
+///   3-byte-script UTF-8 bytes (E0-EF / 80-BF) never land in the
+///   surrogate high-byte range D8-DF, so a UTF-16 trial decode of them
+///   never reports malformed — is mis-probed as UTF-16 and its whole
+///   preview silently rendered as mojibake (the P1 regression a naive
+///   #71 fix reopened). The real decode avoids this only because its
+///   slice is cut at a newline (a clean UTF-8 boundary); this probe runs
+///   on the pre-slice window and so must realign explicitly.
+///   `open_document` applies the same trim to the real decode for the
+///   no-newline single-line case, which the cut alone cannot clean up.
+pub fn preview_utf16_variant(
+    raw: &[u8],
+    explicit_label: Option<&str>,
+    ext_encoding: Option<&str>,
+) -> Option<Utf16Variant> {
+    if explicit_label.is_some() || ext_encoding.is_none() {
+        return utf16_variant(raw, explicit_label);
+    }
+    let even = &raw[..raw.len() & !1];
+    let sample = trim_truncated_utf8_tail(even);
+    match detect_with_extension(sample, ext_encoding).chosen {
+        enc if enc == UTF_16LE => Some(Utf16Variant::Le),
+        enc if enc == UTF_16BE => Some(Utf16Variant::Be),
+        _ => None,
+    }
+}
+
 /// Decode bytes with an encoding explicitly chosen by the user.
 pub fn decode_with(bytes: &[u8], label: &str) -> Result<DecodedText, String> {
     let encoding = Encoding::for_label(label.as_bytes())
@@ -866,5 +966,162 @@ mod tests {
             assert_ne!(detection.chosen.name(), "UTF-16LE");
             assert_ne!(detection.chosen.name(), "UTF-16BE");
         }
+    }
+
+    // --- Issue #71: the large-file preview cut variant must fold in a
+    // per-extension hint the same way the real decode does, so the two
+    // can never disagree ---
+
+    #[test]
+    fn preview_utf16_variant_prefers_explicit_label_over_ext_hint() {
+        // An explicit reopen label (e.g. the user picked "UTF-16BE" from
+        // the menu) must win outright, exactly as `utf16_variant` alone
+        // already guarantees — a conflicting ext hint must not change
+        // that.
+        let (bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        assert_eq!(
+            preview_utf16_variant(&bytes, Some("UTF-16BE"), Some("Big5")),
+            Some(Utf16Variant::Be)
+        );
+    }
+
+    #[test]
+    fn preview_utf16_variant_uses_ext_hint_for_real_utf16_without_bom() {
+        // The gap issue #71 closes: no explicit label, no BOM, but the
+        // extension hint names UTF-16 and the bytes genuinely are UTF-16
+        // (non-ASCII content, so the #47 gate lets the hint through) —
+        // the preview cut variant must match what `detect_with_extension`
+        // (and therefore the real decode) actually chooses.
+        let (le_bytes, _) = encode("中文", "UTF-16LE", false).unwrap();
+        assert_eq!(
+            preview_utf16_variant(&le_bytes, None, Some("UTF-16LE")),
+            Some(Utf16Variant::Le)
+        );
+        let (be_bytes, _) = encode("中文", "UTF-16BE", false).unwrap();
+        assert_eq!(
+            preview_utf16_variant(&be_bytes, None, Some("UTF-16BE")),
+            Some(Utf16Variant::Be)
+        );
+    }
+
+    #[test]
+    fn preview_utf16_variant_ext_hint_does_not_hijack_valid_utf8() {
+        // #47 guard consistency: an ASCII sample and a genuine
+        // non-ASCII-but-valid-UTF-8 sample must not be treated as UTF-16
+        // here either, matching `detect_with_extension`'s rejection of
+        // the same hint over the same bytes exactly — `preview_utf16_
+        // variant` calls that guarded function directly, so it cannot
+        // disagree with the real decode.
+        let ascii = b"ab\ncd\n";
+        assert!(ascii.is_ascii());
+        assert_eq!(preview_utf16_variant(ascii, None, Some("UTF-16LE")), None);
+        assert_eq!(preview_utf16_variant(ascii, None, Some("UTF-16BE")), None);
+
+        let utf8_multibyte = "中文".as_bytes();
+        assert_eq!(
+            preview_utf16_variant(utf8_multibyte, None, Some("UTF-16LE")),
+            None
+        );
+    }
+
+    #[test]
+    fn preview_utf16_variant_no_hint_no_bom_utf8_is_none() {
+        // No explicit label, no ext hint, no BOM: nothing but the
+        // (absent) BOM to go on, same as plain `utf16_variant`.
+        assert_eq!(
+            preview_utf16_variant(b"plain ascii, no hint at all", None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn preview_utf16_variant_ext_hint_bom_still_wins() {
+        // A BOM present alongside a conflicting ext hint: the BOM wins,
+        // matching `detect_with_extension` rule 1 (and the existing
+        // `utf16_ext_hint_bom_still_wins` guarantee) exactly.
+        let (bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        assert_eq!(
+            preview_utf16_variant(&bytes, None, Some("UTF-16BE")),
+            Some(Utf16Variant::Le)
+        );
+    }
+
+    /// `lib.rs::open_document`'s bounded large-file read can end in one
+    /// extra sentinel byte beyond the preview window (see its doc
+    /// comment) — an odd-length sample always reports a dangling code
+    /// unit as malformed, which would reject a genuine UTF-16 ext hint
+    /// for the very reason this function exists. A trailing odd byte
+    /// must not change the verdict versus the same content without it.
+    #[test]
+    fn preview_utf16_variant_trims_odd_length_sentinel_byte() {
+        let (mut bytes, _) = encode("中文\n", "UTF-16LE", false).unwrap();
+        let without_sentinel = preview_utf16_variant(&bytes, None, Some("UTF-16LE"));
+        bytes.push(0xAB); // arbitrary sentinel byte, now odd-length
+        let with_sentinel = preview_utf16_variant(&bytes, None, Some("UTF-16LE"));
+        assert_eq!(without_sentinel, Some(Utf16Variant::Le));
+        assert_eq!(with_sentinel, Some(Utf16Variant::Le));
+    }
+
+    // --- Issue #71 P1/P3: truncation-tolerant detection so a large valid
+    // UTF-8 file whose preview window splits a character is not mis-read
+    // as UTF-16 via an extension hint ---
+
+    #[test]
+    fn trim_truncated_utf8_tail_drops_only_a_truncated_final_sequence() {
+        // "中" is E4 B8 AD; drop its final byte so the sample ends in a
+        // 2-of-3-byte truncated sequence. from_utf8's error_len() is None
+        // ("unexpected end"), so the tail is trimmed to the last complete
+        // character.
+        let full = "ab中".as_bytes(); // 61 62 E4 B8 AD
+        let cut = &full[..full.len() - 1]; // 61 62 E4 B8
+        let err = std::str::from_utf8(cut).unwrap_err();
+        assert!(err.error_len().is_none(), "must be an end-of-input error");
+        assert_eq!(trim_truncated_utf8_tail(cut), b"ab");
+    }
+
+    #[test]
+    fn trim_truncated_utf8_tail_keeps_valid_and_ascii_and_empty_unchanged() {
+        assert_eq!(
+            trim_truncated_utf8_tail("ab中".as_bytes()),
+            "ab中".as_bytes()
+        );
+        assert_eq!(trim_truncated_utf8_tail(b"plain ascii"), b"plain ascii");
+        assert_eq!(trim_truncated_utf8_tail(b""), b"");
+    }
+
+    #[test]
+    fn trim_truncated_utf8_tail_keeps_interior_invalid_unchanged() {
+        // Genuine BOM-less UTF-16 of non-ASCII text has an invalid byte in
+        // the *interior* (error_len() == Some) within its first code
+        // units, so it must be left untouched for the UTF-16 hint to still
+        // resolve. Here 87 (a continuation byte where a lead is expected)
+        // is invalid at index 2 — near this short sample's end, which is
+        // exactly why error_len(), not a distance heuristic, is the right
+        // discriminator.
+        let (le_bytes, _) = encode("中文", "UTF-16LE", false).unwrap();
+        let err = std::str::from_utf8(&le_bytes).unwrap_err();
+        assert!(
+            err.error_len().is_some(),
+            "fixture must have an interior invalid byte"
+        );
+        assert_eq!(trim_truncated_utf8_tail(&le_bytes), &le_bytes[..]);
+    }
+
+    #[test]
+    fn preview_utf16_variant_truncated_utf8_cjk_not_hijacked_by_hint() {
+        // The P1 regression at the unit level: a valid-UTF-8 CJK sample
+        // whose tail is truncated mid-character (as the 2 MiB preview
+        // bound does) must NOT be probed as UTF-16 just because from_utf8
+        // fails at that truncated tail. Before the truncation-tolerance
+        // fix this returned Some(Le)/Some(Be) — the silent-mojibake hole
+        // #47 closes for small files, reopened for large ones.
+        let mut bytes = "中".repeat(1000).into_bytes();
+        bytes.truncate(bytes.len() - 1); // cut the final "中" mid-sequence
+        assert!(
+            std::str::from_utf8(&bytes).is_err(),
+            "tail must be truncated mid-character"
+        );
+        assert_eq!(preview_utf16_variant(&bytes, None, Some("UTF-16LE")), None);
+        assert_eq!(preview_utf16_variant(&bytes, None, Some("UTF-16BE")), None);
     }
 }

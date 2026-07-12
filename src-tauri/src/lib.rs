@@ -77,9 +77,11 @@ pub struct OpenedDocument {
 /// half-loaded line (or a split multi-byte sequence) where avoidable.
 ///
 /// `utf16` names the byte order when `bytes` is UTF-16 (see
-/// `encoding::utf16_variant`), decided by the caller from the same signal
-/// the real decode will use (explicit label, else BOM) *before* decoding
-/// happens — this function only ever sees raw bytes. UTF-16's LF is the
+/// `encoding::utf16_variant` / `encoding::preview_utf16_variant`), decided
+/// by the caller from the same signal the real decode will use (explicit
+/// label; else BOM; else, during auto-detection, a per-extension hint
+/// resolved the same way the real decode resolves it — issue #71) *before*
+/// decoding happens — this function only ever sees raw bytes. UTF-16's LF is the
 /// two-byte code unit `0A 00` (LE) or `00 0A` (BE); the plain `None` path
 /// below searches for a lone `0x0A` byte, which is correct for UTF-8 and
 /// other byte-oriented encodings but — for UTF-16 — lands on only half of
@@ -198,8 +200,37 @@ fn open_document(
         std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?
     };
     let (bytes, next_offset) = if truncated {
-        let utf16 = encoding::utf16_variant(&raw, encoding.as_deref());
+        // Issue #71: alignment must match what the real decode below will
+        // actually choose. During auto-detection that choice can come
+        // from `extension_encoding`, not just the BOM — plain
+        // `encoding::utf16_variant` cannot see that hint.
+        // `preview_utf16_variant` runs the same guarded
+        // `detect_with_extension` the decode itself calls, so the two
+        // can never disagree.
+        let utf16 = encoding::preview_utf16_variant(
+            &raw,
+            encoding.as_deref(),
+            extension_encoding.as_deref(),
+        );
         let slice = preview_slice(&raw, PREVIEW_BYTES, utf16);
+        // Issue #71 (single-line P3): for a non-UTF-16 auto-detected
+        // preview, `preview_slice` cuts at the last newline — a clean
+        // UTF-8 boundary the real decode's confident-UTF-8 gate relies
+        // on. A single very long line with no newline in the window has
+        // no such cut, so the slice can still end mid-character; left
+        // as-is the decode below would miss that gate and an extension
+        // hint would hijack the whole window into mojibake. Trimming the
+        // truncated trailing UTF-8 sequence realigns it. Scoped to
+        // auto-detect (an explicit reopen decodes exactly as asked) and
+        // to non-UTF-16 (a UTF-16-aligned slice must stay whole; real
+        // UTF-16 has no truncated-UTF-8 tail to trim). A no-op unless the
+        // tail really is a split multibyte sequence, so the multi-line
+        // and clean-cut cases are unaffected.
+        let slice = if encoding.is_none() && utf16.is_none() {
+            encoding::trim_truncated_utf8_tail(slice)
+        } else {
+            slice
+        };
         (slice, Some(slice.len() as u64))
     } else {
         (&raw[..], None)
@@ -1377,6 +1408,368 @@ mod tests {
         assert!(
             !opened.content.contains('\u{FFFD}'),
             "no replacement characters may appear when nothing is actually corrupt"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Build a large, BOM-less UTF-16 fixture whose lines are genuinely
+    /// non-ASCII (`"第 {i} 行\n"`), unlike `write_utf16le_line_fixture`'s
+    /// pure-ASCII lines. This distinction matters for issue #71: every
+    /// ASCII byte — including the zero high byte UTF-16 pads Latin text
+    /// with — is independently valid UTF-8, so a pure-ASCII UTF-16
+    /// fixture's raw bytes pass `str::from_utf8` and the extension hint
+    /// is *never* consulted for it (the #47 gate already documents this
+    /// exact trade-off). `write_utf16le_line_fixture`'s fixtures are the
+    /// right choice for the BOM and explicit-label tests above, which
+    /// don't go anywhere near that gate; a fixture meant to exercise the
+    /// ext-hint path needs bytes that actually fail it, mirroring why
+    /// `encoding.rs`'s `utf16_ext_hint_still_applies_to_real_utf16_without_bom`
+    /// uses "中文" instead of ASCII. `label` selects the byte order
+    /// ("UTF-16LE" / "UTF-16BE"); always BOM-less since that is this
+    /// fixture's entire point.
+    fn write_utf16_nonascii_line_fixture(
+        dir_name: &str,
+        n: u32,
+        label: &str,
+    ) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big16-nonascii.txt");
+        let data: String = (0..n).map(|i| format!("第 {i} 行\n")).collect();
+        let (bytes, unmappable) = crate::encoding::encode(&data, label, false).unwrap();
+        assert!(
+            !unmappable,
+            "UTF-16 encoding never reports unmappable characters"
+        );
+        std::fs::write(&file, &bytes).unwrap();
+        file
+    }
+
+    /// Issue #71 core regression, LE. A BOM-less UTF-16LE file whose text
+    /// is genuinely non-ASCII (so its raw bytes are *not* coincidentally
+    /// valid UTF-8 — see `write_utf16_nonascii_line_fixture`), well over
+    /// `LARGE_FILE_THRESHOLD`, opened via auto-detection (`encoding:
+    /// None`) with a per-extension preference hinting UTF-16LE — exactly
+    /// what `open_document` receives once the frontend resolves the
+    /// file's extension through `Preferences::extension_encodings`.
+    ///
+    /// The *real* decode already picks this up correctly:
+    /// `decode_auto_with_extension` -> `detect_with_extension` accepts
+    /// the hint (rule 4; the #47 UTF-8 gate does not block it because
+    /// this content genuinely is not valid UTF-8). Before this fix, the
+    /// *preview cut* disagreed with that decision: `encoding::
+    /// utf16_variant(&raw, None)` only ever consults the explicit reopen
+    /// label and the BOM, saw neither, and returned `None`, so `preview_
+    /// slice` fell back to its raw `0x0A` byte search — which on real
+    /// UTF-16LE content lands mid code-unit almost every time, leaving a
+    /// dangling final byte. That dangling byte then makes the *real*
+    /// decode's own `detect_with_extension` call see a malformed UTF-16LE
+    /// trial decode and reject the very hint that should have won,
+    /// falling back to a statistical guess that is never UTF-16 (see
+    /// `detect_with_extension`'s doc comment) — the wrong encoding
+    /// entirely, not just a stray warning.
+    ///
+    /// Red before the fix (`opened.encoding` is not `"UTF-16LE"` and the
+    /// content is garbled); green after, because `encoding::preview_
+    /// utf16_variant` runs the very same guarded `detect_with_extension`
+    /// call the real decode uses, so the two can never disagree.
+    #[test]
+    fn open_document_large_bomless_utf16le_via_ext_hint_not_malformed() {
+        let file = write_utf16_nonascii_line_fixture(
+            "plume-large-bomless-utf16le-ext-hint",
+            600_000,
+            "UTF-16LE",
+        );
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, Some("UTF-16LE".to_string())).unwrap();
+
+        assert!(
+            opened.truncated,
+            "a file over the threshold must be truncated"
+        );
+        assert!(!opened.had_bom, "fixture has no BOM");
+        assert_eq!(
+            opened.encoding, "UTF-16LE",
+            "the extension hint must win exactly as the real decode would pick it"
+        );
+        assert!(
+            !opened.malformed,
+            "a structurally valid UTF-16LE file must never report malformed, \
+             even when picked up only via the extension hint"
+        );
+        assert!(
+            opened.content.starts_with("第 0 行\n"),
+            "content must decode correctly, not as whatever encoding a \
+             corrupted preview cut would fall back to"
+        );
+        assert!(
+            opened.content.ends_with('\n'),
+            "the preview must end on a full line, not mid line"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "no replacement characters may appear when nothing is actually corrupt"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Build a large, BOM-less UTF-16BE fixture that is `n` repeats of
+    /// U+0A85 — a character chosen purely for its byte layout, not its
+    /// meaning: U+0A85's BE encoding is the byte pair `[0x0A, 0x85]`, so
+    /// its *high* byte is `0x0A`. Every code unit in the file repeats
+    /// this same pair, and a 2-byte period divides any even window
+    /// length exactly, so the pre-#71-fix raw `0x0A` byte search always
+    /// finds *this* character's high byte as the very last occurrence in
+    /// the window — deterministically reproducing a mid-code-unit cut
+    /// regardless of exactly where `PREVIEW_BYTES` falls.
+    ///
+    /// This probe is what BE specifically needs, and ordinary prose
+    /// cannot provide it: BE's newline code unit is `00 0A`, so a raw
+    /// `0x0A` search lands on that code unit's own *last* byte whenever
+    /// it finds a real newline — which, for text with no character in
+    /// the U+0A00-U+0AFF block (essentially all real-world text; that
+    /// block is Gurmukhi), is *always* what it finds. The bug is just as
+    /// real for BE as for LE (neither `utf16_variant` nor the pre-fix
+    /// call site know the byte order without a BOM or explicit label),
+    /// but a `write_utf16_nonascii_line_fixture`-style "第 {i} 行\n"
+    /// fixture cannot exhibit it for BE — the raw search always
+    /// (accidentally) lands on a complete code unit already. See
+    /// `open_document_large_bomless_utf16be_via_ext_hint_not_malformed`.
+    fn write_utf16be_high_byte_0a_fixture(dir_name: &str, n: usize) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big16be-0a-probe.txt");
+        let data: String = "\u{0A85}".repeat(n);
+        let (bytes, unmappable) = crate::encoding::encode(&data, "UTF-16BE", false).unwrap();
+        assert!(
+            !unmappable,
+            "UTF-16 encoding never reports unmappable characters"
+        );
+        std::fs::write(&file, &bytes).unwrap();
+        file
+    }
+
+    /// Issue #71, BE counterpart of
+    /// `open_document_large_bomless_utf16le_via_ext_hint_not_malformed`.
+    /// Cannot reuse that test's realistic line-oriented fixture — see
+    /// `write_utf16be_high_byte_0a_fixture`'s doc comment for why BE
+    /// needs a deliberate byte-layout probe instead of ordinary prose to
+    /// reproduce the mid-code-unit cut. Same red-before/green-after
+    /// shape otherwise: before the fix, the dangling probe byte makes
+    /// the real decode's own `detect_with_extension` call see a
+    /// malformed UTF-16BE trial decode and reject the extension hint,
+    /// falling back to a statistical guess that is never UTF-16.
+    #[test]
+    fn open_document_large_bomless_utf16be_via_ext_hint_not_malformed() {
+        let file =
+            write_utf16be_high_byte_0a_fixture("plume-large-bomless-utf16be-ext-hint", 6_000_000);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, Some("UTF-16BE".to_string())).unwrap();
+
+        assert!(
+            opened.truncated,
+            "a file over the threshold must be truncated"
+        );
+        assert!(!opened.had_bom, "fixture has no BOM");
+        assert_eq!(
+            opened.encoding, "UTF-16BE",
+            "the extension hint must win exactly as the real decode would pick it"
+        );
+        assert!(
+            !opened.malformed,
+            "a structurally valid UTF-16BE file must never report malformed, \
+             even when picked up only via the extension hint"
+        );
+        assert_eq!(
+            opened.content.chars().count(),
+            PREVIEW_BYTES / 2,
+            "the preview must be exactly the full even window decoded as \
+             whole code units — this fixture has no newline to cut at"
+        );
+        assert!(
+            opened.content.chars().all(|c| c == '\u{0A85}'),
+            "content must decode as the repeated marker character, not \
+             garbage from a wrong encoding"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "no replacement characters may appear when nothing is actually corrupt"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Build a large, genuinely-valid-UTF-8 fixture of pure-`中` content —
+    /// either many short lines (`multiline`) or one newline-free line —
+    /// sized past `LARGE_FILE_THRESHOLD`. `中` is U+4E2D → UTF-8 `E4 B8
+    /// AD`: a 3-byte sequence whose bytes (E0-EF lead, 80-BF continuation)
+    /// never fall in the UTF-16 surrogate high-byte range D8-DF. That is
+    /// the exact adversarial shape issue #71's P1/P3 need — the 2 MiB
+    /// preview bound splits a character (so a naive `from_utf8` on the
+    /// window fails), and a UTF-16 *trial* decode of these bytes never
+    /// reports a malformed sequence, so nothing but the confident-UTF-8
+    /// gate stops an extension hint from silently reinterpreting the whole
+    /// preview as mojibake.
+    fn write_large_cjk_utf8_fixture(dir_name: &str, multiline: bool) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cjk-utf8.txt");
+        let data: String = if multiline {
+            // 31-byte lines: 10 × `中` (30 bytes) + `\n`. The 2 MiB bound
+            // lands mid-character, but earlier newlines give the preview a
+            // clean line boundary to cut at.
+            "中中中中中中中中中中\n".repeat(400_000)
+        } else {
+            // One ~12 MB line, no newline anywhere in the 2 MiB window, so
+            // the cut itself cannot land on a clean boundary (P3).
+            "中".repeat(4_000_000)
+        };
+        assert!(
+            std::str::from_utf8(data.as_bytes()).is_ok(),
+            "fixture must be genuinely valid UTF-8"
+        );
+        std::fs::write(&file, data.as_bytes()).unwrap();
+        file
+    }
+
+    /// Issue #71, P1 regression (the hole a naive #71 fix reopened, LE
+    /// hint). A large *valid UTF-8* CJK file, no BOM, auto-detected with a
+    /// per-extension preference of UTF-16LE. The #47 gate protects small
+    /// files; this pins that the large-file preview path does not reopen
+    /// the silent-mojibake hole. Before the truncation-tolerance fix the
+    /// preview probed the mid-character-truncated 2 MiB window, mis-read
+    /// it as UTF-16 (a UTF-16 trial of these surrogate-free bytes never
+    /// reports malformed), cut the whole window, and the real decode then
+    /// reinterpreted every byte as UTF-16 — `encoding == "UTF-16LE"`,
+    /// garbled content, `malformed == false`, no U+FFFD: exactly the
+    /// "decode errors surfaced, never silently rendered as fine" hard
+    /// constraint, violated. Multi-line, so after the fix the cut lands on
+    /// a newline and the real decode sees clean UTF-8.
+    #[test]
+    fn open_document_large_cjk_utf8_multiline_ext_hint_le_not_corrupted() {
+        let file = write_large_cjk_utf8_fixture("plume-large-cjk-utf8-multiline-le", true);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, Some("UTF-16LE".to_string())).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(
+            opened.encoding, "UTF-8",
+            "a valid UTF-8 CJK file must not be reinterpreted as UTF-16 via the ext hint (#47/#71)"
+        );
+        assert!(
+            !opened.malformed,
+            "valid UTF-8 content must never report malformed"
+        );
+        assert!(
+            opened.content.starts_with("中中中"),
+            "content must decode as CJK, not mojibake"
+        );
+        assert!(
+            opened.content.ends_with('\n'),
+            "a multi-line preview must cut on a line boundary"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "no replacement characters when nothing is actually corrupt"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #71, P1 regression, BE-hint symmetry of
+    /// `open_document_large_cjk_utf8_multiline_ext_hint_le_not_corrupted`.
+    /// A UTF-16BE hint over the same valid-UTF-8 CJK file must be rejected
+    /// identically (the confident-UTF-8 gate does not care which UTF-16
+    /// byte order the hint names).
+    #[test]
+    fn open_document_large_cjk_utf8_multiline_ext_hint_be_not_corrupted() {
+        let file = write_large_cjk_utf8_fixture("plume-large-cjk-utf8-multiline-be", true);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, Some("UTF-16BE".to_string())).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(
+            opened.encoding, "UTF-8",
+            "a valid UTF-8 CJK file must not be reinterpreted as UTF-16 via the ext hint (#47/#71)"
+        );
+        assert!(!opened.malformed);
+        assert!(opened.content.starts_with("中中中"));
+        assert!(opened.content.ends_with('\n'));
+        assert!(!opened.content.contains('\u{FFFD}'));
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #71, P3 (pre-existing, fixed here in passing). One very long
+    /// valid-UTF-8 CJK line with *no newline* in the 2 MiB window, plus a
+    /// UTF-16LE hint. With no newline the preview cut cannot land on a
+    /// clean boundary, so even after the probe correctly rejects UTF-16
+    /// the slice still ends mid-character — and the real decode would then
+    /// miss the confident-UTF-8 gate and let the hint hijack the whole
+    /// window (the same silent mojibake, reached through the decode rather
+    /// than the cut). The fix trims the slice's truncated trailing UTF-8
+    /// sequence before decoding, so the decode sees clean UTF-8. Content
+    /// does not end on a newline here (there is none), so this asserts
+    /// correct CJK decode and no U+FFFD instead.
+    #[test]
+    fn open_document_large_cjk_utf8_singleline_ext_hint_not_corrupted() {
+        let file = write_large_cjk_utf8_fixture("plume-large-cjk-utf8-singleline", false);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, Some("UTF-16LE".to_string())).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(
+            opened.encoding, "UTF-8",
+            "a single-line valid UTF-8 CJK file with no newline in the window \
+             must still not be reinterpreted as UTF-16 (#71 P3)"
+        );
+        assert!(!opened.malformed);
+        assert!(
+            opened.content.starts_with("中中中"),
+            "content must decode as CJK, not mojibake"
+        );
+        assert!(
+            opened.content.chars().all(|c| c == '中'),
+            "every decoded character must be the fixture's CJK character"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "the truncated tail must be trimmed, not surfaced as U+FFFD"
         );
 
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
