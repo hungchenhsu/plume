@@ -996,6 +996,23 @@ mod tests {
         assert_explain_matches_open_with_ext(&bytes, "plume-explain-ext-bom", Some("Big5"));
     }
 
+    /// Issue #47: an even-length, pure-ASCII sample with a UTF-16
+    /// extension hint must be rejected by both commands identically.
+    /// `explain_detection` and `open_document` share `detect_with_extension`
+    /// so they are consistent by construction, but this locks the new
+    /// branch the same way `explain_detection_agrees_with_open_under_extension_hint`
+    /// locks the existing ones — a regression that made the two commands
+    /// call the guard differently would show up here even though the
+    /// hijack itself is covered directly in `encoding.rs`.
+    #[test]
+    fn explain_detection_agrees_with_open_under_utf16_extension_hint() {
+        assert_explain_matches_open_with_ext(
+            b"ab\ncd\n",
+            "plume-explain-ext-utf16-ascii",
+            Some("UTF-16LE"),
+        );
+    }
+
     /// End-to-end round trip through the real commands and the disk, with a
     /// per-extension preference in play: a Big5 .txt file opened with a
     /// Big5 extension hint, saved, and reopened must keep both its content
