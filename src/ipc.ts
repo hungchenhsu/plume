@@ -51,6 +51,7 @@ export function readDocumentChunkBefore(
 
 export interface SaveResult {
   unmappable: boolean;
+  written: boolean;
 }
 
 /**
@@ -102,12 +103,21 @@ export function explainDetection(
   });
 }
 
+/**
+ * Two-phase save: call with `allowLossy: false` first. If the target
+ * encoding can't represent some characters, the result comes back with
+ * `unmappable: true` and `written: false` — nothing was written and the
+ * file on disk is untouched. Re-invoke with `allowLossy: true` (only after
+ * explicit user confirmation) to write the lossy bytes; that call always
+ * has `written: true`.
+ */
 export function saveDocument(args: {
   path: string;
   content: string;
   encoding: string;
   withBom: boolean;
   lineEnding: string;
+  allowLossy: boolean;
 }): Promise<SaveResult> {
   return invoke<SaveResult>("save_document", args);
 }
