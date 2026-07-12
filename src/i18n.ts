@@ -111,6 +111,8 @@ export interface Messages {
   "mojibake.after": string;
   "mojibake.appliedTitle": string;
   "mojibake.appliedMessage": string;
+  "mojibake.staleContentTitle": string;
+  "mojibake.staleContentMessage": string;
 
   "comparePreview.title": (file: string) => string;
   "comparePreview.encodingALabel": string;
@@ -297,6 +299,9 @@ const en: Messages = {
   "mojibake.appliedTitle": "Mojibake repaired",
   "mojibake.appliedMessage":
     "The content was repaired in the editor. Use Undo to revert if this wasn't right.",
+  "mojibake.staleContentTitle": "Repair not applied",
+  "mojibake.staleContentMessage":
+    "The document changed while the repair was being prepared, so it wasn't applied — your edits are safe. Reopen Repair mojibake to try again.",
 
   "comparePreview.title": (file) => `Compare encodings — ${file}`,
   "comparePreview.encodingALabel": "A",
@@ -498,6 +503,9 @@ const zhTW: Messages = {
   "mojibake.after": "修復後",
   "mojibake.appliedTitle": "亂碼已修復",
   "mojibake.appliedMessage": "編輯器內容已修復，可用 Undo 復原。",
+  "mojibake.staleContentTitle": "未套用修復",
+  "mojibake.staleContentMessage":
+    "修復準備期間文件內容已變更，因此未套用——你的編輯內容已保留。請重新開啟「修復亂碼」再試一次。",
 
   "comparePreview.title": (file) => `比較編碼 — ${file}`,
   "comparePreview.encodingALabel": "A",
@@ -691,6 +699,9 @@ const ja: Messages = {
   "mojibake.appliedTitle": "文字化けを修復しました",
   "mojibake.appliedMessage":
     "エディター内のコンテンツを修復しました。誤っていた場合は元に戻す（Undo）で戻せます。",
+  "mojibake.staleContentTitle": "修復は適用されませんでした",
+  "mojibake.staleContentMessage":
+    "修復の準備中にドキュメントの内容が変更されたため、適用されませんでした（編集内容は保持されています）。「文字化けを修復」を開き直してもう一度お試しください。",
 
   "comparePreview.title": (file) => `エンコーディングを比較 — ${file}`,
   "comparePreview.encodingALabel": "A",
@@ -891,6 +902,9 @@ const zhCN: Messages = {
   "mojibake.after": "修复后",
   "mojibake.appliedTitle": "乱码已修复",
   "mojibake.appliedMessage": "编辑器内容已修复，可撤销还原。",
+  "mojibake.staleContentTitle": "未应用修复",
+  "mojibake.staleContentMessage":
+    "修复准备期间文档内容已变更，因此未应用——你的编辑内容已保留。请重新打开「修复乱码」再试一次。",
 
   "comparePreview.title": (file) => `比较编码 — ${file}`,
   "comparePreview.encodingALabel": "A",

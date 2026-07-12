@@ -53,7 +53,7 @@ import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
 import { clampLine, selectCheckpoint } from "./lineindex";
 import { lowerCase, sortLines, trimTrailingWhitespace, uniqueLines, upperCase } from "./lineops";
-import { showMojibakeWizard } from "./mojibake";
+import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
@@ -882,18 +882,37 @@ function setLineEnding(lineEnding: string): void {
  * Open the mojibake repair wizard for the active document's live editor
  * content. No-op if there is no active tab or it is a read-only large-file
  * preview (repair can't act on the whole document there — see
- * ARCHITECTURE.md's large-file phase 1). Guards against the active tab
- * changing while the (async) wizard is still open: detection and the
- * user's pick both take a round trip, and if the user switches tabs in the
- * meantime, applying the repair to whatever is now live in the editor
- * would silently corrupt an unrelated document.
+ * ARCHITECTURE.md's large-file phase 1). Guards against two ways the live
+ * document can move on while the (async) wizard sits open — detection and
+ * the user's candidate pick both take a round trip:
+ *
+ * - The active tab changes: if the user switches tabs in the meantime,
+ *   applying the repair to whatever is now live in the editor would
+ *   silently corrupt an unrelated document. Checked via `tabs.activeId`
+ *   and resolved silently (no dialog) — the user isn't looking at this
+ *   document anymore, so there's nothing useful to tell them.
+ * - The *same* tab is edited: typing, a line operation, or a reload can
+ *   all change the buffer without switching tabs. The repair in hand was
+ *   computed from `snapshot`, the content at the moment the wizard opened
+ *   (see `isMojibakeSnapshotStale` in mojibake.ts) — applying it now would
+ *   silently overwrite the user's newer edits with a rebuild of stale
+ *   content (issue #93). Since the user is still on this tab, this case
+ *   surfaces a dialog rather than failing silently.
  */
 function showMojibakeRepairWizard(): void {
   const doc = tabs.active;
   if (!doc || doc.truncated) return;
   const docId = doc.id;
-  showMojibakeWizard(editor.content(), (repaired) => {
+  const snapshot = editor.content();
+  showMojibakeWizard(snapshot, (repaired) => {
     if (tabs.activeId !== docId) return;
+    if (isMojibakeSnapshotStale(snapshot, editor.content())) {
+      void messageDialog(t("mojibake.staleContentMessage"), {
+        title: t("mojibake.staleContentTitle"),
+        kind: "warning",
+      });
+      return;
+    }
     editor.replaceContent(repaired);
   });
 }
