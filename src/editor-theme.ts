@@ -152,6 +152,41 @@ const baseTheme = EditorView.theme({
     userSelect: "none",
     pointerEvents: "none",
   },
+  // Indent guides (editor.ts's `indentGuidePlugin` ViewPlugin; ROADMAP.md
+  // Track C / issue #74). Each qualifying line (non-blank, with at least
+  // one full tabSize-wide run of leading whitespace) gets this class plus
+  // a `--indent-guide-levels` custom property carrying the level count
+  // (see `indentGuideLevels()` in editor.ts for that math).
+  // `--indent-guide-tabsize` is set once by the same plugin on the editor
+  // root (`view.dom`), not per line, since tab size is document-wide, not
+  // per-line; both variables get a literal fallback here for the first
+  // paint, before the plugin's constructor has had a chance to run.
+  //
+  // The guide lines are a `background-image` directly on `.cm-line`
+  // rather than a separately positioned `::before` layer, specifically to
+  // avoid having to know `.cm-line`'s own left padding (6px per
+  // @codemirror/view's base theme, `padding: 0 2px 0 6px` — not this
+  // app's own CSS) in order to align the guides with where glyphs
+  // actually start: `background-origin: content-box` shifts the
+  // gradient's origin to the padding's inner edge automatically, for
+  // whatever that padding value is now or becomes in a future CM6
+  // version. `background-size`'s width caps the gradient to just the
+  // indented columns (`levels * tabSize` characters) — without it the
+  // repeating gradient would paint lines across the entire line, not only
+  // the leading whitespace. Both dimensions are in `ch` (one monospace
+  // character cell) rather than a JS-measured pixel width, since the
+  // editor is always monospace (see `.cm-scroller`'s font stack in
+  // styles.css) — this needs no ResizeObserver or layout read.
+  ".cm-indent-guide": {
+    backgroundImage:
+      "repeating-linear-gradient(to right, var(--editor-indent-guide) 0, " +
+      "var(--editor-indent-guide) 1px, transparent 1px, " +
+      "transparent calc(var(--indent-guide-tabsize, 4) * 1ch))",
+    backgroundRepeat: "no-repeat",
+    backgroundOrigin: "content-box",
+    backgroundSize:
+      "calc(var(--indent-guide-levels, 0) * var(--indent-guide-tabsize, 4) * 1ch) 100%",
+  },
   // Bookmark gutter (editor.ts `bookmarkGutter`). Fixed width so the
   // column doesn't jitter as markers on individual lines appear/disappear.
   ".cm-bookmark-gutter": {

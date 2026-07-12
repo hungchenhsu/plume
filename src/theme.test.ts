@@ -28,6 +28,7 @@ import { initPreferences, preferences, setTheme, themeChoices } from "./preferen
 const fakeEditor = {
   setLineWrapping: vi.fn(),
   setShowInvisibles: vi.fn(),
+  setIndentGuides: vi.fn(),
   setLocale: vi.fn(),
 } as unknown as EditorHandle;
 
@@ -41,6 +42,7 @@ function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
     defaultBom: false,
     wordWrap: true,
     showInvisibles: false,
+    indentGuides: true,
     extensionEncodings: [],
     ...overrides,
   };

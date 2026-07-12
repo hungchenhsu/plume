@@ -21,6 +21,9 @@ pub struct Preferences {
     pub word_wrap: bool,
     /// Render invisible characters: space dots, tab arrows, EOL marks.
     pub show_invisibles: bool,
+    /// Indent-guide vertical lines (View menu). Default `true`, unlike
+    /// `show_invisibles`'s `false` — see `Default` impl below for why.
+    pub indent_guides: bool,
     /// Per-extension default encoding, e.g. `[("txt", "Big5")]`. Extension
     /// is stored without a leading dot, lowercase (the frontend normalizes
     /// before persisting; see `src/extensionEncodings.ts`). Auto-detection
@@ -42,6 +45,11 @@ impl Default for Preferences {
             default_bom: false,
             word_wrap: true,
             show_invisibles: false,
+            // Industry convention (VS Code, Sublime, JetBrains) defaults
+            // indent guides on — they're a subtle alignment aid, unlike
+            // show_invisibles' raw whitespace glyphs, which are visually
+            // noisier and better opt-in.
+            indent_guides: true,
             extension_encodings: Vec::new(),
         }
     }
@@ -78,6 +86,7 @@ mod tests {
         assert_eq!(prefs.language, "system");
         assert_eq!(prefs.default_encoding, "UTF-8");
         assert!(!prefs.default_bom);
+        assert!(prefs.indent_guides, "indent guides default on");
     }
 
     #[test]
@@ -101,6 +110,7 @@ mod tests {
             default_bom: false,
             word_wrap: false,
             show_invisibles: true,
+            indent_guides: false,
             extension_encodings: vec![("txt".into(), "Big5".into())],
         };
         let json = serde_json::to_vec(&prefs).unwrap();
@@ -111,6 +121,7 @@ mod tests {
         assert_eq!(back.language, "zh-TW");
         assert_eq!(back.default_encoding, "Big5");
         assert!(back.show_invisibles);
+        assert!(!back.indent_guides);
         assert_eq!(
             back.extension_encodings,
             vec![("txt".to_string(), "Big5".to_string())]
@@ -159,6 +170,32 @@ mod tests {
         assert_eq!(prefs.language, "system");
         assert_eq!(prefs.font_family, "SF Mono");
         assert_eq!(prefs.theme, "dark");
+        assert!(prefs.show_invisibles);
+    }
+
+    /// `indent_guides` was added after `language` (v0.3 Track C); an old
+    /// `preferences.json` written before it existed has no such key.
+    /// Unlike the other "old JSON" compatibility tests above, this one
+    /// pins a default of `true` (indent guides are on by default), not
+    /// `false` — `serde(default)` falls back to the whole struct's
+    /// `Default::default()` for any missing field, so this only holds
+    /// because `Preferences::default()` sets `indent_guides: true`.
+    #[test]
+    fn old_preferences_json_without_indent_guides_loads_with_default_true() {
+        let json = r#"{
+            "fontFamily": "SF Mono",
+            "fontSize": 15,
+            "theme": "dark",
+            "language": "zh-TW",
+            "defaultEncoding": "Big5",
+            "defaultBom": false,
+            "wordWrap": false,
+            "showInvisibles": true
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert!(prefs.indent_guides, "missing key must default to true");
+        assert_eq!(prefs.font_family, "SF Mono");
+        assert_eq!(prefs.language, "zh-TW");
         assert!(prefs.show_invisibles);
     }
 

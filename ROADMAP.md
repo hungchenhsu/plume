@@ -146,7 +146,7 @@ domain: failing-test-first, round-trip tests mandatory)
 - [x] Code folding (CM6 fold gutter, wired per language)
 - [x] Line operations under Edit menu: sort / unique / trim trailing
   whitespace / upper-lower case (vitest for the pure transforms)
-- [ ] Indent guides (token-driven color, all four themes)
+- [x] Indent guides (token-driven color, all four themes)
 
 **Track D — release & community**
 - [x] Issue templates, labels, and a good-first-issue starter set

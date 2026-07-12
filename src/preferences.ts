@@ -50,6 +50,11 @@ let current: Preferences = {
   defaultBom: false,
   wordWrap: true,
   showInvisibles: false,
+  // Default on, unlike showInvisibles: indent guides are a subtle
+  // alignment aid (industry convention across VS Code, Sublime, and
+  // JetBrains is on-by-default), whereas rendering raw whitespace glyphs
+  // is visually noisier and better opt-in.
+  indentGuides: true,
   extensionEncodings: [],
 };
 
@@ -100,6 +105,7 @@ function applyAll(): void {
   const locale = applyLanguage();
   editorRef?.setLineWrapping(current.wordWrap);
   editorRef?.setShowInvisibles(current.showInvisibles);
+  editorRef?.setIndentGuides(current.indentGuides);
   editorRef?.setLocale(locale);
 }
 
@@ -133,6 +139,16 @@ export function toggleWordWrap(): void {
 export function toggleShowInvisibles(): void {
   current.showInvisibles = !current.showInvisibles;
   editorRef?.setShowInvisibles(current.showInvisibles);
+  void savePreferences(current).catch(() => {
+    // Best-effort persistence; the in-memory setting still applies.
+  });
+}
+
+/** Toggle indent-guide vertical lines (driven by the View menu check
+ *  item) and persist. */
+export function toggleIndentGuides(): void {
+  current.indentGuides = !current.indentGuides;
+  editorRef?.setIndentGuides(current.indentGuides);
   void savePreferences(current).catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
@@ -345,6 +361,7 @@ export function showPreferencesDialog(): void {
       defaultBom: encBom === "true",
       wordWrap: current.wordWrap,
       showInvisibles: current.showInvisibles,
+      indentGuides: current.indentGuides,
       extensionEncodings: normalizeTable(extensions.read()),
     };
     applyAll();
