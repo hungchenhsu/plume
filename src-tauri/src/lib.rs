@@ -70,15 +70,63 @@ pub struct OpenedDocument {
 
 /// Cut a preview slice at the last line boundary so the tail is not a
 /// half-loaded line (or a split multi-byte sequence) where avoidable.
-fn preview_slice(bytes: &[u8], max: usize) -> &[u8] {
+///
+/// `utf16` names the byte order when `bytes` is UTF-16 (see
+/// `encoding::utf16_variant`), decided by the caller from the same signal
+/// the real decode will use (explicit label, else BOM) *before* decoding
+/// happens — this function only ever sees raw bytes. UTF-16's LF is the
+/// two-byte code unit `0A 00` (LE) or `00 0A` (BE); the plain `None` path
+/// below searches for a lone `0x0A` byte, which is correct for UTF-8 and
+/// other byte-oriented encodings but — for UTF-16 — lands on only half of
+/// that code unit, handing the decoder an odd-length slice that reports
+/// `malformed` even though nothing in the file is actually corrupt (issue
+/// #61). When `utf16` is `Some`, the cut point is instead the last
+/// code-unit-aligned newline pair (even byte offset) within the window, or
+/// the window rounded down to even length if none is found — the returned
+/// slice is always even-length and never splits a code unit; the fallback
+/// additionally drops a trailing high surrogate so a 4-byte character is
+/// never split either, even at the cost of losing line alignment in that
+/// rare no-newline-in-window case.
+fn preview_slice(bytes: &[u8], max: usize, utf16: Option<encoding::Utf16Variant>) -> &[u8] {
     if bytes.len() <= max {
         return bytes;
     }
-    let slice = &bytes[..max];
-    match slice.iter().rposition(|&b| b == b'\n') {
-        Some(pos) => &slice[..=pos],
-        None => slice,
+    let Some(variant) = utf16 else {
+        let slice = &bytes[..max];
+        return match slice.iter().rposition(|&b| b == b'\n') {
+            Some(pos) => &slice[..=pos],
+            None => slice,
+        };
+    };
+    // Even-length window: never leave a dangling half code unit at the
+    // tail, regardless of whether `max` itself is even.
+    let even = max & !1;
+    let window = &bytes[..even];
+    let (b0, b1) = match variant {
+        encoding::Utf16Variant::Le => (b'\n', 0u8),
+        encoding::Utf16Variant::Be => (0u8, b'\n'),
+    };
+    let cut = window
+        .chunks_exact(2)
+        .rposition(|pair| pair[0] == b0 && pair[1] == b1)
+        .map(|i| (i + 1) * 2);
+    let mut end = cut.unwrap_or(even);
+    // The no-newline fallback is code-unit aligned but could still split a
+    // surrogate pair (a 4-byte character): a trailing high surrogate
+    // decodes as U+FFFD and flags the preview malformed — the exact false
+    // warning this function exists to avoid. Drop a dangling high
+    // surrogate; a newline cut never needs this (newlines are complete
+    // characters).
+    if cut.is_none() && end >= 2 {
+        let unit = match variant {
+            encoding::Utf16Variant::Le => u16::from_le_bytes([window[end - 2], window[end - 1]]),
+            encoding::Utf16Variant::Be => u16::from_be_bytes([window[end - 2], window[end - 1]]),
+        };
+        if (0xD800..=0xDBFF).contains(&unit) {
+            end -= 2;
+        }
     }
+    &window[..end]
 }
 
 #[derive(Serialize)]
@@ -145,7 +193,8 @@ fn open_document(
         std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?
     };
     let (bytes, next_offset) = if truncated {
-        let slice = preview_slice(&raw, PREVIEW_BYTES);
+        let utf16 = encoding::utf16_variant(&raw, encoding.as_deref());
+        let slice = preview_slice(&raw, PREVIEW_BYTES, utf16);
         (slice, Some(slice.len() as u64))
     } else {
         (&raw[..], None)
@@ -645,14 +694,150 @@ mod tests {
     #[test]
     fn preview_slice_cuts_at_line_boundary() {
         let bytes = b"line one\nline two\nline three";
-        let slice = preview_slice(bytes, 12);
+        let slice = preview_slice(bytes, 12, None);
         assert_eq!(slice, b"line one\n");
         // No newline within the budget: keep the raw slice.
-        let slice = preview_slice(b"abcdefgh", 4);
+        let slice = preview_slice(b"abcdefgh", 4, None);
         assert_eq!(slice, b"abcd");
         // Small files pass through whole.
-        let slice = preview_slice(b"tiny\n", 100);
+        let slice = preview_slice(b"tiny\n", 100, None);
         assert_eq!(slice, b"tiny\n");
+    }
+
+    /// Issue #61 regression lock: the `None` path (non-UTF-16 preview
+    /// cutting) must behave exactly as it did before the UTF-16 fix —
+    /// including for multi-byte UTF-8 content, which
+    /// `preview_slice_cuts_at_line_boundary` above does not exercise. UTF-8
+    /// continuation and lead bytes are always >= 0x80, so a raw `0x0A`
+    /// search never lands inside a multi-byte sequence; this pins that
+    /// invariant stays true after adding the `utf16` parameter.
+    #[test]
+    fn preview_slice_plain_utf8_behavior_unchanged() {
+        let bytes = "第一行\n第二行\n第三行".as_bytes();
+        let cut_after_first_line = "第一行\n".len();
+        let slice = preview_slice(bytes, cut_after_first_line + 2, None);
+        assert_eq!(slice, "第一行\n".as_bytes());
+
+        let slice = preview_slice(b"abcdefgh", 4, None);
+        assert_eq!(slice, b"abcd");
+
+        let slice = preview_slice(b"tiny\n", 100, None);
+        assert_eq!(slice, b"tiny\n");
+    }
+
+    /// Issue #61. UTF-16LE's LF is the two-byte code unit `0A 00`; a raw
+    /// `0x0A` search (the `None` path) finds the low byte but
+    /// `slice[..=pos]` then excludes the high byte right after it, always
+    /// producing an odd-length cut whenever a newline is found at all —
+    /// this is not a rare edge case, it is what happens on essentially
+    /// every real UTF-16LE large-file preview. `max=37` here lands exactly
+    /// one byte past the third newline's `0x0A` and one byte before its
+    /// `0x00` partner. Before the fix this test is red: the unmodified
+    /// raw-byte search returns all 37 bytes (odd length, a dangling
+    /// `0x0A`). After the fix it must fall back to the last *complete*
+    /// pair reachable in the even-rounded window (end of "line2\n" at
+    /// offset 24) rather than keep a split code unit.
+    #[test]
+    fn preview_slice_utf16le_cuts_at_code_unit_newline() {
+        let text = "line1\nline2\nline3\nline4\n";
+        let (bytes, _) = crate::encoding::encode(text, "UTF-16LE", true).unwrap();
+        assert_eq!(
+            bytes.len(),
+            50,
+            "fixture byte layout must match the offsets this test hand-verifies"
+        );
+
+        let slice = preview_slice(&bytes, 37, Some(crate::encoding::Utf16Variant::Le));
+
+        assert_eq!(slice, &bytes[..26]);
+        assert_eq!(
+            slice.len() % 2,
+            0,
+            "utf16 preview slice must be even-length"
+        );
+        assert_eq!(
+            &slice[slice.len() - 2..],
+            &[0x0A, 0x00],
+            "must end on a full LE newline code unit, never split"
+        );
+    }
+
+    /// Issue #61. No newline anywhere in the UTF-16LE window: the fixed
+    /// function must still fall back to an even-length slice
+    /// (`max & !1`), not the raw `max` byte count. Before the fix, the
+    /// unmodified raw-byte search also finds no `0x0A` match and returns
+    /// the odd-length raw slice unchanged (`max` itself is chosen odd
+    /// here specifically so the two fallbacks disagree).
+    #[test]
+    fn preview_slice_utf16le_no_newline_falls_back_even() {
+        let text = "abcdefghij".repeat(20); // no '\n' anywhere
+        let (bytes, _) = crate::encoding::encode(&text, "UTF-16LE", true).unwrap();
+        assert!(bytes.len() > 101);
+
+        let slice = preview_slice(&bytes, 101, Some(crate::encoding::Utf16Variant::Le));
+
+        assert_eq!(
+            slice.len(),
+            100,
+            "an odd max must round down to an even length"
+        );
+        assert_eq!(slice, &bytes[..100]);
+    }
+
+    /// Issue #61, adversarial-review follow-up: the no-newline even-length
+    /// fallback is code-unit aligned but could still split a *surrogate
+    /// pair* (a 4-byte character), leaving a dangling high surrogate that
+    /// decodes as U+FFFD and re-creates the exact false malformed warning
+    /// this fix exists to remove. Three emoji (4 bytes each in UTF-16)
+    /// after a 2-byte BOM put every pair boundary at `offset % 4 == 2`, so
+    /// an even cut at 8 lands mid-emoji — the fallback must retreat to 6.
+    #[test]
+    fn preview_slice_utf16_no_newline_never_splits_surrogate_pair() {
+        let (bytes, _) = crate::encoding::encode("🚀🚀🚀", "UTF-16LE", true).unwrap();
+        assert_eq!(bytes.len(), 14, "BOM(2) + 3 × 4-byte emoji");
+        let slice = preview_slice(&bytes, 8, Some(crate::encoding::Utf16Variant::Le));
+        assert_eq!(
+            slice.len(),
+            6,
+            "must retreat past the dangling high surrogate"
+        );
+        let decoded = crate::encoding::decode_with(slice, "UTF-16LE").unwrap();
+        assert!(!decoded.malformed);
+
+        let (bytes, _) = crate::encoding::encode("🚀🚀🚀", "UTF-16BE", true).unwrap();
+        let slice = preview_slice(&bytes, 8, Some(crate::encoding::Utf16Variant::Be));
+        assert_eq!(slice.len(), 6, "BE mirror must retreat identically");
+        let decoded = crate::encoding::decode_with(slice, "UTF-16BE").unwrap();
+        assert!(!decoded.malformed);
+    }
+
+    /// Issue #61, BE counterpart of
+    /// `preview_slice_utf16le_cuts_at_code_unit_newline`: UTF-16BE's LF is
+    /// `00 0A`, and the fix must cut on the same code-unit-aligned pair
+    /// search mirrored for the opposite byte order.
+    #[test]
+    fn preview_slice_utf16be_cuts_at_code_unit_newline() {
+        let text = "line1\nline2\nline3\nline4\n";
+        let (bytes, _) = crate::encoding::encode(text, "UTF-16BE", true).unwrap();
+        assert_eq!(
+            bytes.len(),
+            50,
+            "fixture byte layout must match the offsets this test hand-verifies"
+        );
+
+        let slice = preview_slice(&bytes, 37, Some(crate::encoding::Utf16Variant::Be));
+
+        assert_eq!(slice, &bytes[..26]);
+        assert_eq!(
+            slice.len() % 2,
+            0,
+            "utf16 preview slice must be even-length"
+        );
+        assert_eq!(
+            &slice[slice.len() - 2..],
+            &[0x00, 0x0A],
+            "must end on a full BE newline code unit, never split"
+        );
     }
 
     #[test]
@@ -1027,7 +1212,7 @@ mod tests {
         // Independent check: the preview must equal decoding the first
         // PREVIEW_BYTES of the fixture's own in-memory bytes, cut at the
         // last line boundary by the same (unmodified) `preview_slice`.
-        let expected_slice = preview_slice(data.as_bytes(), PREVIEW_BYTES);
+        let expected_slice = preview_slice(data.as_bytes(), PREVIEW_BYTES, None);
         assert_eq!(opened.content, std::str::from_utf8(expected_slice).unwrap());
 
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
@@ -1050,13 +1235,119 @@ mod tests {
 
         let full = std::fs::read(&file).unwrap();
         assert!(full.len() as u64 > LARGE_FILE_THRESHOLD);
-        let reference_slice = preview_slice(&full, PREVIEW_BYTES);
+        let reference_slice = preview_slice(&full, PREVIEW_BYTES, None);
         let reference_decoded = crate::encoding::decode_auto_with_extension(reference_slice, None);
         let reference_content = crate::encoding::normalize_to_lf(&reference_decoded.content);
 
         assert_eq!(opened.content, reference_content);
         assert_eq!(opened.encoding, reference_decoded.encoding);
         assert_eq!(opened.next_offset, Some(reference_slice.len() as u64));
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Build a large UTF-16LE fixture: `n` lines of `"line {i}\n"`,
+    /// generated as a single `String` in one pass (mirrors
+    /// `write_line_fixture`'s "build the string once, one disk write"
+    /// shape, so fixture setup stays fast even though UTF-16 roughly
+    /// doubles the byte count per character) and encoded to UTF-16LE with
+    /// one `encoding::encode` call. `with_bom` toggles the UTF-16LE BOM,
+    /// so callers can exercise the BOM-sniff and explicit-label branches
+    /// of `encoding::utf16_variant` separately (issue #61). Returns the
+    /// file path.
+    fn write_utf16le_line_fixture(dir_name: &str, n: u32, with_bom: bool) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big16.txt");
+        let data: String = (0..n).map(|i| format!("line {i}\n")).collect();
+        let (bytes, unmappable) = crate::encoding::encode(&data, "UTF-16LE", with_bom).unwrap();
+        assert!(
+            !unmappable,
+            "UTF-16 encoding never reports unmappable characters"
+        );
+        std::fs::write(&file, &bytes).unwrap();
+        file
+    }
+
+    /// Issue #61. A UTF-16LE file with a BOM, well over
+    /// `LARGE_FILE_THRESHOLD`, must open its bounded preview without ever
+    /// reporting `malformed`: the preview cut point must land on a real
+    /// code-unit boundary, never mid `0A 00` newline pair. Before the fix
+    /// this test is red — the raw-byte `preview_slice` this replaced
+    /// corrupts essentially every such file (an odd-length slice handed to
+    /// the UTF-16 decoder reports at least one replacement character) even
+    /// though nothing on disk is actually damaged.
+    #[test]
+    fn open_document_large_utf16le_preview_not_malformed() {
+        let file = write_utf16le_line_fixture("plume-large-utf16le-bom-preview", 600_000, true);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, None).unwrap();
+
+        assert!(
+            opened.truncated,
+            "a file over the threshold must be truncated"
+        );
+        assert_eq!(opened.encoding, "UTF-16LE");
+        assert!(opened.had_bom);
+        assert!(
+            !opened.malformed,
+            "a structurally valid UTF-16LE file must never report malformed"
+        );
+        assert!(
+            opened.content.ends_with('\n'),
+            "the preview must end on a full line, not mid line"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "no replacement characters may appear when nothing is actually corrupt"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #61, explicit-encoding variant: no BOM, reopened via the
+    /// explicit `encoding` parameter (as the frontend does when the user
+    /// picks an encoding from the menu) instead of auto-detection — this
+    /// exercises the explicit-label branch of `encoding::utf16_variant`
+    /// rather than the BOM-sniff branch.
+    #[test]
+    fn open_document_large_utf16le_explicit_reopen_not_malformed() {
+        let file =
+            write_utf16le_line_fixture("plume-large-utf16le-explicit-reopen", 600_000, false);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, Some("UTF-16LE".to_string()), None).unwrap();
+
+        assert!(
+            opened.truncated,
+            "a file over the threshold must be truncated"
+        );
+        assert_eq!(opened.encoding, "UTF-16LE");
+        assert!(!opened.had_bom, "fixture has no BOM");
+        assert!(
+            !opened.malformed,
+            "a structurally valid UTF-16LE file must never report malformed"
+        );
+        assert!(
+            opened.content.ends_with('\n'),
+            "the preview must end on a full line, not mid line"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "no replacement characters may appear when nothing is actually corrupt"
+        );
 
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
