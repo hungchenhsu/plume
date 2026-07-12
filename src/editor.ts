@@ -33,6 +33,7 @@ import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
+import { lineSpanForSelection } from "./lineops";
 import type { Locale } from "./i18n";
 import {
   findHistory,
@@ -715,8 +716,16 @@ export function createEditor(
     transformLines: (fn) => {
       const { state } = view;
       const range = state.selection.main;
-      const from = range.empty ? 0 : state.doc.lineAt(range.from).from;
-      const to = range.empty ? state.doc.length : state.doc.lineAt(range.to).to;
+      // range.to is exclusive; the line-span expansion below (issue #99)
+      // must resolve the end line from range.to - 1, not range.to itself
+      // — see lineSpanForSelection's doc comment in lineops.ts. That
+      // arithmetic lives there, pure and unit-tested, rather than here
+      // where it cannot be: this whole callback only runs against a live
+      // CM6 EditorView, which jsdom cannot provide (see lineops.test.ts's
+      // file comment).
+      const { from, to } = range.empty
+        ? { from: 0, to: state.doc.length }
+        : lineSpanForSelection(state.doc.toString(), range.from, range.to);
       const original = state.sliceDoc(from, to);
       const insert = fn(original);
       if (insert === original) return;
