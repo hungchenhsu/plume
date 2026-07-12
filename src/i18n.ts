@@ -1,18 +1,19 @@
-// Typed UI dictionary. English is the source-of-truth key set: the `zhTW`
-// dictionary is typed against the exact same `Messages` interface, so a
-// missing (or extra) key in either dictionary is a compile error — there is
-// no runtime "key not found" fallback path to test for.
+// Typed UI dictionary. English is the source-of-truth key set: every other
+// dictionary (`zhTW`, `ja`, `zhCN`) is typed against the exact same
+// `Messages` interface, so a missing (or extra) key in any dictionary is a
+// compile error — there is no runtime "key not found" fallback path to test
+// for.
 //
 // Values are either a plain string or a template function (for strings that
-// interpolate a filename, a number, etc.). Traditional Chinese has a
-// different word order than English, so every interpolated string is a full
-// sentence template here, never string concatenation at the call site.
+// interpolate a filename, a number, etc.). Word order varies by language, so
+// every interpolated string is a full sentence template here, never string
+// concatenation at the call site.
 //
 // Scope: this module owns all *frontend* UI strings. The native menu
-// (src-tauri/src/menu.rs) maintains its own small en/zh-TW label table in
-// Rust, since it is built before the frontend loads — see menu.rs.
+// (src-tauri/src/menu.rs) maintains its own small en/zh-TW/ja/zh-CN label
+// table in Rust, since it is built before the frontend loads — see menu.rs.
 
-export type Locale = "en" | "zh-TW";
+export type Locale = "en" | "zh-TW" | "ja" | "zh-CN";
 
 export interface Messages {
   "app.untitled": string;
@@ -585,32 +586,430 @@ const zhTW: Messages = {
   "common.loading": "載入中…",
 };
 
-const dictionaries: Record<Locale, Messages> = { en, "zh-TW": zhTW };
+const ja: Messages = {
+  "app.untitled": "無題",
+  "app.untitledNumbered": (n) => `無題-${n}`,
+
+  "tabs.closeAria": (title) => `${title} を閉じる`,
+  "tabs.newTabAria": "新しいタブ",
+
+  "statusbar.noFile": "ファイルなし",
+  "statusbar.cursor": (line, column) => `行 ${line}、列 ${column}`,
+  "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
+  "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
+  "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
+  "statusbar.buildingIndex": "行番号インデックスを構築中…",
+
+  "confirm.unsavedChanges": (title) => `「${title}」には保存されていない変更があります。`,
+  "confirm.dontSave": "保存しない",
+  "confirm.cancel": "キャンセル",
+  "confirm.save": "保存",
+
+  "detectcard.reasonBom": "BOM が検出されました",
+  "detectcard.reasonExtension": "拡張子ごとの設定により、正常にデコードされました",
+  "detectcard.reasonDetector": "chardetng による統計的判定",
+  "detectcard.reasonFallback": "分析できる情報がないため（空のファイル）、既定値を使用",
+  "detectcard.noBom": "BOM は検出されませんでした",
+  "detectcard.title": (encoding) => `なぜ ${encoding} なのか？`,
+  "detectcard.labelFile": "ファイル",
+  "detectcard.labelBom": "BOM",
+  "detectcard.labelVerdict": "chardetng の判定結果",
+  "detectcard.labelSampled": "サンプリング範囲",
+  "detectcard.labelWouldChoose": "自動検出の場合の選択",
+  "detectcard.labelCurrentlyUsing": "現在使用中",
+  "detectcard.sampledAll": (size) => `全 ${size}`,
+  "detectcard.sampledPartial": (shown, total) => `先頭 ${shown}（全 ${total} 中）`,
+  "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
+  "detectcard.manualNote": (current, detected) =>
+    `現在手動で ${current} を使用しています。自動検出では ${detected} が選択されます。`,
+
+  "hexview.showingAll": (size) => `全 ${size} を表示`,
+  "hexview.showingPartial": (shown, total) => `先頭 ${shown} を表示（全 ${total} 中）`,
+
+  "findInFiles.chooseFolder": "フォルダーを選択…",
+  "findInFiles.searchPlaceholder": "ファイル内を検索…",
+  "findInFiles.matchCase": "大文字と小文字を区別",
+  "findInFiles.regex": "正規表現",
+  "findInFiles.searching": "検索中…",
+  "findInFiles.status": (count, truncated, filesScanned) =>
+    `${filesScanned} 個のファイル中 ${count}${truncated ? "+" : ""} 件一致`,
+
+  "goto.placeholder": "行に移動…",
+
+  "quickOpen.searchPlaceholder": "最近使用したファイルを検索…",
+  "quickOpen.noRecent": "最近使用したファイルはありません",
+  "quickOpen.noMatches": "一致する項目がありません",
+
+  "preferences.title": "環境設定",
+  "preferences.editorFont": "エディターフォント",
+  "preferences.editorFontPlaceholder": "システム既定",
+  "preferences.fontSize": "フォントサイズ",
+  "preferences.theme": "テーマ",
+  "preferences.language": "言語",
+  "preferences.encodingForNewFiles": "新規ファイルのエンコーディング",
+  "preferences.extHeading": "拡張子ごとのエンコーディング",
+  "preferences.extHint":
+    "これらの拡張子のファイルは指定したエンコーディングで開かれます。ただし BOM、" +
+    "有効な UTF-8 テキスト、またはバイト不一致が検出された場合はそちらが優先されます。",
+  "preferences.extPlaceholder": "txt",
+  "preferences.extRemoveTitle": "削除",
+  "preferences.extAdd": "追加",
+  "preferences.cancel": "キャンセル",
+  "preferences.save": "保存",
+  "preferences.themeSystem": "システムに従う",
+  "preferences.themeLight": "ライト",
+  "preferences.themeDark": "ダーク",
+  "preferences.themePaper": "紙",
+  "preferences.themeDusk": "黄昏",
+  "preferences.langSystemOption": "システム既定",
+
+  "menu.whyEncoding": (encoding) => `なぜ ${encoding} なのか？`,
+  "menu.reopenWithEncoding": "エンコーディングを指定して再度開く",
+  "menu.saveWithEncoding": "エンコーディングを指定して保存",
+  "menu.compareEncodings": "エンコーディングを比較…",
+  "menu.viewRawBytes": "生バイトを表示…",
+  "menu.repairMojibake": "文字化けを修復…",
+  "menu.lineEndingLf": "LF（Unix / macOS）",
+  "menu.lineEndingCrlf": "CRLF（Windows）",
+
+  "mojibake.title": "文字化けを修復",
+  "mojibake.noCandidates":
+    "修復可能な誤デコードパターンが見つかりませんでした — 文字化けではないようです。",
+  "mojibake.pickCandidate": "適用する修復方法を選択してください：",
+  "mojibake.candidateDescription": (original, intermediate) =>
+    `${original} の内容が誤って ${intermediate} としてデコードされたようです。`,
+  "mojibake.replacementCount": (count) => `約 ${count} 文字を変更`,
+  "mojibake.before": "修復前",
+  "mojibake.after": "修復後",
+  "mojibake.appliedTitle": "文字化けを修復しました",
+  "mojibake.appliedMessage":
+    "エディター内のコンテンツを修復しました。誤っていた場合は元に戻す（Undo）で戻せます。",
+
+  "comparePreview.title": (file) => `エンコーディングを比較 — ${file}`,
+  "comparePreview.encodingALabel": "A",
+  "comparePreview.encodingBLabel": "B",
+  "comparePreview.compareButton": "比較",
+  "comparePreview.malformedBadge": "デコードエラー",
+  "comparePreview.reopenButton": "このエンコーディングで再度開く",
+
+  "batchConvert.title": "エンコーディング一括変換",
+  "batchConvert.chooseFolder": "フォルダーを選択…",
+  "batchConvert.chooseFolderFirst": "先にフォルダーを選択してください。",
+  "batchConvert.extPlaceholder":
+    "拡張子をカンマ区切りで指定（例: txt,md）— 空欄の場合はすべてのファイルが対象",
+  "batchConvert.targetLabel": "変換先エンコーディング",
+  "batchConvert.keepEncoding": "現在のエンコーディングを維持",
+  "batchConvert.lineEndingLabel": "改行コード",
+  "batchConvert.lineEndingKeep": "維持",
+  "batchConvert.scanButton": "スキャン（プレビューのみ）",
+  "batchConvert.scanning": "スキャン中…",
+  "batchConvert.noResults": "一致するファイルが見つかりません。",
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+    `変換可能 ${convertible} 件、既にこのエンコーディング ${alreadyTarget} 件、` +
+    `データ損失あり ${lossy} 件、デコード不可 ${undecodable} 件、サイズ超過 ${tooLarge} 件`,
+  "batchConvert.statusConvertible": "変換可能",
+  "batchConvert.statusAlreadyTarget": "既にこのエンコーディング",
+  "batchConvert.statusLossy": "データ損失あり",
+  "batchConvert.statusUndecodable": "デコード不可",
+  "batchConvert.statusTooLarge": "サイズ超過",
+  "batchConvert.lineEndingMixed": "混在",
+  "batchConvert.convertButton": (count) => `${count} 件のファイルを変換`,
+  "batchConvert.confirmMessage": (count) =>
+    `${count} 件のファイルをその場で変換しますか？各ファイルはレポートに表示された` +
+    `自動検出エンコーディング（Detected 列）に基づいて再エンコードされます。先に検出結果を` +
+    `ご確認ください。この操作は元に戻せません。`,
+  "batchConvert.rescanNeeded": "設定が変更されました — 変換前に再度スキャンしてください。",
+  "batchConvert.converting": "変換中…",
+  "batchConvert.resultSummary": (ok, failed) =>
+    failed === 0
+      ? `${ok} 件のファイルを変換しました。`
+      : `${ok} 件のファイルを変換しました。${failed} 件失敗。`,
+
+  "streamReplace.title": (file) => `大きいファイル内で置換 — ${file}`,
+  "streamReplace.searchPlaceholder": "検索…",
+  "streamReplace.replacePlaceholder": "置換後の文字列…",
+  "streamReplace.caseInsensitiveHint":
+    "大文字・小文字を区別しない照合は ASCII 文字にのみ適用されます。",
+  "streamReplace.executeButton": "すべて置換",
+  "streamReplace.replacing": "置換中…",
+  "streamReplace.resultMessage": (count) => `${count} 件を置換しました。`,
+
+  "dialog.pagingTitle": "ページング",
+  "dialog.fileChangedTitle": "ファイルがディスク上で変更されました",
+  "dialog.fileChangedMessage": (title) =>
+    `「${title}」はディスク上で変更されています。再読み込みして未保存の変更を破棄しますか？`,
+  "dialog.reload": "再読み込み",
+  "dialog.openFailedTitle": "開くのに失敗しました",
+  "dialog.readonlyPreviewTitle": "読み取り専用プレビュー",
+  "dialog.readonlyPreviewMessage": (title) =>
+    `「${title}」は大きいファイルの読み取り専用プレビューです。保存はできません。`,
+  "dialog.saveFailedTitle": "保存に失敗しました",
+  "dialog.lossyEncodingTitle": "エンコーディングに関する警告",
+  "dialog.lossyEncodingMessage": (encoding) =>
+    `一部の文字は ${encoding} で表現できません。このまま保存すると代替文字が書き込まれ、` +
+    `元に戻すことはできません。`,
+  "dialog.lossyEncodingConfirm": "このまま保存",
+  "dialog.backupFailedTitle": "バックアップに失敗しました",
+  "dialog.backupFailedMessage": (titles) =>
+    `${titles.join("、")} の未保存の変更をバックアップに書き込めませんでした` +
+    `（ディスクの空き容量不足か、フォルダーが書き込み不可の可能性があります）。` +
+    `今閉じるとこれらの変更は失われます。それでも閉じますか？`,
+  "dialog.backupFailedDiscard": "変更を破棄して閉じる",
+  "dialog.unsavedChangesTitle": "未保存の変更",
+  "dialog.reopenMessage": (title) =>
+    `再度開くと「${title}」の未保存の変更が破棄されます。続行しますか？`,
+  "dialog.reopen": "再度開く",
+  "dialog.reopenFailedTitle": "再度開くのに失敗しました",
+  "dialog.printTitle": "印刷",
+  "dialog.streamReplaceUseRegularTitle": "大きいファイル内で置換",
+  "dialog.streamReplaceUseRegularMessage":
+    "これは大きいファイルのプレビューではありません。通常の検索と置換（Cmd/Ctrl+F）を" +
+    "ご利用ください。",
+  "dialog.lineIndexFailedTitle": "行番号インデックスの作成に失敗しました",
+  "dialog.bookmarkNeedsGotoTitle": "位置が不明です",
+  "dialog.bookmarkNeedsGotoMessage":
+    "このウィンドウのファイル内での位置がまだ確定していません。先に「行に移動」で" +
+    "ジャンプしてから、ブックマークを設定してください。",
+
+  "encoding.utf8": "UTF-8",
+  "encoding.utf8Bom": "UTF-8（BOM 付き）",
+  "encoding.utf16le": "UTF-16 LE",
+  "encoding.utf16be": "UTF-16 BE",
+  "encoding.big5": "Big5（繁体字中国語）",
+  "encoding.gb18030": "GB18030（簡体字中国語）",
+  "encoding.gbk": "GBK（簡体字中国語）",
+  "encoding.shiftJis": "Shift_JIS（日本語）",
+  "encoding.eucJp": "EUC-JP（日本語）",
+  "encoding.eucKr": "EUC-KR（韓国語）",
+  "encoding.windows1252": "Windows-1252（西欧言語）",
+
+  "common.loading": "読み込み中…",
+};
+
+const zhCN: Messages = {
+  "app.untitled": "未命名",
+  "app.untitledNumbered": (n) => `未命名-${n}`,
+
+  "tabs.closeAria": (title) => `关闭 ${title}`,
+  "tabs.newTabAria": "新建标签页",
+
+  "statusbar.noFile": "无文件",
+  "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 列`,
+  "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
+  "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
+  "statusbar.decodeWarning": "⚠ 解码时发生错误",
+  "statusbar.buildingIndex": "正在构建行号索引…",
+
+  "confirm.unsavedChanges": (title) => `“${title}”有未保存的更改。`,
+  "confirm.dontSave": "不保存",
+  "confirm.cancel": "取消",
+  "confirm.save": "保存",
+
+  "detectcard.reasonBom": "检测到 BOM",
+  "detectcard.reasonExtension": "根据扩展名偏好设置，解码成功",
+  "detectcard.reasonDetector": "chardetng 统计检测",
+  "detectcard.reasonFallback": "无可分析的依据（空文件），使用默认值",
+  "detectcard.noBom": "未检测到 BOM",
+  "detectcard.title": (encoding) => `为什么是 ${encoding}？`,
+  "detectcard.labelFile": "文件",
+  "detectcard.labelBom": "BOM",
+  "detectcard.labelVerdict": "chardetng 判定结果",
+  "detectcard.labelSampled": "采样范围",
+  "detectcard.labelWouldChoose": "自动检测将选择",
+  "detectcard.labelCurrentlyUsing": "目前使用",
+  "detectcard.sampledAll": (size) => `全部 ${size}`,
+  "detectcard.sampledPartial": (shown, total) => `前 ${shown}（共 ${total}）`,
+  "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
+  "detectcard.manualNote": (current, detected) =>
+    `目前手动使用 ${current}——自动检测将选择 ${detected}。`,
+
+  "hexview.showingAll": (size) => `显示全部 ${size}`,
+  "hexview.showingPartial": (shown, total) => `显示前 ${shown}（共 ${total}）`,
+
+  "findInFiles.chooseFolder": "选择文件夹…",
+  "findInFiles.searchPlaceholder": "在文件中搜索…",
+  "findInFiles.matchCase": "区分大小写",
+  "findInFiles.regex": "正则表达式",
+  "findInFiles.searching": "搜索中…",
+  "findInFiles.status": (count, truncated, filesScanned) =>
+    `在 ${filesScanned} 个文件中找到 ${count}${truncated ? "+" : ""} 处匹配`,
+
+  "goto.placeholder": "跳转到行…",
+
+  "quickOpen.searchPlaceholder": "搜索最近的文件…",
+  "quickOpen.noRecent": "没有最近的文件",
+  "quickOpen.noMatches": "没有匹配项",
+
+  "preferences.title": "首选项",
+  "preferences.editorFont": "编辑器字体",
+  "preferences.editorFontPlaceholder": "系统默认",
+  "preferences.fontSize": "字体大小",
+  "preferences.theme": "主题",
+  "preferences.language": "语言",
+  "preferences.encodingForNewFiles": "新建文件的编码",
+  "preferences.extHeading": "按扩展名设置编码",
+  "preferences.extHint":
+    "符合这些扩展名的文件会以指定编码打开；若检测到 BOM、有效的 UTF-8 文本，" +
+    "或字节不匹配，仍会优先采用。",
+  "preferences.extPlaceholder": "txt",
+  "preferences.extRemoveTitle": "移除",
+  "preferences.extAdd": "添加",
+  "preferences.cancel": "取消",
+  "preferences.save": "保存",
+  "preferences.themeSystem": "跟随系统",
+  "preferences.themeLight": "浅色",
+  "preferences.themeDark": "深色",
+  "preferences.themePaper": "纸张",
+  "preferences.themeDusk": "黄昏",
+  "preferences.langSystemOption": "系统默认",
+
+  "menu.whyEncoding": (encoding) => `为什么是 ${encoding}？`,
+  "menu.reopenWithEncoding": "以指定编码重新打开",
+  "menu.saveWithEncoding": "以指定编码保存",
+  "menu.compareEncodings": "比较编码…",
+  "menu.viewRawBytes": "查看原始字节…",
+  "menu.repairMojibake": "修复乱码…",
+  "menu.lineEndingLf": "LF（Unix / macOS）",
+  "menu.lineEndingCrlf": "CRLF（Windows）",
+
+  "mojibake.title": "修复乱码",
+  "mojibake.noCandidates": "未找到可修复的误解码模式——这看起来不像乱码。",
+  "mojibake.pickCandidate": "选择要应用的修复方式：",
+  "mojibake.candidateDescription": (original, intermediate) =>
+    `看起来是 ${original} 的内容曾被误当作 ${intermediate} 解码。`,
+  "mojibake.replacementCount": (count) => `约变更 ${count} 个字符`,
+  "mojibake.before": "修复前",
+  "mojibake.after": "修复后",
+  "mojibake.appliedTitle": "乱码已修复",
+  "mojibake.appliedMessage": "编辑器内容已修复，可撤销还原。",
+
+  "comparePreview.title": (file) => `比较编码 — ${file}`,
+  "comparePreview.encodingALabel": "A",
+  "comparePreview.encodingBLabel": "B",
+  "comparePreview.compareButton": "比较",
+  "comparePreview.malformedBadge": "解码错误",
+  "comparePreview.reopenButton": "以此编码重新打开",
+
+  "batchConvert.title": "批量转换编码",
+  "batchConvert.chooseFolder": "选择文件夹…",
+  "batchConvert.chooseFolderFirst": "请先选择文件夹。",
+  "batchConvert.extPlaceholder": "扩展名，逗号分隔（如 txt,md）——留空表示所有文件",
+  "batchConvert.targetLabel": "目标编码",
+  "batchConvert.keepEncoding": "保持当前编码",
+  "batchConvert.lineEndingLabel": "换行符",
+  "batchConvert.lineEndingKeep": "保持不变",
+  "batchConvert.scanButton": "扫描（仅预览）",
+  "batchConvert.scanning": "扫描中…",
+  "batchConvert.noResults": "未找到匹配的文件。",
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+    `可转换 ${convertible}、已是目标编码 ${alreadyTarget}、会丢失数据 ${lossy}、` +
+    `无法解码 ${undecodable}、文件过大 ${tooLarge}`,
+  "batchConvert.statusConvertible": "可转换",
+  "batchConvert.statusAlreadyTarget": "已是目标编码",
+  "batchConvert.statusLossy": "会丢失数据",
+  "batchConvert.statusUndecodable": "无法解码",
+  "batchConvert.statusTooLarge": "文件过大",
+  "batchConvert.lineEndingMixed": "混合换行",
+  "batchConvert.convertButton": (count) => `转换 ${count} 个文件`,
+  "batchConvert.confirmMessage": (count) =>
+    `即将就地转换 ${count} 个文件？每个文件将依报告中自动检测的编码` +
+    `（Detected 列）重新编码——请先确认检测结果。此操作无法撤销。`,
+  "batchConvert.rescanNeeded": "设置已更改——请重新扫描后再转换。",
+  "batchConvert.converting": "转换中…",
+  "batchConvert.resultSummary": (ok, failed) =>
+    failed === 0 ? `已转换 ${ok} 个文件。` : `已转换 ${ok} 个文件，失败 ${failed} 个。`,
+
+  "streamReplace.title": (file) => `在大文件中替换 — ${file}`,
+  "streamReplace.searchPlaceholder": "查找…",
+  "streamReplace.replacePlaceholder": "替换为…",
+  "streamReplace.caseInsensitiveHint": "不区分大小写仅适用于 ASCII 字母。",
+  "streamReplace.executeButton": "全部替换",
+  "streamReplace.replacing": "替换中…",
+  "streamReplace.resultMessage": (count) => `已替换 ${count} 处。`,
+
+  "dialog.pagingTitle": "翻页",
+  "dialog.fileChangedTitle": "文件已在磁盘上更改",
+  "dialog.fileChangedMessage": (title) =>
+    `“${title}”已在磁盘上更改，是否重新加载并放弃未保存的更改？`,
+  "dialog.reload": "重新加载",
+  "dialog.openFailedTitle": "打开失败",
+  "dialog.readonlyPreviewTitle": "只读预览",
+  "dialog.readonlyPreviewMessage": (title) => `“${title}”是大文件的只读预览，无法保存。`,
+  "dialog.saveFailedTitle": "保存失败",
+  "dialog.lossyEncodingTitle": "编码警告",
+  "dialog.lossyEncodingMessage": (encoding) =>
+    `有字符无法以 ${encoding} 表示，继续保存将写入替代字符，且无法撤销。`,
+  "dialog.lossyEncodingConfirm": "仍要保存",
+  "dialog.backupFailedTitle": "备份写入失败",
+  "dialog.backupFailedMessage": (titles) =>
+    `${titles.join("、")} 的未保存更改无法写入备份（磁盘已满或文件夹` +
+    `无法写入？），现在关闭的话，这些更改将无法保留。仍要关闭？`,
+  "dialog.backupFailedDiscard": "放弃更改并关闭",
+  "dialog.unsavedChangesTitle": "未保存的更改",
+  "dialog.reopenMessage": (title) => `重新打开将放弃“${title}”中未保存的更改，是否继续？`,
+  "dialog.reopen": "重新打开",
+  "dialog.reopenFailedTitle": "重新打开失败",
+  "dialog.printTitle": "打印",
+  "dialog.streamReplaceUseRegularTitle": "在大文件中替换",
+  "dialog.streamReplaceUseRegularMessage":
+    "这不是大文件的只读预览。请改用常规的查找和替换（Cmd/Ctrl+F）。",
+  "dialog.lineIndexFailedTitle": "创建行号索引失败",
+  "dialog.bookmarkNeedsGotoTitle": "位置未知",
+  "dialog.bookmarkNeedsGotoMessage":
+    "当前窗口在文件中的位置尚未确定。请先使用“跳转到行”跳转一次，再设置书签。",
+
+  "encoding.utf8": "UTF-8",
+  "encoding.utf8Bom": "UTF-8（带 BOM）",
+  "encoding.utf16le": "UTF-16 LE",
+  "encoding.utf16be": "UTF-16 BE",
+  "encoding.big5": "Big5（繁体中文）",
+  "encoding.gb18030": "GB18030（简体中文）",
+  "encoding.gbk": "GBK（简体中文）",
+  "encoding.shiftJis": "Shift_JIS（日文）",
+  "encoding.eucJp": "EUC-JP（日文）",
+  "encoding.eucKr": "EUC-KR（韩文）",
+  "encoding.windows1252": "Windows-1252（西欧语系）",
+
+  "common.loading": "加载中…",
+};
+
+const dictionaries: Record<Locale, Messages> = {
+  en,
+  "zh-TW": zhTW,
+  ja,
+  "zh-CN": zhCN,
+};
 
 /**
  * Resolve a BCP-47 language tag (e.g. `navigator.language`) to a supported
- * `Locale`. Only Traditional-Chinese-bearing tags resolve to `zh-TW`
- * ("zh-TW", anything containing "Hant", "zh-HK", "zh-MO"); every other tag —
- * including Simplified Chinese ("zh-CN") — falls back to English, since
- * there is no Simplified Chinese dictionary.
+ * `Locale`. "ja"/"ja-*" tags resolve to `ja`. Chinese tags split by script:
+ * Traditional-Chinese-bearing tags ("zh-TW", anything containing "Hant",
+ * "zh-HK", "zh-MO") resolve to `zh-TW`; Simplified-Chinese-bearing tags
+ * ("zh-CN", anything containing "Hans", "zh-SG") resolve to `zh-CN`. A bare
+ * "zh" with no script/region hint, and every other language, falls back to
+ * English rather than guessing a script.
  */
 export function resolveSystemLocale(tag: string | undefined | null): Locale {
   const lang = (tag ?? "").toLowerCase();
+  if (lang === "ja" || lang.startsWith("ja-")) return "ja";
   if (!lang.startsWith("zh")) return "en";
   if (lang === "zh-tw" || lang.includes("hant") || lang === "zh-hk" || lang === "zh-mo") {
     return "zh-TW";
+  }
+  if (lang === "zh-cn" || lang.includes("hans") || lang === "zh-sg") {
+    return "zh-CN";
   }
   return "en";
 }
 
 /**
- * Resolve a stored language preference ("system" | "en" | "zh-TW") to an
- * effective `Locale`, following the system locale for "system" or any
- * unrecognized value (forward-compatible default for prefs written by a
- * future build).
+ * Resolve a stored language preference ("system" | "en" | "zh-TW" | "ja" |
+ * "zh-CN") to an effective `Locale`, following the system locale for
+ * "system" or any unrecognized value (forward-compatible default for prefs
+ * written by a future build).
  */
 export function effectiveLocale(pref: string, systemTag?: string | null): Locale {
-  if (pref === "en" || pref === "zh-TW") return pref;
+  if (pref === "en" || pref === "zh-TW" || pref === "ja" || pref === "zh-CN") return pref;
   return resolveSystemLocale(
     systemTag ?? (typeof navigator !== "undefined" ? navigator.language : undefined),
   );

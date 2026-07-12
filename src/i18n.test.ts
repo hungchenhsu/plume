@@ -23,16 +23,35 @@ describe("resolveSystemLocale", () => {
     expect(resolveSystemLocale("zh-Hant-TW")).toBe("zh-TW");
   });
 
-  it("resolves zh-CN to en (no Simplified Chinese dictionary)", () => {
-    expect(resolveSystemLocale("zh-CN")).toBe("en");
+  it("resolves zh-HK and zh-MO to zh-TW", () => {
+    expect(resolveSystemLocale("zh-HK")).toBe("zh-TW");
+    expect(resolveSystemLocale("zh-MO")).toBe("zh-TW");
+  });
+
+  it("resolves zh-CN to zh-CN", () => {
+    expect(resolveSystemLocale("zh-CN")).toBe("zh-CN");
+  });
+
+  it("resolves zh-Hans and zh-Hans-CN to zh-CN (Hans variant)", () => {
+    expect(resolveSystemLocale("zh-Hans")).toBe("zh-CN");
+    expect(resolveSystemLocale("zh-Hans-CN")).toBe("zh-CN");
+  });
+
+  it("resolves zh-SG to zh-CN", () => {
+    expect(resolveSystemLocale("zh-SG")).toBe("zh-CN");
+  });
+
+  it("resolves a bare zh with no script/region hint to en", () => {
+    expect(resolveSystemLocale("zh")).toBe("en");
   });
 
   it("resolves en-US to en", () => {
     expect(resolveSystemLocale("en-US")).toBe("en");
   });
 
-  it("resolves ja-JP to en (unsupported language falls back)", () => {
-    expect(resolveSystemLocale("ja-JP")).toBe("en");
+  it("resolves ja and ja-JP to ja", () => {
+    expect(resolveSystemLocale("ja")).toBe("ja");
+    expect(resolveSystemLocale("ja-JP")).toBe("ja");
   });
 
   it("resolves a missing/empty tag to en", () => {
@@ -43,6 +62,8 @@ describe("resolveSystemLocale", () => {
 
   it("is case-insensitive", () => {
     expect(resolveSystemLocale("ZH-TW")).toBe("zh-TW");
+    expect(resolveSystemLocale("ZH-CN")).toBe("zh-CN");
+    expect(resolveSystemLocale("JA-JP")).toBe("ja");
   });
 });
 
@@ -52,9 +73,16 @@ describe("effectiveLocale", () => {
     expect(effectiveLocale("zh-TW")).toBe("zh-TW");
   });
 
+  it("returns the explicit locale for 'ja' and 'zh-CN'", () => {
+    expect(effectiveLocale("ja")).toBe("ja");
+    expect(effectiveLocale("zh-CN")).toBe("zh-CN");
+  });
+
   it("resolves 'system' via the given system tag", () => {
     expect(effectiveLocale("system", "zh-TW")).toBe("zh-TW");
     expect(effectiveLocale("system", "en-US")).toBe("en");
+    expect(effectiveLocale("system", "ja-JP")).toBe("ja");
+    expect(effectiveLocale("system", "zh-CN")).toBe("zh-CN");
   });
 
   it("falls back to system resolution for an unrecognized preference value", () => {
@@ -84,6 +112,18 @@ describe("t", () => {
     expect(t("statusbar.noFile")).toBe("無檔案");
     expect(t("statusbar.cursor", 3, 7)).toBe("第 3 行，第 7 欄");
   });
+
+  it("switches output to ja after setLocale", () => {
+    setLocale("ja");
+    expect(t("statusbar.noFile")).toBe("ファイルなし");
+    expect(t("statusbar.cursor", 3, 7)).toBe("行 3、列 7");
+  });
+
+  it("switches output to zh-CN after setLocale", () => {
+    setLocale("zh-CN");
+    expect(t("statusbar.noFile")).toBe("无文件");
+    expect(t("statusbar.cursor", 3, 7)).toBe("第 3 行，第 7 列");
+  });
 });
 
 describe("getLocale / setLocale / onLocaleChange", () => {
@@ -92,6 +132,13 @@ describe("getLocale / setLocale / onLocaleChange", () => {
     expect(getLocale()).toBe("zh-TW");
     setLocale("en");
     expect(getLocale()).toBe("en");
+  });
+
+  it("getLocale reflects ja and zh-CN too", () => {
+    setLocale("ja");
+    expect(getLocale()).toBe("ja");
+    setLocale("zh-CN");
+    expect(getLocale()).toBe("zh-CN");
   });
 
   it("notifies subscribers only on an actual change", () => {

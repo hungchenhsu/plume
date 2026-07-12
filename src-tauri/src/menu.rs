@@ -3,12 +3,12 @@
 //! and Linux get File/Edit as a window menu. Menu accelerators own the
 //! file shortcuts (CmdOrCtrl+T/O/S/W) — the frontend must not also bind them.
 //!
-//! i18n: the menu owns its own tiny en/zh-TW label table (`LABELS` below),
-//! separate from the frontend's `src/i18n.ts` dictionary, because the menu
-//! is built in `setup()` before the frontend has loaded (see `build`). The
-//! two are kept in sync by hand — there is no shared source, but the label
-//! text mirrors the frontend's wording where the same concept appears (e.g.
-//! "Theme" / "主題" matches `preferences.theme`).
+//! i18n: the menu owns its own tiny en/zh-TW/ja/zh-CN label table (`LABELS`
+//! below), separate from the frontend's `src/i18n.ts` dictionary, because
+//! the menu is built in `setup()` before the frontend has loaded (see
+//! `build`). The two are kept in sync by hand — there is no shared source,
+//! but the label text mirrors the frontend's wording where the same concept
+//! appears (e.g. "Theme" / "主題" matches `preferences.theme`).
 
 use tauri::menu::{CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Runtime};
@@ -16,102 +16,251 @@ use tauri::{AppHandle, Runtime};
 #[cfg(target_os = "macos")]
 use tauri::menu::AboutMetadata;
 
-/// (id, English, Traditional Chinese) for every menu entry this module
-/// creates with an explicit id — submenu titles included, so they can be
-/// looked up and relabeled by `retitle_menu`. Entries without an id (the
-/// macOS "Plume" app-name submenu, and Tauri's OS-predefined items like
-/// Undo/Cut/Quit/About) are not listed: the app name is never translated,
-/// and predefined items are labeled by the OS itself in its own locale.
-const LABELS: &[(&str, &str, &str)] = &[
-    ("file", "File", "檔案"),
-    ("new_tab", "New Tab", "新增分頁"),
-    ("open", "Open…", "開啟…"),
-    ("open_recent", "Open Recent…", "最近的檔案…"),
-    ("save", "Save", "儲存"),
-    ("save_as", "Save As…", "另存新檔…"),
-    ("close_tab", "Close Tab", "關閉分頁"),
-    ("print", "Print…", "列印…"),
-    ("preferences", "Preferences…", "偏好設定…"),
-    ("edit", "Edit", "編輯"),
-    ("find", "Find and Replace…", "尋找與取代…"),
-    ("find_in_files", "Find in Files…", "在檔案中尋找…"),
-    ("goto_line", "Go to Line…", "跳至行號…"),
-    ("toggle_bookmark", "Toggle Bookmark", "切換書籤"),
-    ("next_bookmark", "Next Bookmark", "下一個書籤"),
-    ("prev_bookmark", "Previous Bookmark", "上一個書籤"),
-    ("line_ops", "Line Operations", "行操作"),
-    ("sort_lines", "Sort Lines", "排序行"),
-    ("unique_lines", "Remove Duplicate Lines", "移除重複行"),
+/// (id, English, Traditional Chinese, Japanese, Simplified Chinese) for
+/// every menu entry this module creates with an explicit id — submenu
+/// titles included, so they can be looked up and relabeled by
+/// `retitle_menu`. Entries without an id (the macOS "Plume" app-name
+/// submenu, and Tauri's OS-predefined items like Undo/Cut/Quit/About) are
+/// not listed: the app name is never translated, and predefined items are
+/// labeled by the OS itself in its own locale.
+const LABELS: &[(&str, &str, &str, &str, &str)] = &[
+    ("file", "File", "檔案", "ファイル", "文件"),
+    ("new_tab", "New Tab", "新增分頁", "新規タブ", "新建标签页"),
+    ("open", "Open…", "開啟…", "開く…", "打开…"),
+    (
+        "open_recent",
+        "Open Recent…",
+        "最近的檔案…",
+        "最近使ったファイル…",
+        "最近的文件…",
+    ),
+    ("save", "Save", "儲存", "保存", "保存"),
+    (
+        "save_as",
+        "Save As…",
+        "另存新檔…",
+        "名前を付けて保存…",
+        "另存为…",
+    ),
+    (
+        "close_tab",
+        "Close Tab",
+        "關閉分頁",
+        "タブを閉じる",
+        "关闭标签页",
+    ),
+    ("print", "Print…", "列印…", "印刷…", "打印…"),
+    (
+        "preferences",
+        "Preferences…",
+        "偏好設定…",
+        "環境設定…",
+        "首选项…",
+    ),
+    ("edit", "Edit", "編輯", "編集", "编辑"),
+    (
+        "find",
+        "Find and Replace…",
+        "尋找與取代…",
+        "検索と置換…",
+        "查找和替换…",
+    ),
+    (
+        "find_in_files",
+        "Find in Files…",
+        "在檔案中尋找…",
+        "ファイル内を検索…",
+        "在文件中查找…",
+    ),
+    (
+        "goto_line",
+        "Go to Line…",
+        "跳至行號…",
+        "行に移動…",
+        "跳转到行…",
+    ),
+    (
+        "toggle_bookmark",
+        "Toggle Bookmark",
+        "切換書籤",
+        "ブックマークを切り替え",
+        "切换书签",
+    ),
+    (
+        "next_bookmark",
+        "Next Bookmark",
+        "下一個書籤",
+        "次のブックマーク",
+        "下一个书签",
+    ),
+    (
+        "prev_bookmark",
+        "Previous Bookmark",
+        "上一個書籤",
+        "前のブックマーク",
+        "上一个书签",
+    ),
+    (
+        "line_ops",
+        "Line Operations",
+        "行操作",
+        "行の操作",
+        "行操作",
+    ),
+    (
+        "sort_lines",
+        "Sort Lines",
+        "排序行",
+        "行を並べ替え",
+        "排序行",
+    ),
+    (
+        "unique_lines",
+        "Remove Duplicate Lines",
+        "移除重複行",
+        "重複行を削除",
+        "删除重复行",
+    ),
     (
         "trim_trailing_whitespace",
         "Trim Trailing Whitespace",
         "移除行尾空白",
+        "行末の空白を削除",
+        "删除行尾空白",
     ),
-    ("uppercase", "UPPERCASE", "轉大寫"),
-    ("lowercase", "lowercase", "轉小寫"),
+    (
+        "uppercase",
+        "UPPERCASE",
+        "轉大寫",
+        "大文字に変換",
+        "转为大写",
+    ),
+    (
+        "lowercase",
+        "lowercase",
+        "轉小寫",
+        "小文字に変換",
+        "转为小写",
+    ),
     (
         "batch_convert",
         "Batch Encoding Conversion…",
         "批次轉換編碼…",
+        "エンコーディング一括変換…",
+        "批量转换编码…",
     ),
     (
         "stream_replace",
         "Replace in Large File…",
         "在大型檔案中取代…",
+        "大きいファイル内で置換…",
+        "在大文件中替换…",
     ),
-    ("view", "View", "檢視"),
-    ("word_wrap", "Word Wrap", "自動換行"),
-    ("show_invisibles", "Show Invisibles", "顯示不可見字元"),
-    ("indent_guides", "Indent Guides", "縮排輔助線"),
-    ("fold_all", "Fold All", "全部摺疊"),
-    ("unfold_all", "Unfold All", "全部展開"),
-    ("theme", "Theme", "主題"),
-    ("theme_system", "Follow system", "跟隨系統"),
-    ("theme_light", "Light", "亮色"),
-    ("theme_dark", "Dark", "暗色"),
-    ("theme_paper", "Paper", "紙張"),
-    ("theme_dusk", "Dusk", "黃昏"),
-    ("zoom_in", "Zoom In", "放大"),
-    ("zoom_out", "Zoom Out", "縮小"),
-    ("zoom_reset", "Actual Size", "實際大小"),
-    ("window", "Window", "視窗"),
+    ("view", "View", "檢視", "表示", "视图"),
+    ("word_wrap", "Word Wrap", "自動換行", "折り返し", "自动换行"),
+    (
+        "show_invisibles",
+        "Show Invisibles",
+        "顯示不可見字元",
+        "不可視文字を表示",
+        "显示不可见字符",
+    ),
+    (
+        "indent_guides",
+        "Indent Guides",
+        "縮排輔助線",
+        "インデントガイド",
+        "缩进参考线",
+    ),
+    (
+        "fold_all",
+        "Fold All",
+        "全部摺疊",
+        "すべて折りたたむ",
+        "全部折叠",
+    ),
+    (
+        "unfold_all",
+        "Unfold All",
+        "全部展開",
+        "すべて展開",
+        "全部展开",
+    ),
+    ("theme", "Theme", "主題", "テーマ", "主题"),
+    (
+        "theme_system",
+        "Follow system",
+        "跟隨系統",
+        "システムに従う",
+        "跟随系统",
+    ),
+    ("theme_light", "Light", "亮色", "ライト", "浅色"),
+    ("theme_dark", "Dark", "暗色", "ダーク", "深色"),
+    ("theme_paper", "Paper", "紙張", "紙", "纸张"),
+    ("theme_dusk", "Dusk", "黃昏", "黄昏", "黄昏"),
+    ("zoom_in", "Zoom In", "放大", "拡大", "放大"),
+    ("zoom_out", "Zoom Out", "縮小", "縮小", "缩小"),
+    (
+        "zoom_reset",
+        "Actual Size",
+        "實際大小",
+        "実際のサイズ",
+        "实际大小",
+    ),
+    ("window", "Window", "視窗", "ウィンドウ", "窗口"),
 ];
 
-/// Look up a menu label by id and language ("en" | "zh-TW", anything else
-/// falls back to English). Panics on an unknown id — that is a programming
-/// error in this module (a build()/retitle_menu() call site referencing an
-/// id missing from `LABELS`), not a runtime condition to degrade from.
+/// Look up a menu label by id and language ("en" | "zh-TW" | "ja" | "zh-CN",
+/// anything else falls back to English). Panics on an unknown id — that is
+/// a programming error in this module (a build()/retitle_menu() call site
+/// referencing an id missing from `LABELS`), not a runtime condition to
+/// degrade from.
 fn label(id: &str, lang: &str) -> &'static str {
-    let (_, en, zh_tw) = LABELS
+    let (_, en, zh_tw, ja, zh_cn) = LABELS
         .iter()
-        .find(|(entry_id, _, _)| *entry_id == id)
+        .find(|(entry_id, _, _, _, _)| *entry_id == id)
         .unwrap_or_else(|| panic!("menu.rs LABELS has no entry for id {id:?}"));
-    if lang == "zh-TW" {
-        zh_tw
-    } else {
-        en
+    match lang {
+        "zh-TW" => zh_tw,
+        "ja" => ja,
+        "zh-CN" => zh_cn,
+        _ => en,
     }
 }
 
-/// Resolve a language preference ("system" | "en" | "zh-TW") to "en" or
-/// "zh-TW". Mirrors `src/i18n.ts` `effectiveLocale`/`resolveSystemLocale`:
-/// "system" (or any unrecognized value) follows the OS locale, and only
-/// Traditional-Chinese-bearing tags resolve to "zh-TW" — Simplified Chinese
-/// ("zh-CN") and every other language fall back to English.
+/// Resolve a language preference ("system" | "en" | "zh-TW" | "ja" |
+/// "zh-CN") to "en" | "zh-TW" | "ja" | "zh-CN". Mirrors `src/i18n.ts`
+/// `effectiveLocale`/`resolveSystemLocale`: "system" (or any unrecognized
+/// value) follows the OS locale.
 pub fn resolve_lang(pref: &str) -> String {
     match pref {
         "en" => "en".to_string(),
         "zh-TW" => "zh-TW".to_string(),
+        "ja" => "ja".to_string(),
+        "zh-CN" => "zh-CN".to_string(),
         _ => resolve_system_lang(),
     }
 }
 
+/// Classify the OS locale tag the same way `src/i18n.ts`
+/// `resolveSystemLocale` classifies `navigator.language`: "ja"/"ja-*" tags
+/// resolve to "ja"; Traditional-Chinese-bearing tags ("zh-tw", anything
+/// containing "hant", "zh-hk", "zh-mo") resolve to "zh-TW";
+/// Simplified-Chinese-bearing tags ("zh-cn", anything containing "hans",
+/// "zh-sg") resolve to "zh-CN"; a bare "zh" and every other language fall
+/// back to "en" rather than guessing a script.
 fn resolve_system_lang() -> String {
     let tag = sys_locale::get_locale().unwrap_or_default().to_lowercase();
-    if tag.starts_with("zh")
-        && (tag == "zh-tw" || tag.contains("hant") || tag == "zh-hk" || tag == "zh-mo")
-    {
+    if tag == "ja" || tag.starts_with("ja-") {
+        return "ja".to_string();
+    }
+    if !tag.starts_with("zh") {
+        return "en".to_string();
+    }
+    if tag == "zh-tw" || tag.contains("hant") || tag == "zh-hk" || tag == "zh-mo" {
         "zh-TW".to_string()
+    } else if tag == "zh-cn" || tag.contains("hans") || tag == "zh-sg" {
+        "zh-CN".to_string()
     } else {
         "en".to_string()
     }
@@ -386,10 +535,11 @@ pub fn sync_theme_menu<R: Runtime>(app: AppHandle<R>, theme: String) -> Result<(
 }
 
 /// Relabel every custom (`with_id`) menu entry to `locale`'s labels
-/// ("en" | "zh-TW", already resolved — never "system"; see `resolve_lang`
-/// and the frontend's `src/i18n.ts` `effectiveLocale`). Called from the
-/// Preferences dialog when the language preference changes, so the native
-/// menu never needs a restart to catch up with the frontend's language.
+/// ("en" | "zh-TW" | "ja" | "zh-CN", already resolved — never "system"; see
+/// `resolve_lang` and the frontend's `src/i18n.ts` `effectiveLocale`).
+/// Called from the Preferences dialog when the language preference changes,
+/// so the native menu never needs a restart to catch up with the frontend's
+/// language.
 /// Best-effort like `sync_theme_menu`: a `None` at any lookup step just
 /// leaves that part of the menu as it was (e.g. `preferences` only exists
 /// under `file` on non-macOS, and under `app_menu` on macOS).
@@ -537,7 +687,7 @@ mod tests {
 
     #[test]
     fn labels_has_no_duplicate_ids() {
-        let mut ids: Vec<&str> = LABELS.iter().map(|(id, _, _)| *id).collect();
+        let mut ids: Vec<&str> = LABELS.iter().map(|(id, _, _, _, _)| *id).collect();
         let before = ids.len();
         ids.sort_unstable();
         ids.dedup();
@@ -545,10 +695,12 @@ mod tests {
     }
 
     #[test]
-    fn labels_has_a_non_empty_en_and_zh_tw_string_for_every_id() {
-        for (id, en, zh_tw) in LABELS {
+    fn labels_has_a_non_empty_string_for_every_language_and_id() {
+        for (id, en, zh_tw, ja, zh_cn) in LABELS {
             assert!(!en.is_empty(), "empty English label for {id:?}");
             assert!(!zh_tw.is_empty(), "empty zh-TW label for {id:?}");
+            assert!(!ja.is_empty(), "empty Japanese label for {id:?}");
+            assert!(!zh_cn.is_empty(), "empty zh-CN label for {id:?}");
         }
     }
 
@@ -563,9 +715,21 @@ mod tests {
     }
 
     #[test]
+    fn label_returns_the_ja_entry_for_ja() {
+        assert_eq!(label("open", "ja"), "開く…");
+    }
+
+    #[test]
+    fn label_returns_the_zh_cn_entry_for_zh_cn() {
+        assert_eq!(label("open", "zh-CN"), "打开…");
+    }
+
+    #[test]
     fn resolve_lang_uses_the_explicit_preference_when_recognized() {
         assert_eq!(resolve_lang("en"), "en");
         assert_eq!(resolve_lang("zh-TW"), "zh-TW");
+        assert_eq!(resolve_lang("ja"), "ja");
+        assert_eq!(resolve_lang("zh-CN"), "zh-CN");
     }
 
     // "system" (and any other value) falls through to the OS locale via
