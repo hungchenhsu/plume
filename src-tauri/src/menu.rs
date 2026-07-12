@@ -36,6 +36,9 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("find", "Find and Replace…", "尋找與取代…"),
     ("find_in_files", "Find in Files…", "在檔案中尋找…"),
     ("goto_line", "Go to Line…", "跳至行號…"),
+    ("toggle_bookmark", "Toggle Bookmark", "切換書籤"),
+    ("next_bookmark", "Next Bookmark", "下一個書籤"),
+    ("prev_bookmark", "Previous Bookmark", "上一個書籤"),
     (
         "batch_convert",
         "Batch Encoding Conversion…",
@@ -184,6 +187,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .accelerator("CmdOrCtrl+L")
                 .build(app)?,
         )
+        .separator()
+        .item(&MenuItemBuilder::with_id("toggle_bookmark", l("toggle_bookmark")).build(app)?)
+        .item(&MenuItemBuilder::with_id("next_bookmark", l("next_bookmark")).build(app)?)
+        .item(&MenuItemBuilder::with_id("prev_bookmark", l("prev_bookmark")).build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("batch_convert", l("batch_convert")).build(app)?)
         .item(&MenuItemBuilder::with_id("stream_replace", l("stream_replace")).build(app)?)
@@ -374,6 +381,9 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "find",
             "find_in_files",
             "goto_line",
+            "toggle_bookmark",
+            "next_bookmark",
+            "prev_bookmark",
             "batch_convert",
             "stream_replace",
         ] {

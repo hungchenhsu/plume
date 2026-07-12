@@ -18,6 +18,7 @@ const lineEndingEl = document.querySelector<HTMLElement>(
 )!;
 const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
+const indexingEl = document.querySelector<HTMLElement>("#status-indexing")!;
 const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
@@ -40,6 +41,21 @@ export function updateCursor(line: number, column: number): void {
  *  position (the editor doesn't need to re-report it). */
 export function refreshCursor(): void {
   updateCursor(lastCursor.line, lastCursor.column);
+}
+
+/** The active buffer's current 1-based cursor line, as last reported by the
+ *  editor's `onCursorMoved` callback (see main.ts's `createEditor` wiring).
+ *  Used by main.ts's bookmark commands to find "the current line" without
+ *  reaching into CodeMirror internals directly. */
+export function currentCursorLine(): number {
+  return lastCursor.line;
+}
+
+/** Show/hide the "building line index…" status-bar hint (large-file
+ *  go-to-line/bookmarks — see main.ts `ensureLineIndex`). */
+export function setIndexing(active: boolean): void {
+  indexingEl.hidden = !active;
+  if (active) indexingEl.textContent = t("statusbar.buildingIndex");
 }
 
 /** Show/hide the large-file pager buttons. Pass null to hide both. */

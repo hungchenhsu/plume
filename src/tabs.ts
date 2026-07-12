@@ -1,6 +1,7 @@
 import type { WindowChunk } from "./chunkwindow";
 import type { EditorBuffer } from "./editor";
 import { t } from "./i18n";
+import type { LineIndex } from "./ipc";
 
 export interface Doc {
   id: number;
@@ -20,6 +21,24 @@ export interface Doc {
   prevChunkOffsets: number[];
   /** Chunks currently in the buffer (sliding window, char+byte lengths). */
   windowChunks: WindowChunk[];
+  /** Sparse line-offset index for go-to-line/bookmarks beyond the loaded
+   *  window (truncated docs only). Null until built on first use, and
+   *  invalidated back to null on reload/reopen or once its `indexedSize`
+   *  no longer matches `totalSize` (see main.ts `ensureLineIndex`). */
+  lineIndex: LineIndex | null;
+  /** Absolute (1-based) file line number of the loaded window's own first
+   *  line. Known only right after an index-driven goto jump (where it is
+   *  computed for free); invalidated to null by anything that shifts the
+   *  window without tracking the shift (pageChunk, continuous
+   *  append/prepend) — this build deliberately does not carry a running
+   *  delta through those paths. While null, bookmarks can't be placed and
+   *  the gutter can't show them for this doc; the status bar's cursor
+   *  position is still only ever the buffer-relative line. */
+  windowStartLine: number | null;
+  /** Bookmarked absolute (1-based) line numbers, sorted ascending. Small
+   *  (non-truncated) docs use these directly as buffer line numbers.
+   *  Session-local only — never persisted (see ROADMAP.md Track B). */
+  bookmarks: number[];
   /** Hot-exit backup file name once unsaved content has been flushed. */
   backupName: string | null;
   buffer: EditorBuffer;

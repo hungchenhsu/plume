@@ -26,6 +26,7 @@ export interface Messages {
   "statusbar.encodingWithBom": (encoding: string) => string;
   "statusbar.readonlyPreview": (size: string) => string;
   "statusbar.decodeWarning": string;
+  "statusbar.buildingIndex": string;
 
   "confirm.unsavedChanges": (title: string) => string;
   "confirm.dontSave": string;
@@ -175,6 +176,9 @@ export interface Messages {
   "dialog.printTitle": string;
   "dialog.streamReplaceUseRegularTitle": string;
   "dialog.streamReplaceUseRegularMessage": string;
+  "dialog.lineIndexFailedTitle": string;
+  "dialog.bookmarkNeedsGotoTitle": string;
+  "dialog.bookmarkNeedsGotoMessage": string;
 
   "encoding.utf8": string;
   "encoding.utf8Bom": string;
@@ -203,6 +207,7 @@ const en: Messages = {
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.decodeWarning": "⚠ decoded with errors",
+  "statusbar.buildingIndex": "Building line index…",
 
   "confirm.unsavedChanges": (title) => `"${title}" has unsaved changes.`,
   "confirm.dontSave": "Don't Save",
@@ -370,6 +375,11 @@ const en: Messages = {
   "dialog.streamReplaceUseRegularMessage":
     "This isn't a large-file preview. Use the regular Find and Replace " +
     "(Cmd/Ctrl+F) instead.",
+  "dialog.lineIndexFailedTitle": "Line index failed",
+  "dialog.bookmarkNeedsGotoTitle": "Position unknown",
+  "dialog.bookmarkNeedsGotoMessage":
+    "This window's position in the file isn't known yet. Use Go to Line " +
+    "to jump somewhere first, then bookmark it.",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8 with BOM",
@@ -398,6 +408,7 @@ const zhTW: Messages = {
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
+  "statusbar.buildingIndex": "正在建立行號索引…",
 
   "confirm.unsavedChanges": (title) => `「${title}」有未儲存的變更。`,
   "confirm.dontSave": "不要儲存",
@@ -554,6 +565,10 @@ const zhTW: Messages = {
   "dialog.streamReplaceUseRegularTitle": "在大型檔案中取代",
   "dialog.streamReplaceUseRegularMessage":
     "這不是大型檔案的唯讀預覽。請改用一般的尋找與取代（Cmd/Ctrl+F）。",
+  "dialog.lineIndexFailedTitle": "建立行號索引失敗",
+  "dialog.bookmarkNeedsGotoTitle": "位置未知",
+  "dialog.bookmarkNeedsGotoMessage":
+    "目前視窗在檔案中的位置尚未確定。請先用「跳至行號」跳轉一次，再設定書籤。",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（含 BOM）",

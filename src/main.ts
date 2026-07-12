@@ -7,16 +7,18 @@ import {
   open as openDialog,
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
-import { contentOf, createEditor, cursorOf, isEmptyBuffer } from "./editor";
+import { contentOf, createEditor, cursorOf, isEmptyBuffer, lineCountOf } from "./editor";
 import { encodingChoices, reopenEncodingChoices } from "./encodings";
 import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
+  buildLineIndex,
   deleteBackup,
   listBackups,
   loadBackup,
   loadRecentFiles,
   loadSession,
+  locateLineOffset,
   openDocument,
   printWindow,
   readDocumentChunk,
@@ -28,11 +30,18 @@ import {
   takePendingFiles,
   unwatchFile,
   watchFile,
+  type LineIndex,
   type OpenedDocument,
   type SessionData,
   type SessionFile,
 } from "./ipc";
 import { showBatchConvert } from "./batchconvert";
+import {
+  nextBookmark,
+  previousBookmark,
+  toggleBookmark,
+  windowRelativeBookmarks,
+} from "./bookmarks";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
@@ -42,6 +51,7 @@ import { showDetectionCard } from "./detectcard";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
+import { clampLine, selectCheckpoint } from "./lineindex";
 import { showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
@@ -57,8 +67,10 @@ import {
   toggleWordWrap,
 } from "./preferences";
 import {
+  currentCursorLine,
   refreshCursor,
   refreshStatusBar,
+  setIndexing,
   updateCursor,
   updatePager,
   updateStatusBar,
@@ -174,6 +186,9 @@ function makeUntitled(): Doc {
     nextChunkOffset: null,
     prevChunkOffsets: [],
     windowChunks: [],
+    lineIndex: null,
+    windowStartLine: null,
+    bookmarks: [],
     backupName: null,
     buffer: editor.newBuffer(""),
   };
@@ -195,6 +210,7 @@ function showActive(): void {
     doc.truncated ? null : doc.title,
     () => tabs.activeId === doc.id,
   );
+  syncBookmarkGutter();
 }
 
 function collectSession(): SessionData {
@@ -282,6 +298,10 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
           },
         ]
       : [],
+    lineIndex: null,
+    // Offset 0 is unambiguously line 1 — no scan needed to know this yet.
+    windowStartLine: opened.truncated ? 1 : null,
+    bookmarks: [],
     backupName: null,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
   };
@@ -324,6 +344,10 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
         bytes: (chunkData.nextOffset ?? chunkData.totalSize) - chunkData.offset,
       },
     ];
+    // The jump pager doesn't track how many lines it moved by, unlike
+    // gotoLargeFileLine below (which computes this for free from the line
+    // index) — see the windowStartLine trade-off note on tabs.ts Doc.
+    doc.windowStartLine = null;
     doc.buffer = editor.newBuffer(chunkData.content, true);
     showActive();
   } catch (error) {
@@ -364,6 +388,10 @@ async function autoAppendChunk(): Promise<void> {
         editor.trimStart(trim.trimChars);
         doc.chunkOffset += trim.trimBytes;
       }
+      // The window shifted without tracking by how many lines — clear
+      // rather than show gutter marks at now-wrong positions.
+      doc.windowStartLine = null;
+      editor.setBookmarks([]);
       doc.buffer = editor.snapshot();
       updatePager(pagerState(doc));
     }
@@ -407,6 +435,10 @@ async function prependChunk(): Promise<void> {
         doc.nextChunkOffset =
           (doc.nextChunkOffset ?? chunkData.totalSize) - trim.trimBytes;
       }
+      // The window shifted without tracking by how many lines — clear
+      // rather than show gutter marks at now-wrong positions.
+      doc.windowStartLine = null;
+      editor.setBookmarks([]);
       doc.buffer = editor.snapshot();
       updatePager(pagerState(doc));
     }
@@ -415,6 +447,184 @@ async function prependChunk(): Promise<void> {
   } finally {
     chunkLoadInFlight = false;
   }
+}
+
+/**
+ * Build (or reuse) `doc`'s line-offset index for go-to-line/bookmarks
+ * beyond the loaded window. Staleness in practice rides on the file
+ * watcher: every path that learns about an external change (reload,
+ * reopen) also clears `lineIndex`, and nothing updates `totalSize` from
+ * disk without doing so — the `indexedSize` comparison below is a cheap
+ * internal-consistency guard, not an independent external-change
+ * detector. A same-size overwrite that the best-effort watcher misses
+ * can therefore leave a stale index; the chunk read's line-start
+ * alignment self-corrects the jump target to a real line boundary, but
+ * the reported line number can be off until the watcher catches up.
+ * Returns null on failure or for a doc with no path to index; the
+ * caller treats that as a no-op.
+ */
+async function ensureLineIndex(doc: Doc): Promise<LineIndex | null> {
+  if (!doc.path) return null;
+  if (doc.lineIndex && doc.lineIndex.indexedSize === doc.totalSize) {
+    return doc.lineIndex;
+  }
+  setIndexing(true);
+  try {
+    const report = await buildLineIndex(doc.path, doc.encoding);
+    doc.lineIndex = report;
+    // Keep totalSize in lockstep with what was actually just scanned, so
+    // the staleness check above compares against the index's own baseline
+    // rather than a possibly-already-stale open-time size (which would
+    // otherwise force a pointless rebuild on every subsequent call if the
+    // file had already grown before this first build). Also keeps the
+    // status bar's read-only-preview size fresh as a side benefit.
+    doc.totalSize = report.indexedSize;
+    return report;
+  } catch (error) {
+    await messageDialog(String(error), {
+      title: t("dialog.lineIndexFailedTitle"),
+      kind: "warning",
+    });
+    return null;
+  } finally {
+    setIndexing(false);
+  }
+}
+
+/**
+ * Large-file go-to-line: jump straight to `targetLine1` (1-based) via the
+ * line-offset index, replacing the loaded window with a single fresh chunk
+ * starting at that line — mirroring pageChunk's own single-chunk window
+ * reset. Deliberately does *not* check whether the target already falls
+ * inside the currently loaded window first (it always reloads): tracking
+ * "how many lines does the loaded window currently span" would need line
+ * counts threaded through chunkwindow.ts's WindowChunk bookkeeping (append
+ * /prepend/trim all over pageChunk.ts's usage), which is real extra surface
+ * in a byte/char/line-unit danger domain for what's a rare-ish operation.
+ * The cost is one extra IPC round trip when the target was already
+ * visible — see the PR description for the full trade-off.
+ */
+async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
+  if (!doc.path) return;
+  const index = await ensureLineIndex(doc);
+  if (!index || index.totalLines === 0) return;
+  const target0 = clampLine(targetLine1 - 1, index.totalLines);
+  const checkpoint = selectCheckpoint(index.checkpoints, target0);
+  try {
+    const offset =
+      target0 === checkpoint.line
+        ? checkpoint.offset
+        : await locateLineOffset(doc.path, target0, checkpoint.offset, checkpoint.line);
+    const chunkData = await readDocumentChunk(doc.path, offset, doc.encoding);
+    doc.chunkOffset = chunkData.offset;
+    doc.nextChunkOffset = chunkData.nextOffset;
+    doc.prevChunkOffsets = [];
+    doc.malformed = chunkData.malformed;
+    doc.windowChunks = [
+      {
+        chars: chunkData.content.length,
+        bytes: (chunkData.nextOffset ?? chunkData.totalSize) - chunkData.offset,
+      },
+    ];
+    doc.buffer = editor.newBuffer(chunkData.content, true);
+    doc.windowStartLine = target0 + 1;
+    showActive();
+  } catch (error) {
+    await messageDialog(String(error), {
+      title: t("dialog.pagingTitle"),
+      kind: "warning",
+    });
+  }
+}
+
+/** Mod+L / Edit > Go to Line: within the loaded window for a regular
+ *  document (or a large-file doc whose paging is unsupported, e.g.
+ *  UTF-16 — see pagingSupported), just move the cursor; otherwise jump via
+ *  the line-offset index. */
+function handleGotoLine(line: number): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  if (!pagingSupported(doc)) {
+    editor.goToLine(line);
+    return;
+  }
+  void gotoLargeFileLine(doc, line);
+}
+
+/** Refresh the gutter's bookmark dots for whatever's currently on screen.
+ *  Small docs map 1:1 (doc.bookmarks are already buffer line numbers);
+ *  large docs need windowStartLine to translate absolute -> buffer-relative,
+ *  and show nothing when it's unknown (see tabs.ts Doc.windowStartLine). */
+function syncBookmarkGutter(): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  if (!doc.truncated) {
+    editor.setBookmarks(doc.bookmarks);
+    return;
+  }
+  editor.setBookmarks(
+    windowRelativeBookmarks(doc.bookmarks, doc.windowStartLine, lineCountOf(editor.snapshot())),
+  );
+}
+
+/** The absolute (1-based) file line the cursor is currently on, or null if
+ *  that can't be determined right now (large file, window position
+ *  unknown — see tabs.ts Doc.windowStartLine). */
+function currentAbsoluteLine(doc: Doc): number | null {
+  const bufferLine = currentCursorLine();
+  if (!doc.truncated) return bufferLine;
+  if (doc.windowStartLine === null) return null;
+  return doc.windowStartLine + bufferLine - 1;
+}
+
+function jumpToBookmark(doc: Doc, target: number | null): void {
+  if (target === null) return;
+  if (!doc.truncated) {
+    editor.goToLine(target);
+    return;
+  }
+  void gotoLargeFileLine(doc, target);
+}
+
+/**
+ * Edit > Toggle Bookmark. For a large file whose window position isn't
+ * currently known (windowStartLine null — nothing has anchored it since
+ * the last append/prepend/pageChunk jump), bookmarking the current line
+ * can't be done safely, so this asks the user to Go to Line first rather
+ * than silently bookmarking the wrong line or guessing.
+ */
+function toggleBookmarkFlow(): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  const line = currentAbsoluteLine(doc);
+  if (line === null) {
+    void messageDialog(t("dialog.bookmarkNeedsGotoMessage"), {
+      title: t("dialog.bookmarkNeedsGotoTitle"),
+      kind: "info",
+    });
+    return;
+  }
+  doc.bookmarks = toggleBookmark(doc.bookmarks, line);
+  syncBookmarkGutter();
+}
+
+/** Edit > Next/Previous Bookmark. When the current line can't be
+ *  determined (see currentAbsoluteLine), Next starts from "before
+ *  everything" (jumps to the first bookmark) and Previous starts from
+ *  "after everything" (jumps to the last) — a reasonable default when
+ *  there's no current position to search relative to. */
+function nextBookmarkFlow(): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  const current = currentAbsoluteLine(doc) ?? 0;
+  jumpToBookmark(doc, nextBookmark(doc.bookmarks, current));
+}
+
+function previousBookmarkFlow(): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  const current = currentAbsoluteLine(doc) ?? Number.MAX_SAFE_INTEGER;
+  jumpToBookmark(doc, previousBookmark(doc.bookmarks, current));
 }
 
 /** Cached recent-files list, refreshed by the backend on every addition. */
@@ -457,6 +667,11 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
           },
         ]
       : [];
+    // The file on disk changed, so any prior index is potentially stale —
+    // ensureLineIndex would also catch a size mismatch, but reload always
+    // rebuilds from scratch (offset 0) so there's nothing to salvage anyway.
+    doc.lineIndex = null;
+    doc.windowStartLine = opened.truncated ? 1 : null;
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     if (tabs.activeId === doc.id) showActive();
     else tabs.render();
@@ -634,6 +849,11 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
           },
         ]
       : [];
+    // A changed encoding can flip UTF-16 support on/off (see pagingSupported)
+    // and, symmetrically with reloadFromDisk, restarts the window at offset
+    // 0 anyway, so any prior index is discarded rather than re-validated.
+    doc.lineIndex = null;
+    doc.windowStartLine = opened.truncated ? 1 : null;
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     showActive();
     persistSession();
@@ -883,7 +1103,16 @@ void listen<string>("plume://menu", (event) => {
       });
       break;
     case "goto_line":
-      showGoToLine((line) => editor.goToLine(line));
+      showGoToLine((line) => handleGotoLine(line));
+      break;
+    case "toggle_bookmark":
+      toggleBookmarkFlow();
+      break;
+    case "next_bookmark":
+      nextBookmarkFlow();
+      break;
+    case "prev_bookmark":
+      previousBookmarkFlow();
       break;
     case "batch_convert":
       showBatchConvert();
@@ -1037,6 +1266,9 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     nextChunkOffset: null,
     prevChunkOffsets: [],
     windowChunks: [],
+    lineIndex: null,
+    windowStartLine: null,
+    bookmarks: [],
     backupName: file.backup,
     buffer: editor.newBuffer(content, false, file.cursor ?? 0),
   });
@@ -1093,6 +1325,9 @@ async function restoreSession(): Promise<void> {
       nextChunkOffset: null,
       prevChunkOffsets: [],
       windowChunks: [],
+      lineIndex: null,
+      windowStartLine: null,
+      bookmarks: [],
       backupName: name,
       buffer: editor.newBuffer(content, false, 0),
     });

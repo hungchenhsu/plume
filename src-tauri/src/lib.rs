@@ -4,6 +4,7 @@ mod chunk;
 mod comparepreview;
 mod encoding;
 mod hexdump;
+mod lineindex;
 mod menu;
 mod mojibake;
 mod prefs;
@@ -486,6 +487,8 @@ pub fn run() {
             print_window,
             chunk::read_document_chunk,
             chunk::read_document_chunk_before,
+            lineindex::build_line_index,
+            lineindex::locate_line_offset,
             watcher::watch_file,
             watcher::unwatch_file,
             recent::load_recent_files,

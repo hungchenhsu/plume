@@ -139,7 +139,7 @@ domain: failing-test-first, round-trip tests mandatory)
 - [x] Find/replace inside large-file windows via streaming Rust
   search/replace over the full file (atomic temp+rename; editor window
   refreshes after)
-- [ ] Line-offset index for huge files: fast go-to-line and bookmarks
+- [x] Line-offset index for huge files: fast go-to-line and bookmarks
   beyond the loaded window
 
 **Track C — everyday editing comfort**
