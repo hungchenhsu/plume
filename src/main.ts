@@ -104,11 +104,17 @@ function backupNameFor(doc: Doc): string {
   return doc.backupName;
 }
 
-async function flushBackup(doc: Doc, content: string): Promise<void> {
+/** Write one document's unsaved content to its hot-exit backup. Returns
+ *  false instead of throwing on failure: mid-editing flushes stay
+ *  best-effort, but the close handler must know — closing on a failed
+ *  flush would silently lose the content hot exit promised to keep
+ *  (issue #63). */
+async function flushBackup(doc: Doc, content: string): Promise<boolean> {
   try {
     await saveBackup(backupNameFor(doc), content);
+    return true;
   } catch {
-    // Best-effort; worst case the close-time flush retries.
+    return false;
   }
 }
 
@@ -857,16 +863,43 @@ void listen<string>("plume://menu", (event) => {
 
 // Hot exit: flush every unsaved buffer to its backup and quit without
 // asking — the next launch restores everything, including untitled tabs.
-void getCurrentWindow().onCloseRequested(async () => {
+// If any backup cannot be written (disk full, unwritable config dir),
+// closing would silently break that promise, so the window stays open
+// and the user chooses: fix the problem, or discard knowingly (#63).
+void getCurrentWindow().onCloseRequested(async (event) => {
   if (backupTimer !== null) {
     window.clearTimeout(backupTimer);
     backupTimer = null;
   }
+  const failedTitles: string[] = [];
   for (const doc of tabs.docs) {
     if (!doc.dirty || doc.truncated) continue;
     const content =
       doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
-    await flushBackup(doc, content);
+    if (!(await flushBackup(doc, content))) failedTitles.push(doc.title);
+  }
+  if (failedTitles.length > 0) {
+    event.preventDefault();
+    // A rejected dialog counts as cancel — staying open is the safe side.
+    const discard = await confirmDialog(
+      t("dialog.backupFailedMessage", failedTitles),
+      {
+        title: t("dialog.backupFailedTitle"),
+        kind: "warning",
+        okLabel: t("dialog.backupFailedDiscard"),
+      },
+    ).catch(() => false);
+    if (discard) {
+      // Deliberately keep any backup a *previous* flush wrote, and keep
+      // the session referencing it: the next launch may resurrect an
+      // older version of these docs as dirty tabs. Losing only the very
+      // last edits the user just gave up on — instead of deleting the
+      // older backup too — errs on the keep-more side.
+      await saveSession(collectSession()).catch(() => {});
+      // destroy() closes without re-emitting a close request.
+      void getCurrentWindow().destroy();
+    }
+    return;
   }
   await saveSession(collectSession()).catch(() => {});
 });
