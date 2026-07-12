@@ -46,6 +46,23 @@ fn remove_backup(dir: &Path, name: &str) {
     }
 }
 
+/// List every backup file name in `dir` that passes [`valid_name`],
+/// skipping subdirectories. Returns an empty `Vec` (not an error) when
+/// `dir` does not exist yet — that just means nothing has been backed up.
+/// Used to recover backups the session index no longer references, e.g.
+/// when `session.json` is missing or corrupt (issue #62).
+fn list_backup_names(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| valid_name(name))
+        .collect()
+}
+
 #[tauri::command]
 pub fn save_backup<R: Runtime>(
     app: AppHandle<R>,
@@ -64,6 +81,17 @@ pub fn load_backup<R: Runtime>(app: AppHandle<R>, name: String) -> Option<String
 pub fn delete_backup<R: Runtime>(app: AppHandle<R>, name: String) {
     if let Ok(dir) = backups_dir(&app) {
         remove_backup(&dir, &name);
+    }
+}
+
+/// All backup file names currently on disk, regardless of whether any
+/// session entry references them. The frontend uses this to find orphaned
+/// backups for recovery (see `src/orphans.ts`).
+#[tauri::command]
+pub fn list_backups<R: Runtime>(app: AppHandle<R>) -> Vec<String> {
+    match backups_dir(&app) {
+        Ok(dir) => list_backup_names(&dir),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -95,5 +123,30 @@ mod tests {
         assert!(read_backup(&dir, "bk-1.txt").is_none());
         assert!(write_backup(&dir, "../escape", "x").is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_backup_names_lists_only_valid_names() {
+        let dir = std::env::temp_dir().join("plume-backup-list-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("bk-1.txt"), "a").unwrap();
+        std::fs::write(dir.join("bk-2.txt"), "b").unwrap();
+        std::fs::write(dir.join(".hidden"), "c").unwrap();
+        std::fs::create_dir_all(dir.join("subdir")).unwrap();
+
+        let mut names = list_backup_names(&dir);
+        names.sort();
+        assert_eq!(names, vec!["bk-1.txt".to_string(), "bk-2.txt".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_backup_names_missing_dir_is_empty() {
+        let dir = std::env::temp_dir().join("plume-backup-list-missing-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(list_backup_names(&dir).is_empty());
     }
 }

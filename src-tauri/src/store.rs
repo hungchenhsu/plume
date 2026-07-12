@@ -2,6 +2,7 @@
 //! preferences and recent-files persistence.
 
 use serde::{de::DeserializeOwned, Serialize};
+use std::path::Path;
 use tauri::{AppHandle, Manager, Runtime};
 
 fn config_path<R: Runtime>(app: &AppHandle<R>, file: &str) -> Result<std::path::PathBuf, String> {
@@ -12,10 +13,44 @@ fn config_path<R: Runtime>(app: &AppHandle<R>, file: &str) -> Result<std::path::
     Ok(dir.join(file))
 }
 
-pub fn read_json<T: DeserializeOwned, R: Runtime>(app: &AppHandle<R>, file: &str) -> Option<T> {
-    let path = config_path(app, file).ok()?;
+/// Read and parse JSON at `path`. Any failure — missing file, permission
+/// error, or corrupt/truncated JSON (e.g. left behind by a crash mid-write
+/// under the old non-atomic writer; see issue #62) — returns `None` rather
+/// than an error, so callers can treat "no valid data" uniformly whether
+/// the file never existed or exists but is unreadable.
+pub fn read_json_from_path<T: DeserializeOwned>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+pub fn read_json<T: DeserializeOwned, R: Runtime>(app: &AppHandle<R>, file: &str) -> Option<T> {
+    let path = config_path(app, file).ok()?;
+    read_json_from_path(&path)
+}
+
+/// Serialize `value` as pretty JSON and write it to `path` atomically
+/// (temp file in the same directory, fsync, then rename — see
+/// `crate::atomic_write`). A crash or power loss mid-write can therefore
+/// never leave a half-written/corrupt file at `path`: the rename either
+/// hasn't happened yet (old content, or no file, survives) or has already
+/// completed (new content is fully on disk). This replaces the previous
+/// direct `std::fs::write`, which truncated the destination in place and
+/// could leave exactly that half-written file behind on a mid-write crash
+/// (issue #62 — this mattered most for `session.json`, since a corrupt
+/// index made every hot-exit backup unreachable even though the backup
+/// files themselves were intact).
+pub fn write_json_to_path<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {e}"))?;
+    }
+    let json = serde_json::to_vec_pretty(value).map_err(|e| format!("Cannot serialize: {e}"))?;
+    // Error surfaces name the file, not the full path — these strings can
+    // reach dialogs/logs and the config dir location is the user's business.
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    crate::atomic_write(path, &json).map_err(|e| format!("Failed to write {name}: {e}"))
 }
 
 pub fn write_json<T: Serialize, R: Runtime>(
@@ -24,9 +59,80 @@ pub fn write_json<T: Serialize, R: Runtime>(
     value: &T,
 ) -> Result<(), String> {
     let path = config_path(app, file)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {e}"))?;
+    write_json_to_path(&path, value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Sample {
+        name: String,
+        count: u32,
     }
-    let json = serde_json::to_vec_pretty(value).map_err(|e| format!("Cannot serialize: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write {file}: {e}"))
+
+    #[test]
+    fn write_json_is_atomic_and_survives_reread() {
+        let dir = std::env::temp_dir().join("plume-store-atomic-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+
+        let value = Sample {
+            name: "中文 session".into(),
+            count: 3,
+        };
+        write_json_to_path(&path, &value).unwrap();
+        let back: Sample = read_json_from_path(&path).unwrap();
+        assert_eq!(back, value);
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("plume-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files may remain");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #62's failure mode: a truncated, non-JSON file at `path`
+    /// (what a mid-write crash under the old `std::fs::write` left behind)
+    /// must read back as "no data", not a panic or error. The atomicity
+    /// that stops such a file from being *produced* isn't separately
+    /// asserted — a `std::fs::write` interruption can't be simulated
+    /// deterministically in a unit test; `atomic_write`'s own tests cover
+    /// the temp+rename mechanics.
+    #[test]
+    fn corrupt_json_reads_as_none() {
+        let dir = std::env::temp_dir().join("plume-store-corrupt-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+
+        let value = Sample {
+            name: "will be truncated".into(),
+            count: 7,
+        };
+        write_json_to_path(&path, &value).unwrap();
+
+        let full = std::fs::read(&path).unwrap();
+        let half = &full[..full.len() / 2];
+        std::fs::write(&path, half).unwrap();
+
+        let result: Option<Sample> = read_json_from_path(&path);
+        assert!(result.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_json_from_path_missing_file_is_none() {
+        let path = std::env::temp_dir().join("plume-store-missing-file-does-not-exist.json");
+        let _ = std::fs::remove_file(&path);
+        let result: Option<Sample> = read_json_from_path(&path);
+        assert!(result.is_none());
+    }
 }

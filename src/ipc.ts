@@ -211,6 +211,13 @@ export function deleteBackup(name: string): Promise<void> {
   return invoke<void>("delete_backup", { name });
 }
 
+/** Every backup file name currently on disk under backups/, regardless of
+ *  whether any session entry references it. Used to recover orphaned
+ *  backups when the session index is missing or stale (see orphans.ts). */
+export function listBackups(): Promise<string[]> {
+  return invoke<string[]>("list_backups");
+}
+
 export function watchFile(path: string): Promise<void> {
   return invoke<void>("watch_file", { path });
 }
