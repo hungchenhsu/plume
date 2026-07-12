@@ -12,6 +12,7 @@ mod store;
 mod watcher;
 
 use serde::Serialize;
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
@@ -100,6 +101,17 @@ pub struct SaveResult {
 /// hint if it decodes the bytes without malformed sequences, else the
 /// statistical fallback — is made in `encoding::detect_with_extension`,
 /// not here or in the frontend.
+///
+/// Files over `LARGE_FILE_THRESHOLD` are read as a bounded prefix instead
+/// of the whole file — at most `PREVIEW_BYTES` end up in `content` — so
+/// opening a multi-GB file costs `O(PREVIEW_BYTES)` I/O and memory, not
+/// `O(file size)` (issue #59). `total_size` and the `truncated` decision
+/// come from the `std::fs::metadata` snapshot taken at the top of this
+/// function, before the file is reopened for the bounded read; if the file
+/// is replaced, grown, or shrunk in that window, `total_size` can end up
+/// stale, but the read itself stays bounded by `take` regardless of what
+/// the file has become by the time it runs — an accepted race, not a
+/// correctness guarantee for a file mutated mid-open.
 #[tauri::command]
 fn open_document(
     path: String,
@@ -109,13 +121,34 @@ fn open_document(
     let total_size = std::fs::metadata(&path)
         .map_err(|e| format!("Failed to read {path}: {e}"))?
         .len();
-    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     let truncated = total_size > LARGE_FILE_THRESHOLD;
+    let raw = if truncated {
+        // Bounded read: at most PREVIEW_BYTES + 1 bytes are ever read from
+        // disk, never the whole file. The extra sentinel byte is only
+        // present in `raw` when the file has more data past the window; it
+        // is what lets the unmodified `preview_slice` below tell "the file
+        // continues past here" from "the window is the whole file" and cut
+        // at the last line boundary exactly as it would if handed the full
+        // file, without this call ever materializing more than
+        // ~PREVIEW_BYTES in memory.
+        let file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+        // Capacity matches the take limit: one byte short would force a
+        // 2 MB doubling realloc when the sentinel byte lands.
+        let mut buf = Vec::with_capacity(PREVIEW_BYTES + 1);
+        file.take(PREVIEW_BYTES as u64 + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("Failed to read {path}: {e}"))?;
+        buf
+    } else {
+        // Small files: one full read is the right tradeoff here (a single
+        // syscall, no window bookkeeping).
+        std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?
+    };
     let (bytes, next_offset) = if truncated {
-        let slice = preview_slice(&bytes, PREVIEW_BYTES);
+        let slice = preview_slice(&raw, PREVIEW_BYTES);
         (slice, Some(slice.len() as u64))
     } else {
-        (&bytes[..], None)
+        (&raw[..], None)
     };
     let decoded = match encoding {
         Some(label) => encoding::decode_with(bytes, &label)?,
@@ -167,6 +200,12 @@ const EXPLAIN_SAMPLE_BYTES: usize = 64 * 1024;
 /// under the sample size — see the `detect_agrees_with_decode_auto_*`
 /// tests in `encoding.rs`. `extension_encoding` is the same advisory hint
 /// the frontend passes to `open_document` (see there).
+///
+/// The bound is enforced on the disk read itself via `Read::take`, not by
+/// reading the whole file and slicing the sample out in memory afterward
+/// — so explaining a detection on a multi-GB file costs
+/// `O(EXPLAIN_SAMPLE_BYTES)` I/O, matching what this comment already
+/// promised (issue #59).
 #[tauri::command]
 fn explain_detection(
     path: String,
@@ -175,13 +214,16 @@ fn explain_detection(
     let total_size = std::fs::metadata(&path)
         .map_err(|e| format!("Failed to read {path}: {e}"))?
         .len();
-    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    let sample_len = bytes.len().min(EXPLAIN_SAMPLE_BYTES);
-    let sample = &bytes[..sample_len];
+    let file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let mut sample = Vec::with_capacity(EXPLAIN_SAMPLE_BYTES);
+    file.take(EXPLAIN_SAMPLE_BYTES as u64)
+        .read_to_end(&mut sample)
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let sample_len = sample.len();
 
-    let detection = encoding::detect_with_extension(sample, extension_encoding.as_deref());
+    let detection = encoding::detect_with_extension(&sample, extension_encoding.as_deref());
     Ok(DetectionExplanation {
-        bom: encoding::describe_bom(sample),
+        bom: encoding::describe_bom(&sample),
         detector_verdict: detection.detector_guess.name().to_string(),
         sampled_bytes: sample_len,
         total_size,
@@ -433,7 +475,8 @@ pub fn run() {
 mod tests {
     use super::{
         atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
-        save_document, tmp_candidate_path,
+        save_document, tmp_candidate_path, EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD,
+        PREVIEW_BYTES,
     };
     // Only the unix-gated symlink test uses this; an unconditional import
     // is an unused-import error under -D warnings on Windows.
@@ -924,5 +967,129 @@ mod tests {
         assert_eq!(on_disk, expected_bytes);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Build a large-file fixture: `n` lines of `"line {i}\n"`, generated
+    /// in one pass and written to disk in a single `std::fs::write` call
+    /// (not line-by-line), so fixture setup itself stays fast. Returns the
+    /// file path and the exact bytes written, so a test can compute an
+    /// expected value from the same content without a second disk read.
+    fn write_line_fixture(dir_name: &str, n: u32) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big.txt");
+        let data: String = (0..n).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&file, data.as_bytes()).unwrap();
+        (file, data)
+    }
+
+    /// Issue #59. Memory usage cannot be observed from a unit test, so this
+    /// pins the *behavior* the bounded read must produce instead of the
+    /// bound itself: for a file over `LARGE_FILE_THRESHOLD`, `open_document`
+    /// reports `truncated`, the returned content never exceeds
+    /// `PREVIEW_BYTES` on the wire, `next_offset` is a *byte* offset that
+    /// matches the content's own UTF-8 byte length exactly (large-file
+    /// offsets are bytes, never chars — see judgment-overlay.md), and
+    /// `total_size` reports the real file size. The sharper regression
+    /// lock against the pre-fix full-read code path — the one that would
+    /// actually catch an off-by-one in the bounded read — is
+    /// `open_document_large_file_agrees_with_full_read_prefix` below; this
+    /// test's content assertion is a lighter, independent check computed
+    /// straight from the in-memory fixture rather than a second file read.
+    #[test]
+    fn open_document_large_file_is_bounded_preview() {
+        let (file, data) = write_line_fixture("plume-large-file-bounded-preview", 1_000_000);
+        assert!(
+            data.len() as u64 > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, None).unwrap();
+
+        assert!(
+            opened.truncated,
+            "a file over the threshold must be truncated"
+        );
+        assert_eq!(opened.total_size, data.len() as u64);
+        let content_bytes = opened.content.as_bytes();
+        assert!(
+            content_bytes.len() <= PREVIEW_BYTES,
+            "preview content must never exceed PREVIEW_BYTES"
+        );
+        assert_eq!(
+            opened.next_offset,
+            Some(content_bytes.len() as u64),
+            "next_offset must be the byte offset right after the previewed content"
+        );
+
+        // Independent check: the preview must equal decoding the first
+        // PREVIEW_BYTES of the fixture's own in-memory bytes, cut at the
+        // last line boundary by the same (unmodified) `preview_slice`.
+        let expected_slice = preview_slice(data.as_bytes(), PREVIEW_BYTES);
+        assert_eq!(opened.content, std::str::from_utf8(expected_slice).unwrap());
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #59, regression lock. Builds one large fixture and compares
+    /// `open_document`'s bounded-read content against content computed the
+    /// pre-fix way for the identical bytes: read the whole file, then apply
+    /// the same `preview_slice` + `decode_auto_with_extension` the command
+    /// itself uses. A bounded implementation that reads the wrong window,
+    /// or fails to cut at the same line boundary as the full-read path
+    /// (the off-by-one this test exists to catch), produces different
+    /// content or a different `next_offset` here.
+    #[test]
+    fn open_document_large_file_agrees_with_full_read_prefix() {
+        let (file, _) = write_line_fixture("plume-large-file-prefix-agreement", 1_000_000);
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, None, None).unwrap();
+
+        let full = std::fs::read(&file).unwrap();
+        assert!(full.len() as u64 > LARGE_FILE_THRESHOLD);
+        let reference_slice = preview_slice(&full, PREVIEW_BYTES);
+        let reference_decoded = crate::encoding::decode_auto_with_extension(reference_slice, None);
+        let reference_content = crate::encoding::normalize_to_lf(&reference_decoded.content);
+
+        assert_eq!(opened.content, reference_content);
+        assert_eq!(opened.encoding, reference_decoded.encoding);
+        assert_eq!(opened.next_offset, Some(reference_slice.len() as u64));
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #59. `explain_detection` must sample a bounded prefix from
+    /// disk (not the whole file) for files above `EXPLAIN_SAMPLE_BYTES`;
+    /// its doc comment already promised "a bounded prefix" — this locks
+    /// the implementation to that promise. `sampled_bytes` must be exactly
+    /// the sample cap, and the detection evidence must match calling
+    /// `encoding::detect_with_extension` directly on the same first
+    /// `EXPLAIN_SAMPLE_BYTES` bytes.
+    #[test]
+    fn explain_detection_large_file_samples_bounded() {
+        let (file, data) = write_line_fixture("plume-explain-large-sample", 14_000);
+        assert!(
+            data.len() > EXPLAIN_SAMPLE_BYTES,
+            "fixture must exceed the diagnostics sample size"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let explained = explain_detection(path, None).unwrap();
+
+        assert_eq!(explained.sampled_bytes, EXPLAIN_SAMPLE_BYTES);
+        assert_eq!(explained.total_size, data.len() as u64);
+
+        let expected =
+            crate::encoding::detect_with_extension(&data.as_bytes()[..EXPLAIN_SAMPLE_BYTES], None);
+        assert_eq!(explained.detector_verdict, expected.detector_guess.name());
+        assert_eq!(
+            explained.would_choose,
+            format!("{} ({})", expected.chosen.name(), expected.reason)
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 }
