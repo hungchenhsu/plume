@@ -1,0 +1,4 @@
+# Blank issues stay enabled on purpose: field-testing feedback should be
+# zero-ceremony (see DIRECTION.md P0 — every friction point becomes an
+# issue immediately, unfiltered).
+blank_issues_enabled: true

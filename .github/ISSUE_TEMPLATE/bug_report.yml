@@ -1,0 +1,45 @@
+name: Bug report
+description: Something broke, rendered wrong, or lost data
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Data-integrity problems (corrupted saves,
+        lost content, silent mojibake) are treated as the highest
+        severity — please say so explicitly if that's what you're seeing.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what happened instead?
+      placeholder: |
+        1. Opened a Big5-encoded .txt
+        2. Saved it
+        3. Reopened — the content was garbled
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and version
+      description: OS + version, and the app version (About dialog or release tag).
+      placeholder: macOS 15.5, v0.2.0-alpha.1
+    validations:
+      required: true
+  - type: input
+    id: file-details
+    attributes:
+      label: File details (for encoding/file bugs)
+      description: >
+        Encoding and line ending shown in the status bar, approximate file
+        size, and whether the file has a BOM — this is usually the fastest
+        route to a reproduction.
+      placeholder: Big5, CRLF, ~2 MB, no BOM
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >
+        Screenshots, a sample file that reproduces it (never attach
+        confidential content), or what you've already ruled out.

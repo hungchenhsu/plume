@@ -149,7 +149,7 @@ domain: failing-test-first, round-trip tests mandatory)
 - [ ] Indent guides (token-driven color, all four themes)
 
 **Track D — release & community**
-- [ ] Issue templates, labels, and a good-first-issue starter set
+- [x] Issue templates, labels, and a good-first-issue starter set
   (unblocked; do first — it is the interface for incoming contributors)
 - [ ] i18n dictionaries: ja and zh-CN (builds on the v0.2 i18n module)
 - [ ] D1 official name — user decision, currently deferred (evidence

@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a capability or an improvement
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing: this editor deliberately stays small. Plugin
+        systems, project panels, integrated terminals/debuggers/LSP,
+        and FTP browsing are permanent non-goals (see ROADMAP.md).
+        Feature ideas are weighed against one question: *does this make
+        the editor more trustworthy or faster for text files?*
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that the editor makes slow, unreliable,
+        or impossible? Describe the situation, not the solution.
+      placeholder: >
+        I regularly receive .csv exports in GB18030 and need to check a
+        few lines without converting the whole file first.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior (optional)
+      description: If you have a concrete UI or behavior in mind, sketch it.
+  - type: checkboxes
+    id: non-goals
+    attributes:
+      label: Scope check
+      options:
+        - label: >
+            I checked ROADMAP.md's "Explicit non-goals" and this isn't
+            one of them.
+          required: true
