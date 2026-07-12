@@ -146,6 +146,14 @@ export interface Messages {
   "batchConvert.converting": string;
   "batchConvert.resultSummary": (ok: number, failed: number) => string;
 
+  "streamReplace.title": (file: string) => string;
+  "streamReplace.searchPlaceholder": string;
+  "streamReplace.replacePlaceholder": string;
+  "streamReplace.caseInsensitiveHint": string;
+  "streamReplace.executeButton": string;
+  "streamReplace.replacing": string;
+  "streamReplace.resultMessage": (count: number) => string;
+
   "dialog.pagingTitle": string;
   "dialog.fileChangedTitle": string;
   "dialog.fileChangedMessage": (title: string) => string;
@@ -165,6 +173,8 @@ export interface Messages {
   "dialog.reopen": string;
   "dialog.reopenFailedTitle": string;
   "dialog.printTitle": string;
+  "dialog.streamReplaceUseRegularTitle": string;
+  "dialog.streamReplaceUseRegularMessage": string;
 
   "encoding.utf8": string;
   "encoding.utf8Bom": string;
@@ -319,6 +329,16 @@ const en: Messages = {
       ? `Converted ${ok} file${ok === 1 ? "" : "s"}.`
       : `Converted ${ok} file${ok === 1 ? "" : "s"}, ${failed} failed.`,
 
+  "streamReplace.title": (file) => `Replace in Large File — ${file}`,
+  "streamReplace.searchPlaceholder": "Search…",
+  "streamReplace.replacePlaceholder": "Replace with…",
+  "streamReplace.caseInsensitiveHint":
+    "Case-insensitive matching applies to ASCII letters only.",
+  "streamReplace.executeButton": "Replace All",
+  "streamReplace.replacing": "Replacing…",
+  "streamReplace.resultMessage": (count) =>
+    `${count} replacement${count === 1 ? "" : "s"} made.`,
+
   "dialog.pagingTitle": "Paging",
   "dialog.fileChangedTitle": "File changed on disk",
   "dialog.fileChangedMessage": (title) =>
@@ -346,6 +366,10 @@ const en: Messages = {
   "dialog.reopen": "Reopen",
   "dialog.reopenFailedTitle": "Reopen failed",
   "dialog.printTitle": "Print",
+  "dialog.streamReplaceUseRegularTitle": "Replace in Large File",
+  "dialog.streamReplaceUseRegularMessage":
+    "This isn't a large-file preview. Use the regular Find and Replace " +
+    "(Cmd/Ctrl+F) instead.",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8 with BOM",
@@ -494,6 +518,14 @@ const zhTW: Messages = {
   "batchConvert.resultSummary": (ok, failed) =>
     failed === 0 ? `已轉換 ${ok} 個檔案。` : `已轉換 ${ok} 個檔案，失敗 ${failed} 個。`,
 
+  "streamReplace.title": (file) => `在大型檔案中取代 — ${file}`,
+  "streamReplace.searchPlaceholder": "尋找…",
+  "streamReplace.replacePlaceholder": "取代為…",
+  "streamReplace.caseInsensitiveHint": "不區分大小寫僅適用於 ASCII 字母。",
+  "streamReplace.executeButton": "全部取代",
+  "streamReplace.replacing": "取代中…",
+  "streamReplace.resultMessage": (count) => `已取代 ${count} 處。`,
+
   "dialog.pagingTitle": "翻頁",
   "dialog.fileChangedTitle": "檔案已在磁碟上異動",
   "dialog.fileChangedMessage": (title) =>
@@ -519,6 +551,9 @@ const zhTW: Messages = {
   "dialog.reopen": "重新開啟",
   "dialog.reopenFailedTitle": "重新開啟失敗",
   "dialog.printTitle": "列印",
+  "dialog.streamReplaceUseRegularTitle": "在大型檔案中取代",
+  "dialog.streamReplaceUseRegularMessage":
+    "這不是大型檔案的唯讀預覽。請改用一般的尋找與取代（Cmd/Ctrl+F）。",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（含 BOM）",

@@ -46,6 +46,7 @@ import { showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
+import { showStreamReplace } from "./streamreplace";
 import {
   adjustFontSize,
   initPreferences,
@@ -887,6 +888,24 @@ void listen<string>("plume://menu", (event) => {
     case "batch_convert":
       showBatchConvert();
       break;
+    case "stream_replace": {
+      const doc = tabs.active;
+      if (!doc) break;
+      if (!doc.truncated) {
+        // The regular in-editor Find/Replace (Mod+F) already covers this
+        // document in full; streaming replace exists only for read-only
+        // large-file previews, where only a slice of the file is loaded.
+        void messageDialog(t("dialog.streamReplaceUseRegularMessage"), {
+          title: t("dialog.streamReplaceUseRegularTitle"),
+          kind: "info",
+        });
+        break;
+      }
+      if (doc.path) {
+        showStreamReplace(doc.path, doc.encoding, () => void reloadFromDisk(doc));
+      }
+      break;
+    }
     case "print": {
       // The editor's viewport only renders visible lines, so printing goes
       // through a print-only view holding the full document text.

@@ -41,6 +41,11 @@ const LABELS: &[(&str, &str, &str)] = &[
         "Batch Encoding Conversion…",
         "批次轉換編碼…",
     ),
+    (
+        "stream_replace",
+        "Replace in Large File…",
+        "在大型檔案中取代…",
+    ),
     ("view", "View", "檢視"),
     ("word_wrap", "Word Wrap", "自動換行"),
     ("show_invisibles", "Show Invisibles", "顯示不可見字元"),
@@ -181,6 +186,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )
         .separator()
         .item(&MenuItemBuilder::with_id("batch_convert", l("batch_convert")).build(app)?)
+        .item(&MenuItemBuilder::with_id("stream_replace", l("stream_replace")).build(app)?)
         .build()?;
 
     let menu = MenuBuilder::new(app);
@@ -364,7 +370,13 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
 
     if let Some(edit) = menu.get("edit").and_then(|item| item.as_submenu().cloned()) {
         edit.set_text(l("edit")).map_err(|e| e.to_string())?;
-        for id in ["find", "find_in_files", "goto_line", "batch_convert"] {
+        for id in [
+            "find",
+            "find_in_files",
+            "goto_line",
+            "batch_convert",
+            "stream_replace",
+        ] {
             if let Some(item) = edit.get(id).and_then(|item| item.as_menuitem().cloned()) {
                 item.set_text(l(id)).map_err(|e| e.to_string())?;
             }
