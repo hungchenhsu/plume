@@ -431,9 +431,13 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        atomic_write, existing_paths_from_args, explain_detection, open_document, open_exclusive,
-        preview_slice, save_document, tmp_candidate_path,
+        atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
+        save_document, tmp_candidate_path,
     };
+    // Only the unix-gated symlink test uses this; an unconditional import
+    // is an unused-import error under -D warnings on Windows.
+    #[cfg(unix)]
+    use super::open_exclusive;
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
