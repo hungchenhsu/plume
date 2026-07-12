@@ -52,6 +52,7 @@ import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
 import { clampLine, selectCheckpoint } from "./lineindex";
+import { lowerCase, sortLines, trimTrailingWhitespace, uniqueLines, upperCase } from "./lineops";
 import { showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
@@ -1046,6 +1047,24 @@ async function closeTab(id: number): Promise<void> {
   persistSession();
 }
 
+/** Guard an Edit > Line Operations menu action against a truncated
+ *  (read-only, large-file preview) document, then run it — reuses
+ *  saveFlow's readonly-preview dialog and i18n strings, since transforming
+ *  a preview slice would silently diverge from the file on disk with no
+ *  way to save the result back. */
+function runLineOperation(action: () => void): void {
+  const doc = tabs.active;
+  if (!doc) return;
+  if (doc.truncated) {
+    void messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
+      title: t("dialog.readonlyPreviewTitle"),
+      kind: "warning",
+    });
+    return;
+  }
+  action();
+}
+
 // File shortcuts (Mod-T/O/S/W) are owned by the native menu accelerators —
 // binding them here as well would double-fire. Only tab cycling stays in
 // the WebView because Ctrl+Tab is not reliable as a menu accelerator.
@@ -1119,6 +1138,21 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "prev_bookmark":
       previousBookmarkFlow();
+      break;
+    case "sort_lines":
+      runLineOperation(() => editor.transformLines(sortLines));
+      break;
+    case "unique_lines":
+      runLineOperation(() => editor.transformLines(uniqueLines));
+      break;
+    case "trim_trailing_whitespace":
+      runLineOperation(() => editor.transformLines(trimTrailingWhitespace));
+      break;
+    case "uppercase":
+      runLineOperation(() => editor.transformSelection(upperCase));
+      break;
+    case "lowercase":
+      runLineOperation(() => editor.transformSelection(lowerCase));
       break;
     case "batch_convert":
       showBatchConvert();
