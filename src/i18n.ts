@@ -93,6 +93,7 @@ export interface Messages {
   "menu.whyEncoding": (encoding: string) => string;
   "menu.reopenWithEncoding": string;
   "menu.saveWithEncoding": string;
+  "menu.compareEncodings": string;
   "menu.viewRawBytes": string;
   "menu.repairMojibake": string;
   "menu.lineEndingLf": string;
@@ -107,6 +108,13 @@ export interface Messages {
   "mojibake.after": string;
   "mojibake.appliedTitle": string;
   "mojibake.appliedMessage": string;
+
+  "comparePreview.title": (file: string) => string;
+  "comparePreview.encodingALabel": string;
+  "comparePreview.encodingBLabel": string;
+  "comparePreview.compareButton": string;
+  "comparePreview.malformedBadge": string;
+  "comparePreview.reopenButton": string;
 
   "batchConvert.title": string;
   "batchConvert.chooseFolder": string;
@@ -252,6 +260,7 @@ const en: Messages = {
   "menu.whyEncoding": (encoding) => `Why ${encoding}?`,
   "menu.reopenWithEncoding": "Reopen with Encoding",
   "menu.saveWithEncoding": "Save with Encoding",
+  "menu.compareEncodings": "Compare encodings…",
   "menu.viewRawBytes": "View raw bytes…",
   "menu.repairMojibake": "Repair mojibake…",
   "menu.lineEndingLf": "LF (Unix / macOS)",
@@ -269,6 +278,13 @@ const en: Messages = {
   "mojibake.appliedTitle": "Mojibake repaired",
   "mojibake.appliedMessage":
     "The content was repaired in the editor. Use Undo to revert if this wasn't right.",
+
+  "comparePreview.title": (file) => `Compare encodings — ${file}`,
+  "comparePreview.encodingALabel": "A",
+  "comparePreview.encodingBLabel": "B",
+  "comparePreview.compareButton": "Compare",
+  "comparePreview.malformedBadge": "decode errors",
+  "comparePreview.reopenButton": "Reopen with this encoding",
 
   "batchConvert.title": "Batch Encoding Conversion",
   "batchConvert.chooseFolder": "Choose folder…",
@@ -425,6 +441,7 @@ const zhTW: Messages = {
   "menu.whyEncoding": (encoding) => `為何是 ${encoding}？`,
   "menu.reopenWithEncoding": "以指定編碼重新開啟",
   "menu.saveWithEncoding": "以指定編碼儲存",
+  "menu.compareEncodings": "比較編碼…",
   "menu.viewRawBytes": "檢視原始位元組…",
   "menu.repairMojibake": "修復亂碼…",
   "menu.lineEndingLf": "LF（Unix / macOS）",
@@ -440,6 +457,13 @@ const zhTW: Messages = {
   "mojibake.after": "修復後",
   "mojibake.appliedTitle": "亂碼已修復",
   "mojibake.appliedMessage": "編輯器內容已修復，可用 Undo 復原。",
+
+  "comparePreview.title": (file) => `比較編碼 — ${file}`,
+  "comparePreview.encodingALabel": "A",
+  "comparePreview.encodingBLabel": "B",
+  "comparePreview.compareButton": "比較",
+  "comparePreview.malformedBadge": "解碼錯誤",
+  "comparePreview.reopenButton": "以此編碼重新開啟",
 
   "batchConvert.title": "批次轉換編碼",
   "batchConvert.chooseFolder": "選擇資料夾…",
