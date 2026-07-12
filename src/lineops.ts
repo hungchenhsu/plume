@@ -1,15 +1,20 @@
 // Pure line-oriented text transforms for the Edit > Line Operations menu
-// (ROADMAP.md Track C). Every function here is `(text: string) => string`
-// with no editor/CodeMirror dependency, so it is unit-testable without a
-// WebView (see lineops.test.ts) and reusable from both
-// `EditorHandle.transformLines` (line-boundary-expanded selection, or the
-// whole document) and `EditorHandle.transformSelection` (selection
+// (ROADMAP.md Track C), plus `lineSpanForSelection`, the pure selection-
+// boundary math `EditorHandle.transformLines` needs before it can call
+// them. Nothing here touches CodeMirror or the DOM, so all of it is
+// unit-testable without a WebView (see lineops.test.ts) and reusable from
+// both `EditorHandle.transformLines` (line-boundary-expanded selection, or
+// the whole document) and `EditorHandle.transformSelection` (selection
 // verbatim, or the whole document) in editor.ts.
 //
-// Contract shared by all five: input and output are LF text (the editor
-// buffer is always LF-normalized before it reaches the frontend — see
-// CLAUDE.md "Hard constraints"), and an empty string maps to an empty
-// string.
+// Contract shared by the five `(text: string) => string` transforms below
+// (sortLines/uniqueLines/trimTrailingWhitespace/upperCase/lowerCase):
+// input and output are LF text (the editor buffer is always LF-normalized
+// before it reaches the frontend — see CLAUDE.md "Hard constraints"), and
+// an empty string maps to an empty string. `lineSpanForSelection`, at the
+// end of this file, has a different shape — it returns character offsets,
+// not text — because it answers a different question; see its own doc
+// comment.
 
 /**
  * Split LF text into its lines (terminators stripped) plus whether the
@@ -123,4 +128,69 @@ export function upperCase(text: string): string {
 /** Lower-case counterpart of `upperCase`; see its docs. */
 export function lowerCase(text: string): string {
   return text.toLowerCase();
+}
+
+/**
+ * Compute the `[from, to)` character span, expanded to whole lines, that a
+ * line operation (Sort/Unique/Trim) should act on for a given non-empty
+ * selection. Reimplements CodeMirror 6's own `Text.lineAt(pos)` line-
+ * boundary rules over a plain string — a line's `.from`/`.to` are the
+ * offsets of its first character and of its terminating "\n" respectively,
+ * with the "\n" itself belonging to neither line — so this is unit-
+ * testable without a WebView (see lineops.test.ts) while producing the
+ * exact offsets `state.doc.lineAt` would for the same text.
+ *
+ * `from`/`to` must be CM6 `SelectionRange.from`/`.to`: already normalized
+ * so `from <= to` regardless of which end of the selection the user
+ * dragged from (`.anchor`/`.head` carry drag direction; `.from`/`.to`
+ * never do), and `to` exclusive.
+ *
+ * The start line is resolved from `from` directly. The end line is
+ * resolved from `to - 1` — the offset of the last character actually
+ * inside the selection — never from `to` itself: when the selection's
+ * exclusive end lands exactly at column 1 of the next line (i.e. right
+ * after some line's newline, as when the user shift-selects through to
+ * the start of the following line without touching any of its text),
+ * resolving the end line from `to` would find that next line and pull the
+ * whole thing into the span even though the user never selected any of it
+ * (issue #99). `to - 1` always names a character inside the selection
+ * here because `to > from` is required below, so `to - 1 >= from`.
+ *
+ * Not defined for an empty selection (`from === to`, a cursor): callers
+ * give a cursor its own whole-document meaning instead of a line span
+ * (see `EditorHandle.transformLines` in editor.ts), so this throws rather
+ * than silently returning a nonsensical (possibly inverted) range.
+ */
+export function lineSpanForSelection(
+  text: string,
+  from: number,
+  to: number,
+): { from: number; to: number } {
+  if (from === to) {
+    throw new RangeError("lineSpanForSelection requires a non-empty selection (from !== to)");
+  }
+  return { from: lineStartAt(text, from), to: lineEndAt(text, to - 1) };
+}
+
+/** The `.from` CM6 would give the line containing `pos`: the offset right
+ *  after the nearest preceding "\n", or 0 if `pos`'s line is the first.
+ *  `pos` is handled as a special case rather than passed straight through
+ *  to `lastIndexOf(..., pos - 1)`: at `pos === 0` that would become
+ *  `lastIndexOf(..., -1)`, and a negative `lastIndexOf` search position is
+ *  clamped to 0 (not "no match") per the language spec, which would
+ *  wrongly report a newline "before" position 0 whenever `text` itself
+ *  starts with one. */
+function lineStartAt(text: string, pos: number): number {
+  if (pos === 0) return 0;
+  const newlineBefore = text.lastIndexOf("\n", pos - 1);
+  return newlineBefore === -1 ? 0 : newlineBefore + 1;
+}
+
+/** The `.to` CM6 would give the line containing `pos`: the offset of the
+ *  nearest following "\n" (a "\n" character's own string index is exactly
+ *  the offset CM6 calls that line's `.to`), or `text.length` if `pos`'s
+ *  line is the last. */
+function lineEndAt(text: string, pos: number): number {
+  const newlineAt = text.indexOf("\n", pos);
+  return newlineAt === -1 ? text.length : newlineAt;
 }

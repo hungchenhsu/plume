@@ -7,6 +7,7 @@
 // against.
 import { describe, expect, it } from "vitest";
 import {
+  lineSpanForSelection,
   lowerCase,
   sortLines,
   trimTrailingWhitespace,
@@ -181,5 +182,80 @@ describe("lowerCase", () => {
 
   it("round-trips with upperCase for plain ASCII", () => {
     expect(lowerCase(upperCase("MixedCase"))).toBe("mixedcase");
+  });
+});
+
+describe("lineSpanForSelection", () => {
+  // Regression coverage for issue #99: EditorHandle.transformLines used to
+  // resolve the span's end line from the selection's raw (exclusive) `to`,
+  // so a selection that ended exactly at column 1 of the next line (i.e.
+  // right after some line's newline) pulled that whole next line into the
+  // span even though the user never selected any of it.
+  it("stops the span at the end of the selection's last line, not the next line, when the selection's exclusive end lands at column 1 of the next line (issue #99)", () => {
+    // "b\na\nc": selecting [0, 2) highlights "b" plus its newline, ending
+    // exactly at the start of line 2 ("a"). to === 2 is column 1 of line
+    // 2, but the user never selected any of line 2's text.
+    expect(lineSpanForSelection("b\na\nc", 0, 2)).toEqual({ from: 0, to: 1 });
+  });
+
+  it("expands a selection that ends mid-line to that line's full extent", () => {
+    // "bbb\naaa": selecting [0, 2) is just "bb", inside line 1 ("bbb").
+    expect(lineSpanForSelection("bbb\naaa", 0, 2)).toEqual({ from: 0, to: 3 });
+  });
+
+  it("spans multiple lines when the selection ends mid-line on a later line", () => {
+    // "aa\nbb\ncc": to - 1 (6) is inside line 3 ("cc"), so the span covers
+    // all three lines, through the end of the document.
+    expect(lineSpanForSelection("aa\nbb\ncc", 0, 7)).toEqual({ from: 0, to: 8 });
+  });
+
+  it("stops one line short when a multi-line selection's exclusive end lands at the start of a later line", () => {
+    // Same text; to === 6 is column 1 of line 3, so the span covers only
+    // lines 1-2, not line 3 — the multi-line generalization of the core
+    // issue #99 case above.
+    expect(lineSpanForSelection("aa\nbb\ncc", 0, 6)).toEqual({ from: 0, to: 5 });
+  });
+
+  it("covers the last line correctly when the document has no trailing newline", () => {
+    expect(lineSpanForSelection("a\nb", 2, 3)).toEqual({ from: 2, to: 3 });
+  });
+
+  it("excludes a following empty line the same way it excludes a following non-empty one", () => {
+    // "a\n\nb": selecting [0, 2) is "a" plus its newline, ending at column
+    // 1 of the empty line 2. The empty line must stay excluded, same as
+    // the core issue #99 case, even though "including" it would not have
+    // added any visible characters.
+    expect(lineSpanForSelection("a\n\nb", 0, 2)).toEqual({ from: 0, to: 1 });
+  });
+
+  it("keeps a selection inside a leading empty line from spilling into line 2", () => {
+    // "\nfoo": line 1 is empty (from 0 to 0, since the very first
+    // character is already the newline). Selecting [0, 1) selects only
+    // line 1's terminating newline; the span must stay zero-width at
+    // {0, 0} and must not resolve to line 2 ("foo") just because position
+    // 0 sits right next to it across that newline.
+    expect(lineSpanForSelection("\nfoo", 0, 1)).toEqual({ from: 0, to: 0 });
+  });
+
+  it("spans the whole document for a single-line file with no newline at all", () => {
+    expect(lineSpanForSelection("only", 0, 4)).toEqual({ from: 0, to: 4 });
+  });
+
+  it("only ever sees a normalized from <= to, regardless of which end of the selection the user dragged from", () => {
+    // CM6's SelectionRange.from/.to are always position-ordered (.anchor/
+    // .head are what carry drag direction), so a backward drag (anchor
+    // after head) still normalizes to the same from/to pair as a forward
+    // drag would for the same endpoints — there is no separate "backward"
+    // case for this function to handle.
+    expect(lineSpanForSelection("xx\nyyy", 0, 6)).toEqual({ from: 0, to: 6 });
+  });
+
+  it("throws for an empty selection instead of returning a nonsensical range", () => {
+    // A cursor (from === to) is not a line span at all: transformLines
+    // gives an empty selection its own whole-document meaning and never
+    // calls this function for that case (see editor.ts). Guarding here
+    // means a future caller that forgets the range.empty check fails
+    // loudly instead of silently getting back an inverted {from, to}.
+    expect(() => lineSpanForSelection("b\na\nc", 2, 2)).toThrow();
   });
 });
