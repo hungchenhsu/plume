@@ -280,6 +280,12 @@ export function showBatchConvert(): void {
   panel.appendChild(actions);
 
   const close = (): void => {
+    // A running scan or convert cannot be cancelled — the Rust command
+    // runs to completion and the files on disk change regardless of
+    // whether this panel is still open to show the outcome. Closing it
+    // mid-run would only fake a cancel (issue #97), so it stays open
+    // until busy clears — same guard as streamreplace.ts's close().
+    if (busy) return;
     document.removeEventListener("mousedown", onAway);
     document.removeEventListener("keydown", onKey);
     overlay.remove();
@@ -514,15 +520,25 @@ export function showBatchConvert(): void {
     // explicit check is defense in depth and satisfies the type checker.
     if (paths.length === 0 || lastScanParams === null) return;
     const params = lastScanParams;
+    // Busy starts here, before the confirm dialog even opens (#95
+    // adversarial-review finding): otherwise the await below is a window
+    // where Scan/Convert stay enabled and the overlay stays closable, so
+    // a second action could interleave with this Convert before the user
+    // has answered the prompt. A cancel must undo this — see `!proceed`.
+    busy = true;
+    scanButton.disabled = true;
+    convertButton.disabled = true;
     // N files rewritten in place with no undo: make the user say so.
     const proceed = await confirmDialog(
       t("batchConvert.confirmMessage", paths.length),
       { title: t("batchConvert.title"), kind: "warning" },
     ).catch(() => false);
-    if (!proceed) return;
-    busy = true;
-    scanButton.disabled = true;
-    convertButton.disabled = true;
+    if (!proceed) {
+      busy = false;
+      scanButton.disabled = false;
+      updateConvertButton();
+      return;
+    }
     status.textContent = t("batchConvert.converting");
     try {
       // Bound to the scan that produced this report (issue #95) — never

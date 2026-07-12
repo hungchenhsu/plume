@@ -31,7 +31,7 @@ import {
 } from "./batchconvert";
 import { encodingChoices } from "./encodings";
 import { t } from "./i18n";
-import type { BatchEntry } from "./ipc";
+import type { BatchConvertResult, BatchEntry } from "./ipc";
 
 describe("parseExtensions", () => {
   it("splits on commas and trims whitespace", () => {
@@ -524,5 +524,146 @@ describe("showBatchConvert — stale scan response discarded (issue #95)", () =>
       scannedChoice.withBom,
       "keep",
     );
+  });
+});
+
+// Issue #97 (P2): closing the overlay (outside click or Escape) while a
+// scan or convert IPC call is in flight looked like a cancel but wasn't —
+// the Rust side has no cancellation token, so the batch write kept running
+// unobserved after the panel vanished. `close` now mirrors streamreplace.ts's
+// busy guard: a no-op while `busy` is true.
+//
+// Also covers the P3 finding from #95's adversarial review: `runConvert`
+// used to only set `busy = true` *after* the confirm dialog resolved, so
+// the confirm await was a window where Scan/Convert stayed enabled and the
+// overlay stayed closable — a second action could interleave before the
+// user even answered the prompt. `busy` now starts before the confirm
+// dialog opens; cancelling it must restore the pre-confirm state rather
+// than leaving the panel stuck disabled.
+describe("showBatchConvert — busy guard blocks close (issue #97)", () => {
+  afterEach(() => {
+    // Mirrors the other DOM describe blocks: let the open dialog's own
+    // Escape handler clean up its document-level listeners when busy is
+    // already false; the overlay removal is a fallback otherwise.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.querySelector(".batchconvert-overlay")?.remove();
+    scanBatchConversion.mockReset();
+    executeBatchConversion.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+  });
+
+  function overlayEl(): HTMLElement | null {
+    return document.querySelector(".batchconvert-overlay");
+  }
+
+  function dispatchOutsideClick(): void {
+    // The listener is registered on `document`; dispatching directly on
+    // the overlay backdrop (a mousedown target outside `.batchconvert-panel`)
+    // and letting it bubble reproduces a real click-away.
+    overlayEl()?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  }
+
+  function dispatchEscape(): void {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  }
+
+  it("overlay_cannot_be_closed_during_conversion", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt")]);
+    confirmDialog.mockResolvedValue(true);
+    const exec = deferred<BatchConvertResult[]>();
+    executeBatchConversion.mockReturnValueOnce(exec.promise);
+
+    (panel.querySelector(".batchconvert-convert") as HTMLButtonElement).click();
+    await flush();
+
+    // executeBatchConversion is in flight (the deferred promise hasn't
+    // settled) — neither close path may remove the overlay.
+    expect(overlayEl()).not.toBeNull();
+    dispatchOutsideClick();
+    expect(overlayEl()).not.toBeNull();
+    dispatchEscape();
+    expect(overlayEl()).not.toBeNull();
+
+    exec.resolve([{ path: "/a.txt", ok: true, message: "" }]);
+    await flush();
+
+    // The write finished (renderResults ran, busy cleared) — closing
+    // works normally again.
+    dispatchEscape();
+    expect(overlayEl()).toBeNull();
+  });
+
+  it("overlay_cannot_be_closed_during_scan", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    const scan = deferred<{ entries: BatchEntry[] }>();
+    scanBatchConversion.mockReturnValueOnce(scan.promise);
+
+    showBatchConvert();
+    const panel = document.querySelector(".batchconvert-panel") as HTMLElement;
+    (panel.querySelector(".batchconvert-folder") as HTMLButtonElement).click();
+    await flush();
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+
+    // scanBatchConversion is in flight — same guard applies to a scan as
+    // to a convert (the issue report calls out both).
+    expect(overlayEl()).not.toBeNull();
+    dispatchOutsideClick();
+    expect(overlayEl()).not.toBeNull();
+    dispatchEscape();
+    expect(overlayEl()).not.toBeNull();
+
+    scan.resolve({ entries: [entry("convertible", "/a.txt")] });
+    await flush();
+
+    dispatchEscape();
+    expect(overlayEl()).toBeNull();
+  });
+
+  it("convert_cancelled_at_confirm_restores_closable_state", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt")]);
+    const scanButton = panel.querySelector(".batchconvert-scan") as HTMLButtonElement;
+    const convertButton = panel.querySelector(".batchconvert-convert") as HTMLButtonElement;
+    const confirmed = deferred<boolean>();
+    confirmDialog.mockReturnValueOnce(confirmed.promise);
+
+    convertButton.click();
+    await flush();
+
+    // Busy engages before the confirm dialog resolves: buttons are
+    // disabled and the overlay is not closable while the user is still
+    // looking at the confirm prompt, even though executeBatchConversion
+    // hasn't been called yet.
+    expect(executeBatchConversion).not.toHaveBeenCalled();
+    expect(scanButton.disabled).toBe(true);
+    expect(convertButton.disabled).toBe(true);
+    dispatchEscape();
+    expect(overlayEl()).not.toBeNull();
+
+    confirmed.resolve(false); // user cancels the confirm dialog
+    await flush();
+
+    // Cancelling restores the pre-confirm (non-busy) state: no conversion
+    // ran, both buttons are enabled again, and the overlay closes normally.
+    expect(executeBatchConversion).not.toHaveBeenCalled();
+    expect(scanButton.disabled).toBe(false);
+    expect(convertButton.disabled).toBe(false);
+    dispatchEscape();
+    expect(overlayEl()).toBeNull();
+  });
+
+  it("overlay_closable_when_not_busy", async () => {
+    await openAndScan([entry("convertible", "/a.txt")]);
+    expect(overlayEl()).not.toBeNull();
+    dispatchEscape();
+    expect(overlayEl()).toBeNull();
+
+    // Outside click closes too, from a fresh (unscanned) overlay.
+    showBatchConvert();
+    await flush();
+    expect(overlayEl()).not.toBeNull();
+    dispatchOutsideClick();
+    expect(overlayEl()).toBeNull();
   });
 });
