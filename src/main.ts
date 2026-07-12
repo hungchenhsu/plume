@@ -13,6 +13,7 @@ import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
   deleteBackup,
+  listBackups,
   loadBackup,
   loadRecentFiles,
   loadSession,
@@ -39,6 +40,7 @@ import { showDetectionCard } from "./detectcard";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
+import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import {
@@ -950,6 +952,45 @@ async function restoreSession(): Promise<void> {
     } catch {
       // The file may have been moved or deleted since last session.
     }
+  }
+  // Recover backups the session index doesn't account for: either the
+  // index itself is missing/corrupt (issue #62), or it's merely stale (a
+  // backup landed on disk without ever being recorded, or its entry was
+  // dropped, before the backup file itself was removed). Each orphan
+  // becomes its own untitled tab. This can occasionally resurrect a stale
+  // leftover from a failed delete_backup as a spurious extra tab, but that
+  // cost is far cheaper than silently losing unsaved content.
+  const all = await listBackups().catch(() => [] as string[]);
+  const orphans = orphanBackups(
+    session?.files.map((f) => f.backup) ?? [],
+    all,
+  );
+  for (const name of orphans) {
+    const content = await loadBackup(name).catch(() => null);
+    if (content === null) continue;
+    untitledCounter += 1;
+    const title =
+      untitledCounter === 1
+        ? t("app.untitled")
+        : t("app.untitledNumbered", untitledCounter);
+    tabs.add({
+      id: nextId++,
+      path: null,
+      title,
+      encoding: preferences().defaultEncoding,
+      withBom: preferences().defaultBom,
+      lineEnding: defaultLineEnding,
+      malformed: false,
+      dirty: true,
+      truncated: false,
+      totalSize: 0,
+      chunkOffset: 0,
+      nextChunkOffset: null,
+      prevChunkOffsets: [],
+      windowChunks: [],
+      backupName: name,
+      buffer: editor.newBuffer(content, false, 0),
+    });
   }
   if (tabs.docs.length === 0) {
     tabs.add(makeUntitled());

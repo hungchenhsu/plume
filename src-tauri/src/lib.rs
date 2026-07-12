@@ -399,6 +399,7 @@ pub fn run() {
             backup::save_backup,
             backup::load_backup,
             backup::delete_backup,
+            backup::list_backups,
             hexdump::read_hex_dump,
             startup_probe::report_startup_ready
         ])
