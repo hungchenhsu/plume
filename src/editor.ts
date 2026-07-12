@@ -85,6 +85,14 @@ export interface EditorHandle {
   trimEnd(chars: number): void;
   /** Text content of the live buffer. */
   content(): string;
+  /**
+   * Replace the entire live buffer's content in a single transaction (used
+   * by the mojibake repair wizard). Unlike `swap(newBuffer(...))`, this
+   * dispatches a change on the existing `EditorState` instead of creating a
+   * fresh one, so CM6's undo history is preserved and one Undo reverts the
+   * whole repair.
+   */
+  replaceContent(text: string): void;
   focus(): void;
   /** Open the find/replace panel (regex, case and word toggles built in). */
   openSearch(): void;
@@ -357,6 +365,11 @@ export function createEditor(
     },
     snapshot: () => view.state,
     content: () => view.state.doc.toString(),
+    replaceContent: (text) => {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: text },
+      });
+    },
     focus: () => view.focus(),
     appendText: (text) => {
       view.dispatch({

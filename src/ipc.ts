@@ -293,3 +293,45 @@ export function readHexDump(
 export function reportStartupReady(): Promise<void> {
   return invoke<void>("report_startup_ready");
 }
+
+export interface RepairCandidate {
+  /** The wrong encoding the bytes were mis-decoded with, e.g. "windows-1252". */
+  intermediate: string;
+  /** The encoding the bytes actually are, e.g. "Big5". */
+  original: string;
+  /** First ~200 characters of the repaired text. */
+  preview: string;
+  /** Heuristic count of characters this repair would change. */
+  replacementCount: number;
+}
+
+/**
+ * Detect candidate mojibake repairs for `content` (the live editor text).
+ * Read-only and side-effect free: samples at most 64 KiB, never touches
+ * disk. Returns at most 5 candidates, strongest first; an empty array means
+ * no mis-decode pattern was found.
+ */
+export function detectMojibake(content: string): Promise<RepairCandidate[]> {
+  return invoke<RepairCandidate[]>("detect_mojibake", { content });
+}
+
+/**
+ * Apply one mojibake repair over the *entire* document text (never just the
+ * detection sample), returning the repaired text. Rejects with a readable
+ * error — instead of returning something silently wrong — if a character in
+ * the full text can't round-trip through `intermediate`/`original`, e.g.
+ * because the detection sample missed an exception elsewhere in the file.
+ * Never touches disk; the caller decides what to do with the result (the
+ * wizard puts it in the editor buffer as an unsaved, undoable change).
+ */
+export function applyMojibakeRepair(
+  content: string,
+  intermediate: string,
+  original: string,
+): Promise<string> {
+  return invoke<string>("apply_mojibake_repair", {
+    content,
+    intermediate,
+    original,
+  });
+}
