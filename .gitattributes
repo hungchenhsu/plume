@@ -1,0 +1,19 @@
+# Normalize every text file to LF in the repository and in checkouts,
+# overriding any local core.autocrlf. This project's identity is correct
+# line-ending and encoding handling: letting git rewrite line endings on
+# a Windows checkout would corrupt test fixtures and create macOS-green /
+# Windows-red false differences (issue #48).
+* text=auto eol=lf
+
+# Binary assets: never subject to text normalization or diffing.
+*.png -text
+*.icns -text
+*.ico -text
+*.gif -text
+*.jpg -text
+*.jpeg -text
+*.webp -text
+*.woff -text
+*.woff2 -text
+*.ttf -text
+*.otf -text
