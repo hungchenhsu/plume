@@ -39,6 +39,16 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("toggle_bookmark", "Toggle Bookmark", "切換書籤"),
     ("next_bookmark", "Next Bookmark", "下一個書籤"),
     ("prev_bookmark", "Previous Bookmark", "上一個書籤"),
+    ("line_ops", "Line Operations", "行操作"),
+    ("sort_lines", "Sort Lines", "排序行"),
+    ("unique_lines", "Remove Duplicate Lines", "移除重複行"),
+    (
+        "trim_trailing_whitespace",
+        "Trim Trailing Whitespace",
+        "移除行尾空白",
+    ),
+    ("uppercase", "UPPERCASE", "轉大寫"),
+    ("lowercase", "lowercase", "轉小寫"),
     (
         "batch_convert",
         "Batch Encoding Conversion…",
@@ -162,6 +172,21 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let file = file.separator().quit();
     let file = file.build()?;
 
+    // A plain (non-checkable) submenu, unlike the View > Theme radio group
+    // below: no runtime state to keep in sync, so no THEME_IDS-style const
+    // array or sync_* command is needed — retitle_menu just walks these ids.
+    let line_ops_menu = SubmenuBuilder::with_id(app, "line_ops", l("line_ops"))
+        .item(&MenuItemBuilder::with_id("sort_lines", l("sort_lines")).build(app)?)
+        .item(&MenuItemBuilder::with_id("unique_lines", l("unique_lines")).build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("trim_trailing_whitespace", l("trim_trailing_whitespace"))
+                .build(app)?,
+        )
+        .separator()
+        .item(&MenuItemBuilder::with_id("uppercase", l("uppercase")).build(app)?)
+        .item(&MenuItemBuilder::with_id("lowercase", l("lowercase")).build(app)?)
+        .build()?;
+
     // On macOS an Edit menu is required for clipboard and undo shortcuts to
     // reach the WebView at all; CodeMirror picks the actions up through
     // beforeinput. On other platforms it is a convenience.
@@ -193,6 +218,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&MenuItemBuilder::with_id("toggle_bookmark", l("toggle_bookmark")).build(app)?)
         .item(&MenuItemBuilder::with_id("next_bookmark", l("next_bookmark")).build(app)?)
         .item(&MenuItemBuilder::with_id("prev_bookmark", l("prev_bookmark")).build(app)?)
+        .separator()
+        .item(&line_ops_menu)
         .separator()
         .item(&MenuItemBuilder::with_id("batch_convert", l("batch_convert")).build(app)?)
         .item(&MenuItemBuilder::with_id("stream_replace", l("stream_replace")).build(app)?)
@@ -399,6 +426,28 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
         ] {
             if let Some(item) = edit.get(id).and_then(|item| item.as_menuitem().cloned()) {
                 item.set_text(l(id)).map_err(|e| e.to_string())?;
+            }
+        }
+        if let Some(line_ops) = edit
+            .get("line_ops")
+            .and_then(|item| item.as_submenu().cloned())
+        {
+            line_ops
+                .set_text(l("line_ops"))
+                .map_err(|e| e.to_string())?;
+            for id in [
+                "sort_lines",
+                "unique_lines",
+                "trim_trailing_whitespace",
+                "uppercase",
+                "lowercase",
+            ] {
+                if let Some(item) = line_ops
+                    .get(id)
+                    .and_then(|item| item.as_menuitem().cloned())
+                {
+                    item.set_text(l(id)).map_err(|e| e.to_string())?;
+                }
             }
         }
     }

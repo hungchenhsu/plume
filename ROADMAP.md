@@ -144,7 +144,7 @@ domain: failing-test-first, round-trip tests mandatory)
 
 **Track C — everyday editing comfort**
 - [x] Code folding (CM6 fold gutter, wired per language)
-- [ ] Line operations under Edit menu: sort / unique / trim trailing
+- [x] Line operations under Edit menu: sort / unique / trim trailing
   whitespace / upper-lower case (vitest for the pure transforms)
 - [ ] Indent guides (token-driven color, all four themes)
 

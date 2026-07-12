@@ -155,6 +155,33 @@ export interface EditorHandle {
   /** Unfold every folded range (CM6's `unfoldAll` command, Mod-Alt-] —
    *  View menu's "Unfold All"). */
   unfoldAll(): void;
+  /**
+   * Apply a pure text transform (see lineops.ts) to a line-bounded region
+   * of the live buffer: the current selection expanded to the start of
+   * its first line and the end of its last line (the conventional
+   * line-command scope), or the whole document when the selection is
+   * empty (a plain cursor, no highlighted range). Used by the Edit > Line
+   * Operations menu's Sort/Unique/Trim items. Dispatches through
+   * `view.dispatch` like every other mutator here, so it goes through
+   * CM6's normal undo history. Only the main selection range is
+   * considered — multiple cursors are not expanded independently, which
+   * keeps the single dispatched change free of the range-overlap
+   * failures that expanding several cursors to line boundaries could
+   * otherwise hit when two of them land on the same or adjacent lines. A
+   * transform that returns its input unchanged dispatches nothing, so a
+   * no-op run (e.g. trimming already-clean text) doesn't create a
+   * spurious undo step or mark the document dirty.
+   */
+  transformLines(fn: (text: string) => string): void;
+  /**
+   * Apply a pure text transform (see lineops.ts) to the current selection
+   * verbatim — no line-boundary expansion — or the whole document when
+   * the selection is empty. Used by the Line Operations menu's
+   * UPPERCASE/lowercase items, which must not swallow a partial-line
+   * selection into a full-line one. Same no-op-dispatches-nothing
+   * behavior as `transformLines`.
+   */
+  transformSelection(fn: (text: string) => string): void;
 }
 
 export function isEmptyBuffer(buffer: EditorBuffer): boolean {
@@ -561,6 +588,26 @@ export function createEditor(
     },
     unfoldAll: () => {
       cmUnfoldAll(view);
+    },
+    transformLines: (fn) => {
+      const { state } = view;
+      const range = state.selection.main;
+      const from = range.empty ? 0 : state.doc.lineAt(range.from).from;
+      const to = range.empty ? state.doc.length : state.doc.lineAt(range.to).to;
+      const original = state.sliceDoc(from, to);
+      const insert = fn(original);
+      if (insert === original) return;
+      view.dispatch({ changes: { from, to, insert } });
+    },
+    transformSelection: (fn) => {
+      const { state } = view;
+      const range = state.selection.main;
+      const from = range.empty ? 0 : range.from;
+      const to = range.empty ? state.doc.length : range.to;
+      const original = state.sliceDoc(from, to);
+      const insert = fn(original);
+      if (insert === original) return;
+      view.dispatch({ changes: { from, to, insert } });
     },
   };
 }
