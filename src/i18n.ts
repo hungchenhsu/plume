@@ -143,6 +143,7 @@ export interface Messages {
   "batchConvert.statusUndecodable": string;
   "batchConvert.statusTooLarge": string;
   "batchConvert.lineEndingMixed": string;
+  "batchConvert.includeFileLabel": string;
   "batchConvert.convertButton": (count: number) => string;
   "batchConvert.confirmMessage": (count: number) => string;
   "batchConvert.rescanNeeded": string;
@@ -325,6 +326,7 @@ const en: Messages = {
   "batchConvert.statusUndecodable": "Undecodable",
   "batchConvert.statusTooLarge": "Too large",
   "batchConvert.lineEndingMixed": "Mixed",
+  "batchConvert.includeFileLabel": "Include this file",
   "batchConvert.convertButton": (count) => `Convert ${count} file${count === 1 ? "" : "s"}`,
   "batchConvert.confirmMessage": (count) =>
     `Convert ${count} file${count === 1 ? "" : "s"} in place? Each file is ` +
@@ -524,6 +526,7 @@ const zhTW: Messages = {
   "batchConvert.statusUndecodable": "無法解碼",
   "batchConvert.statusTooLarge": "檔案過大",
   "batchConvert.lineEndingMixed": "混合換行",
+  "batchConvert.includeFileLabel": "包含此檔案",
   "batchConvert.convertButton": (count) => `轉換 ${count} 個檔案`,
   "batchConvert.confirmMessage": (count) =>
     `即將就地轉換 ${count} 個檔案？每個檔案將依報告中自動偵測的編碼` +
@@ -717,6 +720,7 @@ const ja: Messages = {
   "batchConvert.statusUndecodable": "デコード不可",
   "batchConvert.statusTooLarge": "サイズ超過",
   "batchConvert.lineEndingMixed": "混在",
+  "batchConvert.includeFileLabel": "このファイルを含める",
   "batchConvert.convertButton": (count) => `${count} 件のファイルを変換`,
   "batchConvert.confirmMessage": (count) =>
     `${count} 件のファイルをその場で変換しますか？各ファイルはレポートに表示された` +
@@ -915,6 +919,7 @@ const zhCN: Messages = {
   "batchConvert.statusUndecodable": "无法解码",
   "batchConvert.statusTooLarge": "文件过大",
   "batchConvert.lineEndingMixed": "混合换行",
+  "batchConvert.includeFileLabel": "包含此文件",
   "batchConvert.convertButton": (count) => `转换 ${count} 个文件`,
   "batchConvert.confirmMessage": (count) =>
     `即将就地转换 ${count} 个文件？每个文件将依报告中自动检测的编码` +

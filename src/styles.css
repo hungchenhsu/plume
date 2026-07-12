@@ -858,7 +858,7 @@ select:focus-visible {
 
 .batchconvert-row {
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: auto 1fr auto auto auto;
   gap: 10px;
   align-items: baseline;
   padding: 3px 8px;
@@ -868,6 +868,16 @@ select:focus-visible {
 
 .batchconvert-row:hover {
   background: var(--bg-surface);
+}
+
+.batchconvert-row-checkbox {
+  display: flex;
+  align-items: center;
+}
+
+.batchconvert-row-checkbox input {
+  margin: 0;
+  cursor: pointer;
 }
 
 .batchconvert-row-path {
@@ -895,7 +905,7 @@ select:focus-visible {
 }
 
 .batchconvert-row-failed .batchconvert-row-detected {
-  grid-column: 2 / -1;
+  grid-column: 3 / -1;
   white-space: normal;
 }
 

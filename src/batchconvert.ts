@@ -130,6 +130,23 @@ export function convertiblePaths(entries: BatchEntry[]): string[] {
   return entries.filter((e) => e.status === "convertible").map((e) => e.path);
 }
 
+/**
+ * Pure helper: convertible paths still selected for conversion, in report
+ * order — every path from `convertiblePaths(entries)` except those the
+ * user has excluded via the report's per-row checkbox. `unchecked` holds
+ * exactly those excluded paths; an empty set (the default after every
+ * fresh report) means everything convertible stays selected, matching
+ * the pre-checkbox behavior. Paths in `unchecked` that don't belong to a
+ * convertible entry (stale, or never eligible in the first place) are
+ * silently ignored rather than affecting the result.
+ */
+export function selectedConvertiblePaths(
+  entries: BatchEntry[],
+  unchecked: ReadonlySet<string>,
+): string[] {
+  return convertiblePaths(entries).filter((path) => !unchecked.has(path));
+}
+
 function statusLabel(status: string): string {
   switch (status) {
     case "convertible":
@@ -261,6 +278,12 @@ export function showBatchConvert(): void {
   };
 
   let lastEntries: BatchEntry[] = [];
+  // Paths the user has excluded from an otherwise-convertible report via
+  // the per-row checkbox (issue #79: a near-miss encoding guess should be
+  // excludable without discarding the rest of the batch). Empty means
+  // "everything convertible stays selected" — the state after every fresh
+  // report — see selectedConvertiblePaths.
+  let uncheckedPaths = new Set<string>();
 
   // The dry-run report is only trustworthy for the exact inputs it was
   // scanned with. Changing the folder, the extension filter, the target
@@ -270,6 +293,7 @@ export function showBatchConvert(): void {
   const invalidateScan = (): void => {
     if (lastEntries.length === 0) return;
     lastEntries = [];
+    uncheckedPaths = new Set();
     convertButton.disabled = true;
     convertButton.textContent = t("batchConvert.convertButton", 0);
     summary.textContent = "";
@@ -284,8 +308,21 @@ export function showBatchConvert(): void {
   encodingSelect.addEventListener("change", invalidateScan);
   lineEndingSelect.addEventListener("change", invalidateScan);
 
+  // Refreshes the Convert button's label/enabled state from the current
+  // selection (lastEntries minus uncheckedPaths). Called after every
+  // fresh report render and every per-row checkbox toggle.
+  const updateConvertButton = (): void => {
+    const count = selectedConvertiblePaths(lastEntries, uncheckedPaths).length;
+    convertButton.textContent = t("batchConvert.convertButton", count);
+    convertButton.disabled = count === 0;
+  };
+
   const renderReport = (entries: BatchEntry[]): void => {
     lastEntries = entries;
+    // A fresh report is a fresh review: any exclusions from a previous
+    // report must not leak into this one (adversarial-review finding —
+    // see invalidateScan above for the same principle on stale inputs).
+    uncheckedPaths = new Set();
     const counts = countByStatus(entries);
     summary.textContent =
       entries.length === 0
@@ -302,6 +339,26 @@ export function showBatchConvert(): void {
     for (const entry of entries) {
       const row = document.createElement("div");
       row.className = `batchconvert-row batchconvert-row-${entry.status}`;
+      // Non-convertible rows still get the grid cell (empty) so every
+      // row's path/detected/lineending/status columns line up.
+      const checkboxEl = document.createElement("span");
+      checkboxEl.className = "batchconvert-row-checkbox";
+      if (entry.status === "convertible") {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = true;
+        checkbox.setAttribute("aria-label", t("batchConvert.includeFileLabel"));
+        checkbox.title = t("batchConvert.includeFileLabel");
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) {
+            uncheckedPaths.delete(entry.path);
+          } else {
+            uncheckedPaths.add(entry.path);
+          }
+          updateConvertButton();
+        });
+        checkboxEl.appendChild(checkbox);
+      }
       const pathEl = document.createElement("span");
       pathEl.className = "batchconvert-row-path";
       pathEl.textContent = basename(entry.path);
@@ -315,15 +372,14 @@ export function showBatchConvert(): void {
       const statusEl = document.createElement("span");
       statusEl.className = "batchconvert-row-status";
       statusEl.textContent = statusLabel(entry.status);
+      row.appendChild(checkboxEl);
       row.appendChild(pathEl);
       row.appendChild(detectedEl);
       row.appendChild(lineEndingEl);
       row.appendChild(statusEl);
       list.appendChild(row);
     }
-    const count = counts.convertible;
-    convertButton.textContent = t("batchConvert.convertButton", count);
-    convertButton.disabled = count === 0;
+    updateConvertButton();
   };
 
   const renderResults = (results: BatchConvertResult[]): void => {
@@ -335,6 +391,10 @@ export function showBatchConvert(): void {
     for (const result of failed) {
       const row = document.createElement("div");
       row.className = "batchconvert-row batchconvert-row-failed";
+      // Empty placeholder so the path/message columns still line up with
+      // the report view's checkbox/path/detected/lineending/status grid.
+      const checkboxEl = document.createElement("span");
+      checkboxEl.className = "batchconvert-row-checkbox";
       const pathEl = document.createElement("span");
       pathEl.className = "batchconvert-row-path";
       pathEl.textContent = basename(result.path);
@@ -342,11 +402,13 @@ export function showBatchConvert(): void {
       const messageEl = document.createElement("span");
       messageEl.className = "batchconvert-row-detected";
       messageEl.textContent = result.message;
+      row.appendChild(checkboxEl);
       row.appendChild(pathEl);
       row.appendChild(messageEl);
       list.appendChild(row);
     }
     lastEntries = [];
+    uncheckedPaths = new Set();
     convertButton.disabled = true;
     convertButton.textContent = t("batchConvert.convertButton", 0);
   };
@@ -387,7 +449,7 @@ export function showBatchConvert(): void {
 
   const runConvert = async (): Promise<void> => {
     if (busy) return;
-    const paths = convertiblePaths(lastEntries);
+    const paths = selectedConvertiblePaths(lastEntries, uncheckedPaths);
     if (paths.length === 0) return;
     // N files rewritten in place with no undo: make the user say so.
     const proceed = await confirmDialog(
