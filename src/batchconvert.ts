@@ -164,6 +164,23 @@ function statusLabel(status: string): string {
   }
 }
 
+/**
+ * The exact parameters a scan was run with — captured the moment
+ * `runScan` fires the IPC call, and bound to the resulting report's
+ * lifecycle (see `lastScanParams` inside `showBatchConvert`). `runConvert`
+ * executes with this snapshot, never with the controls' live values, so
+ * Convert can only ever act on the target the user actually reviewed
+ * (issue #95), even if the controls were edited after the report
+ * rendered.
+ */
+interface ScanParams {
+  folder: string;
+  extensions: string[];
+  targetEncoding: string;
+  targetWithBom: boolean;
+  lineEnding: string;
+}
+
 export function showBatchConvert(): void {
   if (document.querySelector(".batchconvert-overlay")) return;
 
@@ -284,16 +301,38 @@ export function showBatchConvert(): void {
   // "everything convertible stays selected" — the state after every fresh
   // report — see selectedConvertiblePaths.
   let uncheckedPaths = new Set<string>();
+  // The exact parameters `lastEntries` was scanned with (issue #95). Set
+  // together with `lastEntries` in `renderReport`, cleared together with
+  // it in `invalidateScan`/`renderResults` — the two never go out of
+  // sync. `runConvert` executes with this snapshot instead of re-reading
+  // the controls, so Convert can only ever act on the target the user
+  // actually reviewed.
+  let lastScanParams: ScanParams | null = null;
+  // Bumped by every `runScan` call and every `invalidateScan` call. A
+  // scan response is only rendered if its generation is still current by
+  // the time the IPC call resolves — see `runScan`. Bumping this is what
+  // lets a response be recognized as stale even while `lastEntries` is
+  // still empty, i.e. a first scan still in flight, which has nothing to
+  // invalidate by clearing entries alone.
+  let scanGeneration = 0;
+  // True while a scan or convert IPC call is in flight.
+  let busy = false;
 
   // The dry-run report is only trustworthy for the exact inputs it was
   // scanned with. Changing the folder, the extension filter, the target
   // encoding, or the target line ending after a scan would let Convert
   // act on a target the user never reviewed (adversarial-review finding)
-  // — so any input change voids the report and forces a rescan.
+  // — so any input change voids the report and forces a rescan. This must
+  // also invalidate a scan that's still in flight (issue #95): bumping
+  // `scanGeneration` unconditionally, before any early return, is what
+  // makes `runScan` discard that scan's response when it eventually
+  // arrives instead of rendering a report for inputs nobody reviewed.
   const invalidateScan = (): void => {
-    if (lastEntries.length === 0) return;
+    scanGeneration += 1;
+    if (!busy && lastScanParams === null) return;
     lastEntries = [];
     uncheckedPaths = new Set();
+    lastScanParams = null;
     convertButton.disabled = true;
     convertButton.textContent = t("batchConvert.convertButton", 0);
     summary.textContent = "";
@@ -317,8 +356,9 @@ export function showBatchConvert(): void {
     convertButton.disabled = count === 0;
   };
 
-  const renderReport = (entries: BatchEntry[]): void => {
+  const renderReport = (entries: BatchEntry[], params: ScanParams): void => {
     lastEntries = entries;
+    lastScanParams = params;
     // A fresh report is a fresh review: any exclusions from a previous
     // report must not leak into this one (adversarial-review finding —
     // see invalidateScan above for the same principle on stale inputs).
@@ -409,11 +449,10 @@ export function showBatchConvert(): void {
     }
     lastEntries = [];
     uncheckedPaths = new Set();
+    lastScanParams = null;
     convertButton.disabled = true;
     convertButton.textContent = t("batchConvert.convertButton", 0);
   };
-
-  let busy = false;
 
   const runScan = async (): Promise<void> => {
     if (busy) return;
@@ -421,6 +460,20 @@ export function showBatchConvert(): void {
       status.textContent = t("batchConvert.chooseFolderFirst");
       return;
     }
+    // Bump first and capture this call's own generation, plus a full
+    // snapshot of the parameters actually being sent (issue #95): the
+    // response handler below only trusts a response whose generation is
+    // still current by the time the IPC call resolves.
+    scanGeneration += 1;
+    const myGeneration = scanGeneration;
+    const choice = choices[Number(encodingSelect.value)];
+    const params: ScanParams = {
+      folder: lastFolder,
+      extensions: parseExtensions(extInput.value),
+      targetEncoding: choice.value,
+      targetWithBom: choice.withBom,
+      lineEnding: lineEndingSelect.value,
+    };
     busy = true;
     scanButton.disabled = true;
     convertButton.disabled = true;
@@ -428,17 +481,22 @@ export function showBatchConvert(): void {
     summary.textContent = "";
     list.replaceChildren();
     try {
-      const choice = choices[Number(encodingSelect.value)];
       const report = await scanBatchConversion(
-        lastFolder,
-        parseExtensions(extInput.value),
-        choice.value,
-        choice.withBom,
-        lineEndingSelect.value,
+        params.folder,
+        params.extensions,
+        params.targetEncoding,
+        params.targetWithBom,
+        params.lineEnding,
       );
+      // A newer scan, or an input change that invalidated this one, has
+      // already superseded this response — discard it unrendered rather
+      // than showing this scan's classification under whatever the
+      // controls now say (the exact bug in issue #95).
+      if (myGeneration !== scanGeneration) return;
       status.textContent = "";
-      renderReport(report.entries);
+      renderReport(report.entries, params);
     } catch (error) {
+      if (myGeneration !== scanGeneration) return;
       status.textContent = String(error);
     } finally {
       busy = false;
@@ -450,7 +508,12 @@ export function showBatchConvert(): void {
   const runConvert = async (): Promise<void> => {
     if (busy) return;
     const paths = selectedConvertiblePaths(lastEntries, uncheckedPaths);
-    if (paths.length === 0) return;
+    // lastScanParams is null only when lastEntries is also empty (they're
+    // always set/cleared together — see renderReport/invalidateScan/
+    // renderResults), so paths.length > 0 implies it's non-null; the
+    // explicit check is defense in depth and satisfies the type checker.
+    if (paths.length === 0 || lastScanParams === null) return;
+    const params = lastScanParams;
     // N files rewritten in place with no undo: make the user say so.
     const proceed = await confirmDialog(
       t("batchConvert.confirmMessage", paths.length),
@@ -462,12 +525,15 @@ export function showBatchConvert(): void {
     convertButton.disabled = true;
     status.textContent = t("batchConvert.converting");
     try {
-      const choice = choices[Number(encodingSelect.value)];
+      // Bound to the scan that produced this report (issue #95) — never
+      // re-read from the controls, which may have changed since the scan
+      // that produced `lastEntries` ran. Convert must only ever act on
+      // the target the user actually reviewed.
       const results = await executeBatchConversion(
         paths,
-        choice.value,
-        choice.withBom,
-        lineEndingSelect.value,
+        params.targetEncoding,
+        params.targetWithBom,
+        params.lineEnding,
       );
       renderResults(results);
     } catch (error) {
