@@ -1,4 +1,5 @@
 mod backup;
+mod batch;
 mod chunk;
 mod encoding;
 mod hexdump;
@@ -495,6 +496,8 @@ pub fn run() {
             hexdump::read_hex_dump,
             mojibake::detect_mojibake,
             mojibake::apply_mojibake_repair,
+            batch::scan_batch_conversion,
+            batch::execute_batch_conversion,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())
