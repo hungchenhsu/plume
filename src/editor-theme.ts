@@ -162,6 +162,25 @@ const baseTheme = EditorView.theme({
     color: "var(--accent)",
     fontSize: "0.7em",
   },
+  // Code folding (editor.ts's `basicSetup` bundles CM6's `foldGutter()` and
+  // `codeFolding()`; see the comment above `createEditor`'s `extensions`).
+  // The fold-gutter arrows (⌄ open / › closed) need no override here: they
+  // render as plain <span> text inside `.cm-foldGutter`, which inherits
+  // `color: var(--fg-faint)` from `.cm-gutters` above — same as the
+  // line-number gutter. The "…" collapsed-range placeholder is the one
+  // piece CM6 themes itself (`EditorView.baseTheme` in
+  // @codemirror/language), hardcoding a light-gray box
+  // (`#eee`/`#ddd`/`#888`) that reads fine on the light theme but clashes
+  // with dark/dusk — this overrides it with tokens instead.
+  ".cm-foldPlaceholder": {
+    backgroundColor: "var(--bg-surface)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-md)",
+    color: "var(--fg-muted)",
+    margin: "0 1px",
+    padding: "0 1px",
+    cursor: "pointer",
+  },
 });
 
 const highlightStyle = HighlightStyle.define([

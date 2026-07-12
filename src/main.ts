@@ -1088,6 +1088,12 @@ void listen<string>("plume://menu", (event) => {
     case "show_invisibles":
       toggleShowInvisibles();
       break;
+    case "fold_all":
+      editor.foldAll();
+      break;
+    case "unfold_all":
+      editor.unfoldAll();
+      break;
     case "zoom_in":
       adjustFontSize(1);
       break;
