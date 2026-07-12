@@ -59,18 +59,31 @@ fn detector_guess(bytes: &[u8]) -> &'static Encoding {
 ///    flag alone cannot catch that, this gate does. Detection proceeds
 ///    to the statistical guess (`REASON_DETECTOR`), which reads such
 ///    input as UTF-8.
-/// 3. Otherwise (pure ASCII, or bytes that are not valid UTF-8), if
+/// 3. If `ext_encoding` resolves to UTF-16LE or UTF-16BE and the sample
+///    is valid UTF-8 (pure ASCII and the empty sample both count), the
+///    hint is rejected outright without even attempting to decode it
+///    (issue #47). ASCII is a safe subset of every other encoding this
+///    table can name — rule 4 relies on that — but not of UTF-16: any
+///    even-length sample is byte-valid as UTF-16 (every byte pair is a
+///    legal code unit) yet decodes to unrelated characters (e.g. "ab"
+///    -> U+6261) with no malformed sequence to catch it. Detection
+///    falls through to rule 5/6.
+/// 4. Otherwise (pure ASCII, or bytes that are not valid UTF-8), if
 ///    `ext_encoding` names a known encoding and decoding the full sample
 ///    with it produces no malformed sequences, it wins
 ///    (`REASON_EXTENSION`). For pure ASCII this changes no character —
-///    the listed legacy encodings are ASCII-compatible — but it pins the
-///    save-default encoding the user wants for that extension.
-/// 4. If `ext_encoding` is absent, unknown, or decodes the sample with
+///    the listed legacy encodings (other than UTF-16, excluded by rule
+///    3) are ASCII-compatible — but it pins the save-default encoding
+///    the user wants for that extension.
+/// 5. If `ext_encoding` is absent, unknown, or decodes the sample with
 ///    malformed sequences, the preference is rejected and detection
 ///    falls back to the statistical guess (`REASON_DETECTOR`).
-/// 5. Empty input with no usable `ext_encoding` has no evidence to
-///    analyze (`REASON_FALLBACK`). With one, rule 3 applies — an empty
-///    file trivially decodes cleanly, so the preference names it.
+/// 6. Empty input with no usable `ext_encoding` has no evidence to
+///    analyze (`REASON_FALLBACK`). With one, rule 4 applies unless it
+///    names UTF-16 (rule 3) — an empty file trivially decodes cleanly,
+///    so a non-UTF-16 preference names it; a UTF-16 preference is
+///    rejected just like any other valid-UTF-8 sample and the empty
+///    file falls back.
 pub fn detect_with_extension(bytes: &[u8], ext_encoding: Option<&str>) -> Detection {
     let guess = detector_guess(bytes);
     if let Some((encoding, _bom_len)) = Encoding::for_bom(bytes) {
@@ -84,18 +97,41 @@ pub fn detect_with_extension(bytes: &[u8], ext_encoding: Option<&str>) -> Detect
     // UTF-8 gate (rule 2): valid UTF-8 with at least one non-ASCII byte
     // is confident UTF-8; never let an extension preference reinterpret
     // it as a legacy encoding.
-    let confident_utf8 = !bytes.is_ascii() && std::str::from_utf8(bytes).is_ok();
+    let valid_utf8 = std::str::from_utf8(bytes).is_ok();
+    let confident_utf8 = !bytes.is_ascii() && valid_utf8;
     if !confident_utf8 {
         if let Some(label) = ext_encoding {
             if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
-                let (_, malformed) = encoding.decode_without_bom_handling(bytes);
-                if !malformed {
-                    return Detection {
-                        bom: None,
-                        detector_guess: guess,
-                        chosen: encoding,
-                        reason: REASON_EXTENSION,
-                    };
+                // UTF-16 guard (issue #47): unlike the legacy single/
+                // double-byte encodings this preference table otherwise
+                // names (Big5, Shift_JIS, ...), ASCII is not a safe
+                // subset of UTF-16. Every even-length ASCII/UTF-8 sample
+                // is byte-valid as UTF-16 (any two bytes form a legal
+                // code unit), but decoding it as UTF-16 reinterprets it
+                // as entirely different characters (e.g. "ab" ->
+                // U+6261) with malformed=false and no signal anything
+                // went wrong. Rejecting a UTF-16 hint whenever the bytes
+                // are valid UTF-8 closes that hole; real-world UTF-16
+                // files almost always carry a BOM (handled above), and
+                // a BOM-less UTF-16 file with non-ASCII content is not
+                // valid UTF-8, so this costs nothing there. The residual
+                // trade-off — a hand-crafted, BOM-less, ASCII-only
+                // UTF-16 file also reads as valid UTF-8 and loses the
+                // hint too — is accepted: such a file is
+                // indistinguishable from ASCII text containing literal
+                // NUL bytes, and is far rarer than the silent-corruption
+                // case this guard exists to prevent.
+                let is_utf16 = encoding == UTF_16LE || encoding == UTF_16BE;
+                if !(is_utf16 && valid_utf8) {
+                    let (_, malformed) = encoding.decode_without_bom_handling(bytes);
+                    if !malformed {
+                        return Detection {
+                            bom: None,
+                            detector_guess: guess,
+                            chosen: encoding,
+                            reason: REASON_EXTENSION,
+                        };
+                    }
                 }
             }
         }
@@ -647,5 +683,133 @@ mod tests {
         let (saved_bytes, unmappable) = encode(&opened.content, &opened.encoding, false).unwrap();
         assert!(!unmappable);
         assert_eq!(saved_bytes, original_bytes);
+    }
+
+    // --- Issue #47: UTF-16 extension hint must not hijack ASCII/UTF-8 ---
+    //
+    // The UTF-8 gate above (rule 2) only fires on *non-ASCII* valid UTF-8:
+    // pure ASCII intentionally still falls through to the extension
+    // preference (see `pure_ascii_still_honors_extension_preference`),
+    // because ASCII is a subset of every legacy single/double-byte
+    // encoding this preference table names — a hint of Big5 or Shift_JIS
+    // decodes ASCII bytes to the same text. ASCII is *not* a subset of
+    // UTF-16: any even-length byte string is byte-valid as UTF-16 (every
+    // pair of bytes is a legal code unit), but decoding it as UTF-16
+    // reinterprets it as entirely different characters. A UTF-16 hint
+    // needs its own guard.
+
+    #[test]
+    fn utf16_ext_hint_never_hijacks_even_length_ascii() {
+        // 6 bytes, pure ASCII, even length. Before the fix this decoded
+        // through the extension hint as UTF-16LE/BE, turning "ab\ncd\n"
+        // into entirely different characters (bytes 0x61 0x62 -> U+6261)
+        // with malformed=false and no signal anything went wrong.
+        let text = "ab\ncd\n";
+        let bytes = text.as_bytes();
+        assert_eq!(bytes.len(), 6, "fixture must be even-length");
+        assert!(bytes.is_ascii(), "fixture must be pure ASCII");
+
+        for label in ["UTF-16LE", "UTF-16BE"] {
+            let detection = detect_with_extension(bytes, Some(label));
+            assert_eq!(
+                detection.reason, REASON_DETECTOR,
+                "{label} hint must be rejected and fall back to the statistical detector"
+            );
+            assert_ne!(detection.chosen.name(), "UTF-16LE");
+            assert_ne!(detection.chosen.name(), "UTF-16BE");
+
+            let decoded = decode_auto_with_extension(bytes, Some(label));
+            assert_eq!(
+                decoded.content, text,
+                "{label} hint must not corrupt plain ASCII content"
+            );
+            assert!(!decoded.malformed);
+        }
+    }
+
+    #[test]
+    fn utf16_ext_hint_never_hijacks_valid_multibyte_utf8() {
+        // Even-length, genuine multi-byte UTF-8 (Chinese). This is already
+        // protected by the existing confident-UTF-8 gate (rule 2), which
+        // fires on any non-ASCII valid UTF-8 regardless of what the
+        // extension hint names — already-locked behavior, pinned here
+        // specifically for a UTF-16 hint.
+        let text = "中文";
+        let bytes = text.as_bytes();
+        assert_eq!(bytes.len(), 6, "fixture must be even-length");
+
+        for label in ["UTF-16LE", "UTF-16BE"] {
+            let detection = detect_with_extension(bytes, Some(label));
+            assert_eq!(detection.chosen.name(), "UTF-8");
+            assert_ne!(detection.reason, REASON_EXTENSION);
+
+            let decoded = decode_auto_with_extension(bytes, Some(label));
+            assert_eq!(decoded.encoding, "UTF-8");
+            assert_eq!(decoded.content, text);
+            assert!(!decoded.malformed);
+        }
+    }
+
+    #[test]
+    fn utf16_ext_hint_still_applies_to_real_utf16_without_bom() {
+        // Genuine UTF-16 content with no BOM: non-ASCII text makes the
+        // byte-interleaved result invalid UTF-8, so the guard above must
+        // not fire and the hint must still apply — the legitimate use case
+        // the guard must not break.
+        let text = "中文";
+
+        let (le_bytes, _) = encode(text, "UTF-16LE", false).unwrap();
+        assert!(
+            std::str::from_utf8(&le_bytes).is_err(),
+            "fixture must not be valid UTF-8"
+        );
+        let detection = detect_with_extension(&le_bytes, Some("UTF-16LE"));
+        assert_eq!(detection.reason, REASON_EXTENSION);
+        assert_eq!(detection.chosen.name(), "UTF-16LE");
+        let decoded = decode_auto_with_extension(&le_bytes, Some("UTF-16LE"));
+        assert_eq!(decoded.content, text);
+        assert!(!decoded.malformed);
+
+        let (be_bytes, _) = encode(text, "UTF-16BE", false).unwrap();
+        assert!(
+            std::str::from_utf8(&be_bytes).is_err(),
+            "fixture must not be valid UTF-8"
+        );
+        let detection = detect_with_extension(&be_bytes, Some("UTF-16BE"));
+        assert_eq!(detection.reason, REASON_EXTENSION);
+        assert_eq!(detection.chosen.name(), "UTF-16BE");
+        let decoded = decode_auto_with_extension(&be_bytes, Some("UTF-16BE"));
+        assert_eq!(decoded.content, text);
+        assert!(!decoded.malformed);
+    }
+
+    #[test]
+    fn utf16_ext_hint_bom_still_wins() {
+        // UTF-16LE BOM present, but the extension preference says
+        // UTF-16BE. The BOM must win regardless — existing, unconditional
+        // behavior (the BOM check returns before the hint is even read).
+        let (bytes, _) = encode("hi", "UTF-16LE", true).unwrap();
+        let detection = detect_with_extension(&bytes, Some("UTF-16BE"));
+        assert_eq!(detection.reason, REASON_BOM);
+        assert_eq!(detection.chosen.name(), "UTF-16LE");
+
+        let decoded = decode_auto_with_extension(&bytes, Some("UTF-16BE"));
+        assert_eq!(decoded.encoding, "UTF-16LE");
+        assert_eq!(decoded.content, "hi");
+        assert!(!decoded.malformed);
+    }
+
+    /// Empty input is trivially valid UTF-8, so the UTF-16 guard rejects
+    /// the hint and — with nothing for the detector to analyze — the
+    /// decision lands on the fallback (doc rule 6). Locks the corner the
+    /// adversarial review found asserted only in prose.
+    #[test]
+    fn utf16_ext_hint_on_empty_file_falls_back() {
+        for label in ["UTF-16LE", "UTF-16BE"] {
+            let detection = detect_with_extension(b"", Some(label));
+            assert_eq!(detection.reason, REASON_FALLBACK);
+            assert_ne!(detection.chosen.name(), "UTF-16LE");
+            assert_ne!(detection.chosen.name(), "UTF-16BE");
+        }
     }
 }
