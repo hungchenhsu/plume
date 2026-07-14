@@ -35,6 +35,7 @@ import {
   scanBatchConversion,
   type BatchConvertResult,
   type BatchEntry,
+  type BatchScanError,
 } from "./ipc";
 
 let lastFolder: string | null = null;
@@ -266,6 +267,16 @@ export function showBatchConvert(): void {
   summary.className = "batchconvert-summary";
   panel.appendChild(summary);
 
+  // Issue #116: a folder/entry the walk couldn't read means `entries`
+  // below may be missing whatever that path contained. This must stay
+  // visible above the per-file list — not buried where a user reviewing
+  // rows might never notice it — and use <details>/<summary> so the path
+  // list is inspectable without cluttering the common (no errors) case.
+  const scanErrorsEl = document.createElement("div");
+  scanErrorsEl.className = "batchconvert-scan-errors-container";
+  scanErrorsEl.hidden = true;
+  panel.appendChild(scanErrorsEl);
+
   const list = document.createElement("div");
   list.className = "batchconvert-list";
   panel.appendChild(list);
@@ -314,6 +325,16 @@ export function showBatchConvert(): void {
   // the controls, so Convert can only ever act on the target the user
   // actually reviewed.
   let lastScanParams: ScanParams | null = null;
+  // How many scan_errors the report currently on screen came with (issue
+  // #116) — set together with `lastEntries`/`lastScanParams` in
+  // `renderReport`, cleared together with them in
+  // `invalidateScan`/`renderResults`. Read by `runConvert` to pick the
+  // confirm dialog's wording: a plain confirm when the scan was
+  // exhaustive, or one that explicitly names the incomplete-scan risk
+  // when it wasn't — the moment right before a destructive action is
+  // exactly where issue #116 warns a user could otherwise act on a
+  // report they wrongly believed was complete.
+  let lastScanErrorCount = 0;
   // Bumped by every `runScan` call and every `invalidateScan` call. A
   // scan response is only rendered if its generation is still current by
   // the time the IPC call resolves — see `runScan`. Bumping this is what
@@ -339,10 +360,13 @@ export function showBatchConvert(): void {
     lastEntries = [];
     uncheckedPaths = new Set();
     lastScanParams = null;
+    lastScanErrorCount = 0;
     convertButton.disabled = true;
     convertButton.textContent = t("batchConvert.convertButton", 0);
     summary.textContent = "";
     list.replaceChildren();
+    scanErrorsEl.hidden = true;
+    scanErrorsEl.replaceChildren();
     status.textContent = t("batchConvert.rescanNeeded");
   };
   // Every dry-run input is equal-standing: the folder (above), the
@@ -362,13 +386,57 @@ export function showBatchConvert(): void {
     convertButton.disabled = count === 0;
   };
 
-  const renderReport = (entries: BatchEntry[], params: ScanParams): void => {
+  // Issue #116: renders the "N items could not be scanned" disclosure
+  // above the per-file list, or hides the block entirely when the walk
+  // was exhaustive (the common case). A collapsed <details> keeps this
+  // out of the way until the user chooses to inspect which paths were
+  // missed, while the <summary> line itself is always visible so the
+  // incompleteness can never go unnoticed the way issue #116 describes.
+  const renderScanErrors = (scanErrors: BatchScanError[]): void => {
+    scanErrorsEl.replaceChildren();
+    if (scanErrors.length === 0) {
+      scanErrorsEl.hidden = true;
+      return;
+    }
+    scanErrorsEl.hidden = false;
+    const details = document.createElement("details");
+    details.className = "batchconvert-scan-errors";
+    const summaryEl = document.createElement("summary");
+    summaryEl.textContent = t("batchConvert.scanErrorsSummary", scanErrors.length);
+    details.appendChild(summaryEl);
+    const errorList = document.createElement("div");
+    errorList.className = "batchconvert-scan-errors-list";
+    for (const scanError of scanErrors) {
+      const row = document.createElement("div");
+      row.className = "batchconvert-scan-errors-row";
+      const pathEl = document.createElement("span");
+      pathEl.className = "batchconvert-scan-errors-path";
+      pathEl.textContent = basename(scanError.path);
+      pathEl.title = scanError.path;
+      const messageEl = document.createElement("span");
+      messageEl.className = "batchconvert-scan-errors-message";
+      messageEl.textContent = scanError.message;
+      row.appendChild(pathEl);
+      row.appendChild(messageEl);
+      errorList.appendChild(row);
+    }
+    details.appendChild(errorList);
+    scanErrorsEl.appendChild(details);
+  };
+
+  const renderReport = (
+    entries: BatchEntry[],
+    scanErrors: BatchScanError[],
+    params: ScanParams,
+  ): void => {
     lastEntries = entries;
     lastScanParams = params;
+    lastScanErrorCount = scanErrors.length;
     // A fresh report is a fresh review: any exclusions from a previous
     // report must not leak into this one (adversarial-review finding —
     // see invalidateScan above for the same principle on stale inputs).
     uncheckedPaths = new Set();
+    renderScanErrors(scanErrors);
     const counts = countByStatus(entries);
     summary.textContent =
       entries.length === 0
@@ -434,6 +502,8 @@ export function showBatchConvert(): void {
     status.textContent = t("batchConvert.resultSummary", okCount, failed.length);
     summary.textContent = "";
     list.replaceChildren();
+    scanErrorsEl.hidden = true;
+    scanErrorsEl.replaceChildren();
     for (const result of failed) {
       const row = document.createElement("div");
       row.className = "batchconvert-row batchconvert-row-failed";
@@ -456,6 +526,7 @@ export function showBatchConvert(): void {
     lastEntries = [];
     uncheckedPaths = new Set();
     lastScanParams = null;
+    lastScanErrorCount = 0;
     convertButton.disabled = true;
     convertButton.textContent = t("batchConvert.convertButton", 0);
   };
@@ -486,6 +557,8 @@ export function showBatchConvert(): void {
     status.textContent = t("batchConvert.scanning");
     summary.textContent = "";
     list.replaceChildren();
+    scanErrorsEl.hidden = true;
+    scanErrorsEl.replaceChildren();
     try {
       const report = await scanBatchConversion(
         params.folder,
@@ -500,7 +573,7 @@ export function showBatchConvert(): void {
       // controls now say (the exact bug in issue #95).
       if (myGeneration !== scanGeneration) return;
       status.textContent = "";
-      renderReport(report.entries, params);
+      renderReport(report.entries, report.scanErrors, params);
     } catch (error) {
       if (myGeneration !== scanGeneration) return;
       status.textContent = String(error);
@@ -528,11 +601,19 @@ export function showBatchConvert(): void {
     busy = true;
     scanButton.disabled = true;
     convertButton.disabled = true;
-    // N files rewritten in place with no undo: make the user say so.
-    const proceed = await confirmDialog(
-      t("batchConvert.confirmMessage", paths.length),
-      { title: t("batchConvert.title"), kind: "warning" },
-    ).catch(() => false);
+    // N files rewritten in place with no undo: make the user say so. When
+    // the scan that produced this report couldn't read everything (issue
+    // #116), say so again right here — a native confirm dialog covers the
+    // panel's own scan-errors disclosure, so this is the only chance left
+    // to warn at the actual moment of a destructive action.
+    const confirmMessage =
+      lastScanErrorCount > 0
+        ? t("batchConvert.confirmMessageIncomplete", paths.length, lastScanErrorCount)
+        : t("batchConvert.confirmMessage", paths.length);
+    const proceed = await confirmDialog(confirmMessage, {
+      title: t("batchConvert.title"),
+      kind: "warning",
+    }).catch(() => false);
     if (!proceed) {
       busy = false;
       scanButton.disabled = false;

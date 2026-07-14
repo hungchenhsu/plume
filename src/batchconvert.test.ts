@@ -31,7 +31,7 @@ import {
 } from "./batchconvert";
 import { encodingChoices } from "./encodings";
 import { t } from "./i18n";
-import type { BatchConvertResult, BatchEntry } from "./ipc";
+import type { BatchConvertResult, BatchEntry, BatchScanError, BatchScanReport } from "./ipc";
 
 describe("parseExtensions", () => {
   it("splits on commas and trims whitespace", () => {
@@ -63,6 +63,17 @@ describe("parseExtensions", () => {
 
 function entry(status: string, path = `/f-${status}.txt`, detected = "Big5"): BatchEntry {
   return { path, detected, status, lineEnding: "LF" };
+}
+
+function scanError(path: string, message = "Permission denied (os error 13)"): BatchScanError {
+  return { path, message };
+}
+
+/** Builds a full `BatchScanReport` mock, defaulting to an exhaustive scan
+ *  (no `scanErrors`) — matches every pre-issue-#116 test fixture in this
+ *  file exactly, with issue #116 tests passing a non-empty second arg. */
+function report(entries: BatchEntry[], scanErrors: BatchScanError[] = []): BatchScanReport {
+  return { entries, scanErrors };
 }
 
 describe("countByStatus", () => {
@@ -256,9 +267,12 @@ function checkboxes(panel: HTMLElement): HTMLInputElement[] {
   );
 }
 
-async function openAndScan(entries: BatchEntry[]): Promise<HTMLElement> {
+async function openAndScan(
+  entries: BatchEntry[],
+  scanErrors: BatchScanError[] = [],
+): Promise<HTMLElement> {
   openDialog.mockResolvedValue("/some/folder");
-  scanBatchConversion.mockResolvedValue({ entries });
+  scanBatchConversion.mockResolvedValue(report(entries, scanErrors));
   showBatchConvert();
   const panel = document.querySelector(".batchconvert-panel") as HTMLElement;
   (panel.querySelector(".batchconvert-folder") as HTMLButtonElement).click();
@@ -375,9 +389,9 @@ describe("showBatchConvert — per-row checkbox (DOM)", () => {
 
     // Rescanning must start fully selected again: /a.txt's earlier
     // exclusion must not survive invalidateScan into the new report.
-    scanBatchConversion.mockResolvedValueOnce({
-      entries: [entry("convertible", "/a.txt"), entry("convertible", "/b.txt")],
-    });
+    scanBatchConversion.mockResolvedValueOnce(
+      report([entry("convertible", "/a.txt"), entry("convertible", "/b.txt")]),
+    );
     (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
     await flush();
     expect(convertButton.textContent).toBe(t("batchConvert.convertButton", 2));
@@ -409,7 +423,7 @@ describe("showBatchConvert — stale scan response discarded (issue #95)", () =>
 
   it("a scan superseded by an input change before it resolves is discarded unrendered, and does not enable Convert", async () => {
     openDialog.mockResolvedValue("/some/folder");
-    const scanA = deferred<{ entries: BatchEntry[] }>();
+    const scanA = deferred<BatchScanReport>();
     scanBatchConversion.mockReturnValueOnce(scanA.promise);
 
     showBatchConvert();
@@ -433,7 +447,7 @@ describe("showBatchConvert — stale scan response discarded (issue #95)", () =>
     encodingSelect.dispatchEvent(new Event("change"));
 
     // A's stale response now arrives.
-    scanA.resolve({ entries: [entry("convertible", "/a.txt")] });
+    scanA.resolve(report([entry("convertible", "/a.txt")]));
     await flush();
 
     // Discarded outright: no rows rendered, Convert not enabled by a
@@ -444,11 +458,11 @@ describe("showBatchConvert — stale scan response discarded (issue #95)", () =>
     // A real scan under B completes next and must render/enable
     // normally — proving the discard above isn't a permanently stuck
     // state.
-    const scanB = deferred<{ entries: BatchEntry[] }>();
+    const scanB = deferred<BatchScanReport>();
     scanBatchConversion.mockReturnValueOnce(scanB.promise);
     (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
     await flush();
-    scanB.resolve({ entries: [entry("convertible", "/b.txt")] });
+    scanB.resolve(report([entry("convertible", "/b.txt")]));
     await flush();
 
     expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(1);
@@ -458,7 +472,7 @@ describe("showBatchConvert — stale scan response discarded (issue #95)", () =>
 
   it("a superseded scan that rejects is discarded without disturbing the current state", async () => {
     openDialog.mockResolvedValue("/some/folder");
-    const scanA = deferred<{ entries: BatchEntry[] }>();
+    const scanA = deferred<BatchScanReport>();
     scanBatchConversion.mockReturnValueOnce(scanA.promise);
 
     showBatchConvert();
@@ -483,11 +497,11 @@ describe("showBatchConvert — stale scan response discarded (issue #95)", () =>
     expect(convertButton.disabled).toBe(true);
 
     // A fresh scan under B still works — the discard didn't wedge anything.
-    const scanB = deferred<{ entries: BatchEntry[] }>();
+    const scanB = deferred<BatchScanReport>();
     scanBatchConversion.mockReturnValueOnce(scanB.promise);
     (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
     await flush();
-    scanB.resolve({ entries: [entry("convertible", "/b.txt")] });
+    scanB.resolve(report([entry("convertible", "/b.txt")]));
     await flush();
 
     expect(panel.querySelectorAll(".batchconvert-row")).toHaveLength(1);
@@ -596,7 +610,7 @@ describe("showBatchConvert — busy guard blocks close (issue #97)", () => {
 
   it("overlay_cannot_be_closed_during_scan", async () => {
     openDialog.mockResolvedValue("/some/folder");
-    const scan = deferred<{ entries: BatchEntry[] }>();
+    const scan = deferred<BatchScanReport>();
     scanBatchConversion.mockReturnValueOnce(scan.promise);
 
     showBatchConvert();
@@ -614,7 +628,7 @@ describe("showBatchConvert — busy guard blocks close (issue #97)", () => {
     dispatchEscape();
     expect(overlayEl()).not.toBeNull();
 
-    scan.resolve({ entries: [entry("convertible", "/a.txt")] });
+    scan.resolve(report([entry("convertible", "/a.txt")]));
     await flush();
 
     dispatchEscape();
@@ -665,5 +679,120 @@ describe("showBatchConvert — busy guard blocks close (issue #97)", () => {
     expect(overlayEl()).not.toBeNull();
     dispatchOutsideClick();
     expect(overlayEl()).toBeNull();
+  });
+});
+
+// Issue #116 (P2): a scan that couldn't fully read the folder (a locked
+// subdirectory, an entry whose metadata failed) used to come back as a
+// report with no sign anything was missed — the user had no way to tell
+// an "empty/small report" from "the scan quietly skipped part of the
+// tree" before running a destructive convert over it. `scanBatchConversion`
+// now returns `scanErrors` alongside `entries`, and the panel must surface
+// it: a visible disclosure in the report itself, and a stronger confirm
+// message at the moment Convert is actually about to run.
+describe("showBatchConvert — incomplete-scan warning (issue #116)", () => {
+  afterEach(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.querySelector(".batchconvert-overlay")?.remove();
+    scanBatchConversion.mockReset();
+    executeBatchConversion.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+  });
+
+  function scanErrorsContainer(panel: HTMLElement): HTMLElement {
+    return panel.querySelector(".batchconvert-scan-errors-container") as HTMLElement;
+  }
+
+  it("stays hidden when the scan was exhaustive (no scanErrors)", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt")]);
+    const container = scanErrorsContainer(panel);
+    expect(container.hidden).toBe(true);
+    expect(container.querySelector("details")).toBeNull();
+  });
+
+  it("shows a disclosure naming the count and every unreadable path when scanErrors is non-empty", async () => {
+    const panel = await openAndScan(
+      [entry("convertible", "/a.txt")],
+      [scanError("/some/folder/locked", "Permission denied (os error 13)"), scanError("/some/folder/noexec/hidden.txt")],
+    );
+    const container = scanErrorsContainer(panel);
+    expect(container.hidden).toBe(false);
+    const summaryEl = container.querySelector("summary");
+    expect(summaryEl?.textContent).toBe(t("batchConvert.scanErrorsSummary", 2));
+    const rows = container.querySelectorAll(".batchconvert-scan-errors-row");
+    expect(rows).toHaveLength(2);
+    expect(container.querySelector(".batchconvert-scan-errors-path")?.textContent).toBe("locked");
+    expect(container.querySelector(".batchconvert-scan-errors-message")?.textContent).toBe(
+      "Permission denied (os error 13)",
+    );
+  });
+
+  it("a fresh exhaustive rescan clears a previous scan's error banner", async () => {
+    const panel = await openAndScan(
+      [entry("convertible", "/a.txt")],
+      [scanError("/locked")],
+    );
+    expect(scanErrorsContainer(panel).hidden).toBe(false);
+
+    scanBatchConversion.mockResolvedValueOnce(report([entry("convertible", "/a.txt")]));
+    (panel.querySelector(".batchconvert-scan") as HTMLButtonElement).click();
+    await flush();
+    expect(scanErrorsContainer(panel).hidden).toBe(true);
+  });
+
+  it("invalidating the scan (e.g. an extension-filter edit) hides the error banner along with the rest of the report", async () => {
+    const panel = await openAndScan(
+      [entry("convertible", "/a.txt")],
+      [scanError("/locked")],
+    );
+    expect(scanErrorsContainer(panel).hidden).toBe(false);
+
+    const extInput = panel.querySelector(".batchconvert-ext") as HTMLInputElement;
+    extInput.value = "md";
+    extInput.dispatchEvent(new Event("input"));
+    expect(scanErrorsContainer(panel).hidden).toBe(true);
+  });
+
+  it("a completed convert clears the error banner along with the rest of the report view", async () => {
+    const panel = await openAndScan(
+      [entry("convertible", "/a.txt")],
+      [scanError("/locked")],
+    );
+    confirmDialog.mockResolvedValue(true);
+    executeBatchConversion.mockResolvedValue([{ path: "/a.txt", ok: true, message: "" }]);
+    (panel.querySelector(".batchconvert-convert") as HTMLButtonElement).click();
+    await flush();
+    expect(scanErrorsContainer(panel).hidden).toBe(true);
+  });
+
+  it("Convert's confirm dialog uses the plain message when the scan was exhaustive", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt")]);
+    confirmDialog.mockResolvedValue(true);
+    executeBatchConversion.mockResolvedValue([{ path: "/a.txt", ok: true, message: "" }]);
+    (panel.querySelector(".batchconvert-convert") as HTMLButtonElement).click();
+    await flush();
+    expect(confirmDialog).toHaveBeenCalledWith(
+      t("batchConvert.confirmMessage", 1),
+      expect.anything(),
+    );
+  });
+
+  it("Convert's confirm dialog names the scan-error count when the report is incomplete", async () => {
+    const panel = await openAndScan(
+      [entry("convertible", "/a.txt"), entry("convertible", "/b.txt")],
+      [scanError("/locked"), scanError("/other")],
+    );
+    confirmDialog.mockResolvedValue(true);
+    executeBatchConversion.mockResolvedValue([
+      { path: "/a.txt", ok: true, message: "" },
+      { path: "/b.txt", ok: true, message: "" },
+    ]);
+    (panel.querySelector(".batchconvert-convert") as HTMLButtonElement).click();
+    await flush();
+    expect(confirmDialog).toHaveBeenCalledWith(
+      t("batchConvert.confirmMessageIncomplete", 2, 2),
+      expect.anything(),
+    );
   });
 });

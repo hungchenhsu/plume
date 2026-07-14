@@ -847,6 +847,50 @@ select:focus-visible {
   color: var(--fg-muted);
 }
 
+.batchconvert-scan-errors-container {
+  padding: 0 14px 6px;
+}
+
+.batchconvert-scan-errors {
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.batchconvert-scan-errors summary {
+  font-size: var(--font-ui-sm);
+  color: var(--warning);
+  cursor: pointer;
+}
+
+.batchconvert-scan-errors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.batchconvert-scan-errors-row {
+  display: grid;
+  grid-template-columns: minmax(80px, auto) 1fr;
+  gap: 10px;
+  font-size: var(--font-ui-xs);
+}
+
+.batchconvert-scan-errors-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  color: var(--fg-muted);
+}
+
+.batchconvert-scan-errors-message {
+  color: var(--fg-faint);
+}
+
 .batchconvert-list {
   display: flex;
   flex-direction: column;
