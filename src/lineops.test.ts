@@ -7,6 +7,8 @@
 // against.
 import { describe, expect, it } from "vitest";
 import {
+  convertLeadingSpacesToTabs,
+  convertLeadingTabsToSpaces,
   lineSpanForSelection,
   lowerCase,
   sortLines,
@@ -182,6 +184,155 @@ describe("lowerCase", () => {
 
   it("round-trips with upperCase for plain ASCII", () => {
     expect(lowerCase(upperCase("MixedCase"))).toBe("mixedcase");
+  });
+});
+
+// ROADMAP.md v0.4 Track C indentation tools: Edit > Line Operations'
+// "Convert Leading Tabs to Spaces" / "Convert Leading Spaces to Tabs".
+// Both only ever touch a line's *leading* whitespace run (the indentation),
+// stopping at the first non-whitespace character — interior and trailing
+// whitespace/content are untouched, same contract as trimTrailingWhitespace
+// only touching trailing whitespace above. Tabs expand to the *next*
+// tab-stop column, not a flat "one tab = width spaces" substitution — same
+// convention as editor.ts's `indentGuideLevels` (a tab's width depends on
+// the column it starts at, not a fixed count) — so a leading run mixing
+// tabs and spaces converts correctly either direction.
+describe("convertLeadingTabsToSpaces", () => {
+  it("returns an empty string for an empty string", () => {
+    expect(convertLeadingTabsToSpaces("", 4)).toBe("");
+  });
+
+  it("leaves a line with no leading whitespace unchanged", () => {
+    expect(convertLeadingTabsToSpaces("foo", 4)).toBe("foo");
+  });
+
+  it("converts a single leading tab to `width` spaces", () => {
+    expect(convertLeadingTabsToSpaces("\tfoo", 4)).toBe("    foo");
+  });
+
+  it("converts multiple leading tabs to that many groups of `width` spaces", () => {
+    expect(convertLeadingTabsToSpaces("\t\tfoo", 4)).toBe("        foo");
+  });
+
+  it("uses the given width, not a hardcoded 4", () => {
+    expect(convertLeadingTabsToSpaces("\tfoo", 2)).toBe("  foo");
+  });
+
+  it("leaves already-space-indented leading whitespace unchanged", () => {
+    expect(convertLeadingTabsToSpaces("    foo", 4)).toBe("    foo");
+  });
+
+  it("expands a tab mixed with leading spaces to the next tab stop, not a flat width", () => {
+    // 3 spaces then a tab, width 4: the tab only needs 1 more column to
+    // reach the next stop (column 4), not a flat 4 more (which would give
+    // 7 spaces total instead of the correct 4).
+    expect(convertLeadingTabsToSpaces("   \tfoo", 4)).toBe("    foo");
+  });
+
+  it("does not touch interior or trailing whitespace, only the leading run", () => {
+    expect(convertLeadingTabsToSpaces("\tfoo\tbar  ", 4)).toBe("    foo\tbar  ");
+  });
+
+  it("converts every line independently", () => {
+    expect(convertLeadingTabsToSpaces("\ta\n\t\tb\nc", 4)).toBe("    a\n        b\nc");
+  });
+
+  it("preserves a trailing newline when the input has one", () => {
+    expect(convertLeadingTabsToSpaces("\tfoo\n", 4)).toBe("    foo\n");
+  });
+
+  it("does not introduce a trailing newline when the input has none", () => {
+    expect(convertLeadingTabsToSpaces("\tfoo", 4)).toBe("    foo");
+  });
+
+  it("converts a whitespace-only (blank) line's tabs to spaces like any other leading run", () => {
+    expect(convertLeadingTabsToSpaces("\t\t", 4)).toBe("        ");
+  });
+
+  it("clamps a non-positive width to 1 instead of dividing by zero or throwing", () => {
+    expect(convertLeadingTabsToSpaces("\tfoo", 0)).toBe(" foo");
+    expect(convertLeadingTabsToSpaces("\tfoo", -4)).toBe(" foo");
+  });
+});
+
+describe("convertLeadingSpacesToTabs", () => {
+  it("returns an empty string for an empty string", () => {
+    expect(convertLeadingSpacesToTabs("", 4)).toBe("");
+  });
+
+  it("leaves a line with no leading whitespace unchanged", () => {
+    expect(convertLeadingSpacesToTabs("foo", 4)).toBe("foo");
+  });
+
+  it("converts exactly `width` leading spaces to one tab", () => {
+    expect(convertLeadingSpacesToTabs("    foo", 4)).toBe("\tfoo");
+  });
+
+  it("converts multiple full groups of `width` spaces to that many tabs", () => {
+    expect(convertLeadingSpacesToTabs("        foo", 4)).toBe("\t\tfoo");
+  });
+
+  it("groups by integer division of width and keeps the remainder as spaces", () => {
+    // 5 leading spaces, width 4: one full group (-> one tab) plus a
+    // 1-space remainder that isn't a full group, kept as a literal space.
+    expect(convertLeadingSpacesToTabs("     foo", 4)).toBe("\t foo");
+  });
+
+  it("keeps a sub-width run of spaces as spaces (no full group at all)", () => {
+    expect(convertLeadingSpacesToTabs("   foo", 4)).toBe("   foo");
+  });
+
+  it("uses the given width, not a hardcoded 4", () => {
+    expect(convertLeadingSpacesToTabs("  foo", 2)).toBe("\tfoo");
+  });
+
+  it("leaves already-tab-indented leading whitespace unchanged", () => {
+    expect(convertLeadingSpacesToTabs("\tfoo", 4)).toBe("\tfoo");
+  });
+
+  it("does not touch interior or trailing whitespace, only the leading run", () => {
+    expect(convertLeadingSpacesToTabs("    foo  bar  ", 4)).toBe("\tfoo  bar  ");
+  });
+
+  it("converts every line independently", () => {
+    expect(convertLeadingSpacesToTabs("    a\n        b\nc", 4)).toBe("\ta\n\t\tb\nc");
+  });
+
+  it("preserves a trailing newline when the input has one", () => {
+    expect(convertLeadingSpacesToTabs("    foo\n", 4)).toBe("\tfoo\n");
+  });
+
+  it("does not introduce a trailing newline when the input has none", () => {
+    expect(convertLeadingSpacesToTabs("    foo", 4)).toBe("\tfoo");
+  });
+
+  it("clamps a non-positive width to 1 instead of dividing by zero or throwing", () => {
+    expect(convertLeadingSpacesToTabs("  foo", 0)).toBe("\t\tfoo");
+    expect(convertLeadingSpacesToTabs("  foo", -4)).toBe("\t\tfoo");
+  });
+});
+
+describe("convertLeadingTabsToSpaces / convertLeadingSpacesToTabs round-trip", () => {
+  it("round-trips a pure-tabs document through spaces and back", () => {
+    const text = "\ta\n\t\tb\nc";
+    expect(convertLeadingSpacesToTabs(convertLeadingTabsToSpaces(text, 4), 4)).toBe(text);
+  });
+
+  it("round-trips a pure-spaces document (exact multiples of width) through tabs and back", () => {
+    const text = "    a\n        b\nc";
+    expect(convertLeadingTabsToSpaces(convertLeadingSpacesToTabs(text, 4), 4)).toBe(text);
+  });
+
+  it("round-trips spaces-with-remainder through tabs and back (remainder preserved)", () => {
+    const text = "     a"; // 5 spaces: one full group plus a 1-space remainder
+    expect(convertLeadingTabsToSpaces(convertLeadingSpacesToTabs(text, 4), 4)).toBe(text);
+  });
+
+  it("round-trips mixed leading whitespace (spaces then a tab) through the tabs conversion and back", () => {
+    const text = "   \tfoo"; // column 4 total, width 4
+    const asSpaces = convertLeadingTabsToSpaces(text, 4);
+    expect(asSpaces).toBe("    foo");
+    expect(convertLeadingSpacesToTabs(asSpaces, 4)).toBe("\tfoo");
   });
 });
 

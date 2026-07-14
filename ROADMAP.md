@@ -401,9 +401,46 @@ cases of "never misrepresent user text")
   soon-to-be-detached node. Visual feedback is the dragged tab itself
   (translateX + existing --shadow-1/--bg-base tokens), not a separate
   placeholder element.
-- [ ] Indentation tools: detected indentation (tabs/spaces + width) in
+- [x] Indentation tools: detected indentation (tabs/spaces + width) in
   the status bar, indentUnit wired to the detection, Edit-menu convert
-  leading tabs ⇄ spaces
+  leading tabs ⇄ spaces. Detection (`indentdetect.ts`, pure) is the
+  classic heuristic: skip blank lines, classify each remaining line's
+  leading run as tabs-only/spaces-only/mixed-within-a-line; any mixed
+  line, or both tabs-only and spaces-only lines present, is "mixed"; only
+  tabs-only is "tabs" (no width — a tab's display width isn't inferrable
+  from the characters themselves); only spaces-only (including depth-0
+  anchor lines) is "spaces", width = the *mode* of adjacent depth diffs
+  in document order (not the first or largest — a lone deeper jump, e.g.
+  a pasted nested block, doesn't outvote a consistent step; ties break to
+  the smaller width), falling back to the smallest observed depth when no
+  diff is computable at all (one indented line, or uniform depth with no
+  baseline); no indentation anywhere is "none". `editor.ts`'s
+  `detectIndentationOf` samples at most `INDENT_DETECTION_SAMPLE_LINES`
+  (1000) lines from the start via `Text.iterLines` (never
+  `doc.toString()`/a whole-document `sliceDoc`) — indentation style is
+  established early and doesn't need the whole file, mirroring
+  `encoding.rs`'s own bounded-sample detection. Status bar: "Spaces: N" /
+  "Tabs" / "Mixed", hidden for "none" or no active doc — deliberately NOT
+  hidden for a truncated large-file window (unlike text stats/suspicious
+  chars): indentation is a "whatever's currently loaded" question, not a
+  whole-file total a partial window would misrepresent. Computed
+  immediately on tab switch/open/reload (`showActive`) and, debounced
+  300ms (mirroring `scheduleTextStatsUpdate`), after edits/selection
+  changes. CM6 wiring: a new per-buffer `indentation` Compartment
+  (`EditorHandle.setIndentation`, mirroring `setReadOnly`/`setLanguage` —
+  not auto-reapplied inside `swap`) sets `indentUnit`
+  (`@codemirror/language`) and `EditorState.tabSize` from the detected
+  style, falling back to a new `indentWidth`/`indent_width` preference
+  (default 4, no dialog control yet — detection covers the common case)
+  for "tabs" (tabSize only; indentUnit is still confidently `"\t"`) and
+  "mixed"/"none" (both). Edit menu: "Convert Leading Tabs to Spaces" /
+  "Convert Leading Spaces to Tabs" (`lineops.ts`, pure, bidirectional
+  round-trip tested), added to the Line Operations submenu and routed
+  through `runLineOperation`'s guard like Sort/Unique/Trim; both only
+  touch each line's leading whitespace run (tab-stop-aware expansion /
+  integer-division grouping with the remainder kept as spaces), using
+  CM6's own live `tabSize` as "current effective width". `menu.rs` LABELS
+  gained the two new ids across en/zh-TW/ja/zh-CN with pinned tests.
 
 **Track D — robustness**
 - [x] #113: save_document validates a commit-time file fingerprint before

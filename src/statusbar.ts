@@ -1,5 +1,6 @@
 import type { DocumentTextStats } from "./editor";
 import { t } from "./i18n";
+import type { IndentInfo } from "./indentdetect";
 
 interface StatusInfo {
   path: string | null;
@@ -29,6 +30,7 @@ const charInspectorEl = document.querySelector<HTMLButtonElement>(
 )!;
 const textStatsEl = document.querySelector<HTMLElement>("#status-textstats")!;
 const suspiciousCharsEl = document.querySelector<HTMLElement>("#status-suspicious")!;
+const indentEl = document.querySelector<HTMLElement>("#status-indent")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
 
@@ -144,6 +146,39 @@ export function updateSuspiciousChars(count: number | null): void {
  *  last known count (no recomputation needed). */
 export function refreshSuspiciousChars(): void {
   updateSuspiciousChars(lastSuspiciousCount);
+}
+
+let lastIndentInfo: IndentInfo | null = null;
+
+/** Update (or hide) the detected-indentation segment (ROADMAP.md v0.4
+ *  Track C — "Spaces: 4" / "Tabs" / "Mixed"). Pass `null` to hide it — no
+ *  active document. Unlike `updateTextStats`/`updateSuspiciousChars`, this
+ *  is NOT hidden for a large-file (truncated) window: indentation style is
+ *  a "whatever's currently loaded" question, not a whole-file total a
+ *  partial window would misrepresent — see editor.ts `detectIndentationOf`'s
+ *  doc comment. `kind: "none"` (no indentation detected at all) also hides
+ *  the segment: there is nothing meaningful to report, the same way a
+ *  suspicious-char count of exactly 0 hides that segment above. */
+export function updateIndentInfo(info: IndentInfo | null): void {
+  lastIndentInfo = info;
+  const hidden = info === null || info.kind === "none";
+  indentEl.hidden = hidden;
+  if (hidden) {
+    indentEl.textContent = "";
+    return;
+  }
+  indentEl.textContent =
+    info.kind === "spaces"
+      ? t("statusbar.indentSpaces", info.width)
+      : info.kind === "tabs"
+        ? t("statusbar.indentTabs")
+        : t("statusbar.indentMixed");
+}
+
+/** Re-render the indentation segment after a locale change, using the last
+ *  known result (no recomputation needed). */
+export function refreshIndentInfo(): void {
+  updateIndentInfo(lastIndentInfo);
 }
 
 /** Show/hide the "building line index…" status-bar hint (large-file

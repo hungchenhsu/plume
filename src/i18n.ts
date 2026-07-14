@@ -33,6 +33,9 @@ export interface Messages {
   "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
   "statusbar.charInspector": (char: string, codepoint: string) => string;
   "statusbar.suspiciousChars": (count: number) => string;
+  "statusbar.indentSpaces": (width: number) => string;
+  "statusbar.indentTabs": string;
+  "statusbar.indentMixed": string;
 
   "confirm.unsavedChanges": (title: string) => string;
   "confirm.dontSave": string;
@@ -240,6 +243,9 @@ const en: Messages = {
     `${lines} line${lines === 1 ? "" : "s"}`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ ${count} suspicious char${count === 1 ? "" : "s"}`,
+  "statusbar.indentSpaces": (width) => `Spaces: ${width}`,
+  "statusbar.indentTabs": "Tabs",
+  "statusbar.indentMixed": "Mixed",
 
   "confirm.unsavedChanges": (title) => `"${title}" has unsaved changes.`,
   "confirm.dontSave": "Don't Save",
@@ -474,6 +480,9 @@ const zhTW: Messages = {
     `已選取：${words} 詞、${chars} 字元、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ ${count} 可疑字元`,
+  "statusbar.indentSpaces": (width) => `空格：${width}`,
+  "statusbar.indentTabs": "Tab",
+  "statusbar.indentMixed": "混合",
 
   "confirm.unsavedChanges": (title) => `「${title}」有未儲存的變更。`,
   "confirm.dontSave": "不要儲存",
@@ -692,6 +701,9 @@ const ja: Messages = {
     `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ 疑わしい文字 ${count} 件`,
+  "statusbar.indentSpaces": (width) => `スペース：${width}`,
+  "statusbar.indentTabs": "タブ",
+  "statusbar.indentMixed": "混在",
 
   "confirm.unsavedChanges": (title) => `「${title}」には保存されていない変更があります。`,
   "confirm.dontSave": "保存しない",
@@ -923,6 +935,9 @@ const zhCN: Messages = {
     `已选择：${words} 词、${chars} 字符、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ ${count} 可疑字符`,
+  "statusbar.indentSpaces": (width) => `空格：${width}`,
+  "statusbar.indentTabs": "Tab",
+  "statusbar.indentMixed": "混合",
 
   "confirm.unsavedChanges": (title) => `“${title}”有未保存的更改。`,
   "confirm.dontSave": "不保存",

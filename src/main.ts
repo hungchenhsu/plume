@@ -12,6 +12,7 @@ import {
   contentOf,
   createEditor,
   cursorOf,
+  detectIndentationOf,
   isEmptyBuffer,
   lineCountOf,
   suspiciousCharCountOf,
@@ -65,7 +66,15 @@ import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
 import { clampLine, selectCheckpoint } from "./lineindex";
-import { lowerCase, sortLines, trimTrailingWhitespace, uniqueLines, upperCase } from "./lineops";
+import {
+  convertLeadingSpacesToTabs,
+  convertLeadingTabsToSpaces,
+  lowerCase,
+  sortLines,
+  trimTrailingWhitespace,
+  uniqueLines,
+  upperCase,
+} from "./lineops";
 import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
@@ -88,12 +97,14 @@ import {
   currentInspectedChar,
   refreshCharInspector,
   refreshCursor,
+  refreshIndentInfo,
   refreshStatusBar,
   refreshSuspiciousChars,
   refreshTextStats,
   setIndexing,
   updateCharInspector,
   updateCursor,
+  updateIndentInfo,
   updatePager,
   updateStatusBar,
   updateSuspiciousChars,
@@ -211,6 +222,49 @@ function scheduleSuspiciousCharsUpdate(): void {
   suspiciousCharsTimer = window.setTimeout(computeAndShowSuspiciousChars, SUSPICIOUS_DEBOUNCE_MS);
 }
 
+// ---- Indentation detection status-bar segment + CM6 indentUnit/tabSize
+// wiring (ROADMAP.md v0.4 Track C). Same cost class and shape as text
+// stats/suspicious chars above (an O(sampled-lines) walk, bounded by
+// editor.ts's INDENT_DETECTION_SAMPLE_LINES so it's cheap even on a huge
+// file, but still gets its own debounce rather than recomputing on every
+// keystroke). Unlike text stats/suspicious chars, this is NOT hidden for a
+// truncated large-file window — see editor.ts `detectIndentationOf`'s doc
+// comment for why indentation is a "whatever's currently loaded" question,
+// not a whole-file total a partial window would misrepresent.
+const INDENT_DEBOUNCE_MS = 300;
+let indentTimer: number | null = null;
+
+/** Compute the active tab's indentation style, apply it to CM6's
+ *  indentUnit/tabSize (editor.ts `setIndentation`), and show it in the
+ *  status bar — same freshness/cancel-pending-timer contract as
+ *  `computeAndShowTextStats` above. */
+function computeAndShowIndent(): void {
+  if (indentTimer !== null) {
+    window.clearTimeout(indentTimer);
+    indentTimer = null;
+  }
+  const doc = tabs.active;
+  if (!doc) {
+    updateIndentInfo(null);
+    return;
+  }
+  const detected = detectIndentationOf(editor.snapshot());
+  editor.setIndentation(detected, preferences().indentWidth);
+  updateIndentInfo(detected);
+}
+
+/** Debounced entry point mirroring `scheduleTextStatsUpdate` above. Like
+ *  `scheduleSuspiciousCharsUpdate`, this never needs to distinguish
+ *  "selection changed" from "document changed" (indentation detection is
+ *  always whole-buffer, never selection-scoped), so recomputing on every
+ *  onCursorMoved call (which fires on both) is a harmless superset rather
+ *  than a precision requirement — same reasoning as that function's own
+ *  doc comment in editor.ts. */
+function scheduleIndentUpdate(): void {
+  if (indentTimer !== null) window.clearTimeout(indentTimer);
+  indentTimer = window.setTimeout(computeAndShowIndent, INDENT_DEBOUNCE_MS);
+}
+
 /** Cursor-position callback CM6 fires on every doc/selection change (see
  *  editor.ts's updateListener) — also schedules the debounced text-stats
  *  recompute above, since the same two triggers (content or selection
@@ -228,6 +282,7 @@ function onCursorMoved(line: number, column: number): void {
   updateCharInspector(characterBeforeCursor(editor.snapshot()));
   scheduleTextStatsUpdate();
   scheduleSuspiciousCharsUpdate();
+  scheduleIndentUpdate();
 }
 
 const editor = createEditor(
@@ -371,6 +426,7 @@ function showActive(): void {
   // call just scheduled, so it can't redundantly re-fire later.
   computeAndShowTextStats();
   computeAndShowSuspiciousChars();
+  computeAndShowIndent();
   updateWindowTitle();
   editor.focus();
   // No syntax highlighting for large-file windows: parsing tens of MB
@@ -1646,6 +1702,21 @@ void listen<string>("plume://menu", (event) => {
     case "trim_trailing_whitespace":
       runLineOperation(() => editor.transformLines(trimTrailingWhitespace));
       break;
+    // "Current effective width" (ROADMAP.md v0.4 Track C spec) is CM6's own
+    // live tabSize — already driven by indentdetect.ts's per-buffer
+    // detection via editor.ts's setIndentation (see computeAndShowIndent
+    // above) — so reading `editor.snapshot().tabSize` fresh at invocation
+    // time is exactly the right width with no separate tracking needed.
+    case "convert_leading_tabs_to_spaces":
+      runLineOperation(() =>
+        editor.transformLines((text) => convertLeadingTabsToSpaces(text, editor.snapshot().tabSize)),
+      );
+      break;
+    case "convert_leading_spaces_to_tabs":
+      runLineOperation(() =>
+        editor.transformLines((text) => convertLeadingSpacesToTabs(text, editor.snapshot().tabSize)),
+      );
+      break;
     case "move_line_up":
       runLineOperation(() => editor.moveLineUp());
       break;
@@ -1955,6 +2026,7 @@ onLocaleChange(() => {
   refreshCharInspector();
   refreshTextStats();
   refreshSuspiciousChars();
+  refreshIndentInfo();
   updateWindowTitle();
 });
 
@@ -1967,6 +2039,7 @@ void (async () => {
   refreshCharInspector();
   refreshTextStats();
   refreshSuspiciousChars();
+  refreshIndentInfo();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused.

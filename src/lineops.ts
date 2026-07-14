@@ -131,6 +131,109 @@ export function lowerCase(text: string): string {
 }
 
 /**
+ * Clamp a tab/indent width to a positive integer — guards
+ * `convertLeadingTabsToSpaces`/`convertLeadingSpacesToTabs` below against a
+ * zero or negative width, which would otherwise hit a modulo-by-zero
+ * (`column % 0` is `NaN`) or a negative-count `" ".repeat`/`"\t".repeat`
+ * (a `RangeError`). Both callers pass CM6's live `tabSize` (see editor.ts's
+ * `EditorHandle.transformLines` callers in main.ts), which is always a
+ * positive integer in practice — this is defensive, not a real-world path.
+ */
+function clampWidth(width: number): number {
+  return Math.max(1, Math.trunc(width));
+}
+
+/**
+ * Convert one line's *leading* run of spaces/tabs to spaces at `width`
+ * columns, leaving the rest of the line (interior/trailing whitespace and
+ * all other content) untouched. A tab expands to the next multiple of
+ * `width` columns, not a flat `width`-spaces substitution — same
+ * tab-stop convention as editor.ts's `indentGuideLevels` (a tab's width
+ * depends on the column it starts at) — so this is correct even when the
+ * leading run already mixes tabs and spaces, not just for a pure-tabs line.
+ */
+function expandLeadingIndentToSpaces(line: string, width: number): string {
+  let end = 0;
+  while (end < line.length && (line[end] === " " || line[end] === "\t")) end++;
+  if (end === 0) return line;
+
+  let column = 0;
+  let spaces = "";
+  for (let i = 0; i < end; i++) {
+    if (line[i] === "\t") {
+      const toNextStop = width - (column % width);
+      spaces += " ".repeat(toNextStop);
+      column += toNextStop;
+    } else {
+      spaces += " ";
+      column += 1;
+    }
+  }
+  return spaces + line.slice(end);
+}
+
+/**
+ * Convert leading tabs (or a leading run mixing tabs and spaces) to spaces
+ * throughout `text`, at `width` spaces per tab stop. Edit > Line
+ * Operations' "Convert Leading Tabs to Spaces" (ROADMAP.md v0.4 Track C);
+ * `width` is the buffer's current effective tab width (CM6's own
+ * `EditorState.tabSize`, itself driven by indentdetect.ts's detection — see
+ * editor.ts `EditorHandle.setIndentation`), not necessarily 4. See
+ * `expandLeadingIndentToSpaces` for the per-line conversion and this
+ * module's header comment for the shared trailing-newline contract.
+ */
+export function convertLeadingTabsToSpaces(text: string, width: number): string {
+  if (text === "") return "";
+  const w = clampWidth(width);
+  const { lines, trailingNewline } = splitLines(text);
+  const converted = lines.map((line) => expandLeadingIndentToSpaces(line, w));
+  return joinLines(converted, trailingNewline);
+}
+
+/**
+ * Inverse per-line conversion of `expandLeadingIndentToSpaces`: measure the
+ * leading run's total column width (tabs already present expand to the next
+ * stop, same convention as above, so a leading run that already mixes tabs
+ * and spaces is handled correctly too), then re-emit one tab per full
+ * `width`-column group with any leftover columns (less than `width`) kept
+ * as literal spaces — "group by integer division of width, keep the
+ * remainder as spaces".
+ */
+function collapseLeadingIndentToTabs(line: string, width: number): string {
+  let end = 0;
+  while (end < line.length && (line[end] === " " || line[end] === "\t")) end++;
+  if (end === 0) return line;
+
+  let column = 0;
+  for (let i = 0; i < end; i++) {
+    column += line[i] === "\t" ? width - (column % width) : 1;
+  }
+  const tabs = Math.floor(column / width);
+  const remainder = column % width;
+  return "\t".repeat(tabs) + " ".repeat(remainder) + line.slice(end);
+}
+
+/**
+ * Convert leading spaces (or a leading run mixing spaces and tabs) to tabs
+ * throughout `text`, grouping every `width` columns of leading indentation
+ * into one tab and keeping any remaining (less-than-`width`) columns as
+ * spaces. Edit > Line Operations' "Convert Leading Spaces to Tabs"
+ * (ROADMAP.md v0.4 Track C); `width` is the buffer's current effective tab
+ * width, same as `convertLeadingTabsToSpaces`. Round-trips with
+ * `convertLeadingTabsToSpaces` at the same width whenever the original
+ * leading whitespace was already a whole number of `width`-column groups
+ * (see lineops.test.ts) — a remainder is preserved as spaces either way, so
+ * it round-trips too.
+ */
+export function convertLeadingSpacesToTabs(text: string, width: number): string {
+  if (text === "") return "";
+  const w = clampWidth(width);
+  const { lines, trailingNewline } = splitLines(text);
+  const converted = lines.map((line) => collapseLeadingIndentToTabs(line, w));
+  return joinLines(converted, trailingNewline);
+}
+
+/**
  * Compute the `[from, to)` character span, expanded to whole lines, that a
  * line operation (Sort/Unique/Trim) should act on for a given non-empty
  * selection. Reimplements CodeMirror 6's own `Text.lineAt(pos)` line-

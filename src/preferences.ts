@@ -62,6 +62,14 @@ let current: Preferences = {
   // zero-width character highlighting), not a convenience aid, so it
   // should be visible without the user having to know to opt in.
   suspiciousChars: true,
+  // Fallback tab width (ROADMAP.md v0.4 Track C) — used only when per-buffer
+  // indentation detection can't confidently infer one (see editor.ts
+  // `detectIndentationOf`/`setIndentation`); 4 matches the common default
+  // across editors (VS Code, Sublime, JetBrains) and prefs.rs's own default.
+  // No Preferences-dialog control for this yet (deliberately out of scope
+  // for this cycle — detection covers the common case), so it only ever
+  // changes by hand-editing preferences.json.
+  indentWidth: 4,
   extensionEncodings: [],
 };
 
@@ -383,6 +391,7 @@ export function showPreferencesDialog(): void {
       showInvisibles: current.showInvisibles,
       indentGuides: current.indentGuides,
       suspiciousChars: current.suspiciousChars,
+      indentWidth: current.indentWidth,
       extensionEncodings: normalizeTable(extensions.read()),
     };
     applyAll();
