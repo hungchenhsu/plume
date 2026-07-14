@@ -261,6 +261,27 @@ cases of "never misrepresent user text")
   through a second handle after the check passes and asserts the read
   stops at the take-limit sentinel, not the file's real (larger) size
   [danger]
+- [x] #116: batch scan's folder walk (`collect_files` in `batch.rs`) used
+  to silently `continue`/return `Ok(())` past an unreadable subdirectory or
+  an entry whose metadata failed — the dry-run report looked complete
+  while quietly missing whatever that subtree contained, risking a
+  destructive convert over a report the user wrongly believed was
+  exhaustive. The root folder failing to open now fails
+  `scan_batch_conversion` closed (`Err`) instead of returning an
+  empty-looking report; a subdirectory or entry failing mid-walk is
+  instead recorded in a new `BatchScanReport.scan_errors` field and the
+  walk continues with whatever it can still read. The batch panel shows a
+  collapsible "N items could not be scanned" disclosure above the report
+  (i18n'd across en/zh-TW/ja/zh-CN) and switches the Convert confirm
+  dialog to a stronger, scan-error-count-naming message — the native
+  confirm dialog covers the panel itself, so this is the only warning left
+  at the actual moment of the destructive action. `execute_batch_conversion`
+  semantics are unchanged: it still only converts the scanned, checked
+  subset. Regression tests: a nonexistent root directory fails closed; a
+  chmod 000 subdirectory and a chmod 0600 (no execute bit) parent both
+  reproduce the two previously-silent failure modes deterministically and
+  assert they land in `scan_errors` while the readable sibling still
+  scans normally [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled

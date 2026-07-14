@@ -104,10 +104,31 @@ pub struct BatchEntry {
     pub line_ending: String,
 }
 
+/// A directory or entry the walk could not read at all — recorded instead
+/// of silently skipped (issue #116). `path` is the containing directory
+/// when the directory listing itself failed (`read_dir`), or the specific
+/// entry's own path when only its metadata lookup failed; `message` is the
+/// OS error text (e.g. "Permission denied (os error 13)").
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanError {
+    pub path: String,
+    pub message: String,
+}
+
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchScanReport {
     pub entries: Vec<BatchEntry>,
+    /// Directories or entries the walk could not read — each one means
+    /// `entries` above is missing whatever that path may have contained.
+    /// Empty means the walk completed exhaustively. Callers (the batch UI)
+    /// must never treat a non-empty `entries` list as a complete picture
+    /// while this is non-empty: see issue #116 and this module's doc
+    /// comment. The root folder itself failing to open is a harder
+    /// failure than this — `scan_batch_conversion` returns `Err` outright
+    /// rather than an empty report with nothing to explain why.
+    pub scan_errors: Vec<ScanError>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -139,19 +160,58 @@ fn extension_matches(path: &Path, extensions: &[String]) -> bool {
 /// does. Bails with `Err` the moment the running total would exceed
 /// `limit` — before descending further — so pointing this at a huge tree
 /// fails fast instead of enumerating it all first.
+///
+/// Issue #116: a subdirectory that can't be listed, or an entry whose
+/// metadata can't be read, used to be silently skipped — the dry-run
+/// report would look complete while quietly missing an entire subtree.
+/// Both failures are now pushed onto `scan_errors` and the walk continues
+/// with whatever it *can* read, rather than aborting the whole scan over
+/// one bad subtree (that would throw away legitimate results from
+/// unrelated siblings) or pretending nothing was missed. The root
+/// directory itself failing this same `read_dir` call is handled
+/// differently — see `scan_with_limit`, which checks the root before ever
+/// calling this function and fails the whole command closed instead.
 fn collect_files(
     dir: &Path,
     extensions: &[String],
     limit: usize,
     files: &mut Vec<PathBuf>,
+    scan_errors: &mut Vec<ScanError>,
 ) -> Result<(), String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            scan_errors.push(ScanError {
+                path: dir.to_string_lossy().into_owned(),
+                message: e.to_string(),
+            });
+            return Ok(());
+        }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                // The OS returned an entry-less error mid-iteration (rare
+                // transient I/O failure) — no path to report beyond the
+                // directory being walked.
+                scan_errors.push(ScanError {
+                    path: dir.to_string_lossy().into_owned(),
+                    message: e.to_string(),
+                });
+                continue;
+            }
+        };
         let path = entry.path();
-        let Ok(meta) = entry.metadata() else {
-            continue;
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(e) => {
+                scan_errors.push(ScanError {
+                    path: path.to_string_lossy().into_owned(),
+                    message: e.to_string(),
+                });
+                continue;
+            }
         };
         if path.is_symlink() {
             continue;
@@ -162,7 +222,7 @@ fn collect_files(
             if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
                 continue;
             }
-            collect_files(&path, extensions, limit, files)?;
+            collect_files(&path, extensions, limit, files, scan_errors)?;
         } else if meta.is_file() && extension_matches(&path, extensions) {
             files.push(path);
             if files.len() > limit {
@@ -315,15 +375,30 @@ fn scan_with_limit(
     let target = resolve_target_encoding(target_encoding)?;
     validate_line_ending(line_ending)?;
     let lower_extensions: Vec<String> = extensions.iter().map(|e| e.to_lowercase()).collect();
+    let root = Path::new(dir);
+
+    // Fail closed if the root folder itself can't even be listed (doesn't
+    // exist, permissions revoked, vanished) — an empty report would look
+    // identical to "genuinely no matching files" and hand the user false
+    // confidence to proceed with a destructive convert over what's really
+    // a scan that never ran (issue #116). This is deliberately a harder
+    // failure than a nested subdirectory hitting the same error inside
+    // `collect_files` below, which instead records the error and keeps
+    // whatever the rest of the tree can still offer.
+    std::fs::read_dir(root).map_err(|e| format!("Cannot read folder {dir}: {e}"))?;
 
     let mut files = Vec::new();
-    collect_files(Path::new(dir), &lower_extensions, limit, &mut files)?;
+    let mut scan_errors = Vec::new();
+    collect_files(root, &lower_extensions, limit, &mut files, &mut scan_errors)?;
 
     let entries = files
         .iter()
         .map(|path| classify_file(path, target, target_with_bom, line_ending))
         .collect();
-    Ok(BatchScanReport { entries })
+    Ok(BatchScanReport {
+        entries,
+        scan_errors,
+    })
 }
 
 /// Dry-run scan: classify every matching file under `dir` against the
@@ -339,6 +414,14 @@ fn scan_with_limit(
 /// otherwise the file is auto-detected (no per-extension hint, matching
 /// `encoding::decode_auto`) and classified `undecodable` / `alreadyTarget`
 /// (both axes unchanged) / `lossy` / `convertible`.
+///
+/// Issue #116: this returns `Err` outright if `dir` itself can't be
+/// listed (missing, permissions) rather than an empty-looking report.
+/// Once the walk is underway, a subdirectory or entry that can't be read
+/// no longer silently vanishes from the report either — it's recorded in
+/// the returned `BatchScanReport.scan_errors`, which the frontend must
+/// surface as an incomplete-scan warning rather than treating `entries`
+/// alone as the full picture.
 #[tauri::command]
 pub fn scan_batch_conversion(
     dir: String,
@@ -1398,6 +1481,150 @@ mod tests {
             err.message.to_lowercase().contains("too large") || err.message.contains("grew"),
             "message should explain the file grew past the limit: {}",
             err.message
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #116 (failing-test-first): a folder that doesn't exist (or
+    /// whose permissions were just revoked) used to come back as an empty
+    /// `Ok` report — indistinguishable from "this folder genuinely has no
+    /// matching files" — handing the user false confidence to skip
+    /// straight to a destructive convert. The root directory failing to
+    /// even open must fail the whole command closed instead.
+    #[test]
+    fn scan_fails_closed_when_root_directory_does_not_exist() {
+        let dir = std::env::temp_dir().join("plume-batch-does-not-exist-at-all");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!dir.exists(), "fixture precondition: path must not exist");
+
+        let err = scan_batch_conversion(
+            dir.to_string_lossy().into_owned(),
+            vec![],
+            "UTF-8".to_string(),
+            false,
+            "keep".to_string(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains(&dir.to_string_lossy().into_owned()) || !err.is_empty(),
+            "error should explain the folder could not be read: {err}"
+        );
+    }
+
+    /// Issue #116 (failing-test-first): a subdirectory that can't be
+    /// listed (permission revoked, or vanished mid-walk) used to be
+    /// silently dropped by `collect_files`'s `let Ok(entries) = ... else
+    /// { return Ok(()) }` — the report looked complete while quietly
+    /// missing an entire subtree. It must now show up in
+    /// `BatchScanReport.scan_errors`, and — unlike the whole-root failure
+    /// above — must not stop the rest of the tree (an unrelated readable
+    /// sibling file) from being scanned and reported normally.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_subdirectory_is_reported_not_silently_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fixture_dir("unreadable-subdir");
+        std::fs::write(dir.join("readable.txt"), "hello world\n").unwrap();
+        let locked = dir.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("hidden.txt"), "must never be seen\n").unwrap();
+        // No read/execute bit at all: `read_dir(&locked)` itself fails.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let report = scan_batch_conversion(
+            dir.to_string_lossy().into_owned(),
+            vec![],
+            "UTF-8".to_string(),
+            false,
+            "keep".to_string(),
+        );
+
+        // Restore permissions immediately — before any assertion below can
+        // panic and leave a locked directory behind for the next test run
+        // on this machine (`remove_dir_all` can't recurse into it either).
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let report = report.expect("a locked subdirectory must not fail the whole scan closed");
+        assert_eq!(
+            report.entries.len(),
+            1,
+            "the readable sibling file must still be scanned: {:?}",
+            report.entries
+        );
+        assert_eq!(
+            entry_for(&report.entries, "readable.txt").status,
+            STATUS_ALREADY_TARGET
+        );
+        assert_eq!(
+            report.scan_errors.len(),
+            1,
+            "the locked directory must be surfaced, not silently dropped: {:?}",
+            report.scan_errors
+        );
+        assert!(
+            Path::new(&report.scan_errors[0].path).ends_with("locked"),
+            "scan error should name the locked directory: {:?}",
+            report.scan_errors[0]
+        );
+        assert!(
+            !report.scan_errors[0].message.is_empty(),
+            "scan error should carry the OS error text"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #116 (failing-test-first), the other silently-dropped path
+    /// named in the issue: `entry.metadata()` failing (as opposed to
+    /// `read_dir` on the containing directory failing, covered above). A
+    /// directory with read permission but no execute/search bit lets
+    /// `read_dir` list child names just fine, but resolving/stat-ing any
+    /// child through it fails — reproducing this half of the bug
+    /// deterministically rather than racing a real vanish-mid-walk.
+    #[cfg(unix)]
+    #[test]
+    fn entries_with_unreadable_metadata_are_reported_not_silently_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fixture_dir("no-execute-bit");
+        std::fs::write(dir.join("readable.txt"), "hello world\n").unwrap();
+        let no_exec = dir.join("noexec");
+        std::fs::create_dir_all(&no_exec).unwrap();
+        std::fs::write(no_exec.join("hidden.txt"), "unreachable\n").unwrap();
+        // Read-only, no execute: `read_dir` can still enumerate
+        // "hidden.txt"'s name, but `entry.metadata()` on it fails to
+        // resolve/stat the child (needs search permission on `no_exec`).
+        std::fs::set_permissions(&no_exec, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let report = scan_batch_conversion(
+            dir.to_string_lossy().into_owned(),
+            vec![],
+            "UTF-8".to_string(),
+            false,
+            "keep".to_string(),
+        );
+
+        // Restore before any assertion can panic — same reasoning as
+        // unreadable_subdirectory_is_reported_not_silently_dropped above.
+        std::fs::set_permissions(&no_exec, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let report = report.expect("an unreadable entry must not fail the whole scan closed");
+        assert_eq!(
+            report.entries.len(),
+            1,
+            "the readable sibling file must still be scanned: {:?}",
+            report.entries
+        );
+        assert_eq!(
+            report.scan_errors.len(),
+            1,
+            "the unreadable child's metadata failure must be surfaced, not silently skipped: {:?}",
+            report.scan_errors
+        );
+        assert!(
+            Path::new(&report.scan_errors[0].path).ends_with("hidden.txt"),
+            "scan error should name the specific entry whose metadata failed: {:?}",
+            report.scan_errors[0]
         );
 
         std::fs::remove_dir_all(&dir).ok();

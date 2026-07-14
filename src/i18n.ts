@@ -148,9 +148,11 @@ export interface Messages {
   "batchConvert.includeFileLabel": string;
   "batchConvert.convertButton": (count: number) => string;
   "batchConvert.confirmMessage": (count: number) => string;
+  "batchConvert.confirmMessageIncomplete": (count: number, scanErrorCount: number) => string;
   "batchConvert.rescanNeeded": string;
   "batchConvert.converting": string;
   "batchConvert.resultSummary": (ok: number, failed: number) => string;
+  "batchConvert.scanErrorsSummary": (count: number) => string;
 
   "streamReplace.title": (file: string) => string;
   "streamReplace.searchPlaceholder": string;
@@ -339,12 +341,19 @@ const en: Messages = {
     `Convert ${count} file${count === 1 ? "" : "s"} in place? Each file is ` +
     `re-encoded from the auto-detected encoding shown in the report — ` +
     `review the Detected column first. This cannot be undone.`,
+  "batchConvert.confirmMessageIncomplete": (count, scanErrorCount) =>
+    `Convert ${count} file${count === 1 ? "" : "s"} in place? ${scanErrorCount} ` +
+    `item${scanErrorCount === 1 ? "" : "s"} could not be scanned, so this report may ` +
+    `be missing files — review the Detected column and the scan-error list first. ` +
+    `This cannot be undone.`,
   "batchConvert.rescanNeeded": "Settings changed — scan again before converting.",
   "batchConvert.converting": "Converting…",
   "batchConvert.resultSummary": (ok, failed) =>
     failed === 0
       ? `Converted ${ok} file${ok === 1 ? "" : "s"}.`
       : `Converted ${ok} file${ok === 1 ? "" : "s"}, ${failed} failed.`,
+  "batchConvert.scanErrorsSummary": (count) =>
+    `${count} item${count === 1 ? "" : "s"} could not be scanned — this report may be incomplete.`,
 
   "streamReplace.title": (file) => `Replace in Large File — ${file}`,
   "streamReplace.searchPlaceholder": "Search…",
@@ -546,10 +555,15 @@ const zhTW: Messages = {
   "batchConvert.confirmMessage": (count) =>
     `即將就地轉換 ${count} 個檔案？每個檔案將依報告中自動偵測的編碼` +
     `（Detected 欄）重新編碼——請先確認偵測結果。此操作無法復原。`,
+  "batchConvert.confirmMessageIncomplete": (count, scanErrorCount) =>
+    `即將就地轉換 ${count} 個檔案？另有 ${scanErrorCount} 個項目無法掃描，本報告` +
+    `可能未涵蓋所有檔案——請先確認 Detected 欄與掃描錯誤清單。此操作無法復原。`,
   "batchConvert.rescanNeeded": "設定已變更——請重新掃描後再轉換。",
   "batchConvert.converting": "轉換中…",
   "batchConvert.resultSummary": (ok, failed) =>
     failed === 0 ? `已轉換 ${ok} 個檔案。` : `已轉換 ${ok} 個檔案，失敗 ${failed} 個。`,
+  "batchConvert.scanErrorsSummary": (count) =>
+    `有 ${count} 個項目無法掃描——本報告可能不完整。`,
 
   "streamReplace.title": (file) => `在大型檔案中取代 — ${file}`,
   "streamReplace.searchPlaceholder": "尋找…",
@@ -747,12 +761,18 @@ const ja: Messages = {
     `${count} 件のファイルをその場で変換しますか？各ファイルはレポートに表示された` +
     `自動検出エンコーディング（Detected 列）に基づいて再エンコードされます。先に検出結果を` +
     `ご確認ください。この操作は元に戻せません。`,
+  "batchConvert.confirmMessageIncomplete": (count, scanErrorCount) =>
+    `${count} 件のファイルをその場で変換しますか？${scanErrorCount} 件の項目をスキャンでき` +
+    `なかったため、このレポートにはファイルが漏れている可能性があります——先に Detected 列と` +
+    `スキャンエラーの一覧をご確認ください。この操作は元に戻せません。`,
   "batchConvert.rescanNeeded": "設定が変更されました — 変換前に再度スキャンしてください。",
   "batchConvert.converting": "変換中…",
   "batchConvert.resultSummary": (ok, failed) =>
     failed === 0
       ? `${ok} 件のファイルを変換しました。`
       : `${ok} 件のファイルを変換しました。${failed} 件失敗。`,
+  "batchConvert.scanErrorsSummary": (count) =>
+    `${count} 件の項目をスキャンできませんでした — このレポートは不完全な可能性があります。`,
 
   "streamReplace.title": (file) => `大きいファイル内で置換 — ${file}`,
   "streamReplace.searchPlaceholder": "検索…",
@@ -952,10 +972,15 @@ const zhCN: Messages = {
   "batchConvert.confirmMessage": (count) =>
     `即将就地转换 ${count} 个文件？每个文件将依报告中自动检测的编码` +
     `（Detected 列）重新编码——请先确认检测结果。此操作无法撤销。`,
+  "batchConvert.confirmMessageIncomplete": (count, scanErrorCount) =>
+    `即将就地转换 ${count} 个文件？另有 ${scanErrorCount} 个项目无法扫描，本报告` +
+    `可能未涵盖所有文件——请先确认 Detected 列与扫描错误列表。此操作无法撤销。`,
   "batchConvert.rescanNeeded": "设置已更改——请重新扫描后再转换。",
   "batchConvert.converting": "转换中…",
   "batchConvert.resultSummary": (ok, failed) =>
     failed === 0 ? `已转换 ${ok} 个文件。` : `已转换 ${ok} 个文件，失败 ${failed} 个。`,
+  "batchConvert.scanErrorsSummary": (count) =>
+    `有 ${count} 个项目无法扫描——本报告可能不完整。`,
 
   "streamReplace.title": (file) => `在大文件中替换 — ${file}`,
   "streamReplace.searchPlaceholder": "查找…",

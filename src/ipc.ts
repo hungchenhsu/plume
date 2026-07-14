@@ -418,8 +418,24 @@ export interface BatchEntry {
   lineEnding: string;
 }
 
+export interface BatchScanError {
+  /** The directory that couldn't be listed, or the specific entry whose
+   *  metadata couldn't be read. */
+  path: string;
+  /** OS error text, e.g. "Permission denied (os error 13)". */
+  message: string;
+}
+
 export interface BatchScanReport {
   entries: BatchEntry[];
+  /** Directories or entries the scan could not read — each one means
+   *  `entries` above may be missing whatever that path contained. Empty
+   *  means the walk completed exhaustively; a non-empty list must never
+   *  be treated as "no matching files there" (issue #116). The root
+   *  folder itself failing to open is a harder failure than this — the
+   *  `scanBatchConversion` call rejects outright instead of returning an
+   *  empty-looking report. */
+  scanErrors: BatchScanError[];
 }
 
 /**
@@ -431,7 +447,10 @@ export interface BatchScanReport {
  * `targetWithBom` is then ignored). `lineEnding` is one of `"keep"` |
  * `"LF"` | `"CRLF"`. `extensions` is a list of lowercase, dot-less
  * extensions (e.g. ["txt", "md"]); an empty list matches every file.
- * Rejects if the folder contains more than 2000 matching files.
+ * Rejects if the folder contains more than 2000 matching files, or if the
+ * folder itself can't be listed at all (issue #116) — see
+ * `BatchScanReport.scanErrors` for entries the walk still partially
+ * missed after that point.
  */
 export function scanBatchConversion(
   dir: string,
