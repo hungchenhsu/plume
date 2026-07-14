@@ -207,7 +207,7 @@ cases of "never misrepresent user text")
 **Track C — everyday editing comfort**
 - [ ] Multi-cursor: allowMultipleSelections plus select-next/all
   occurrence commands, Edit-menu entries, platform shortcuts
-- [ ] Line shuffle ops in the Edit menu: move line up/down, duplicate,
+- [x] Line shuffle ops in the Edit menu: move line up/down, duplicate,
   delete (bindings may already exist via the default keymap — expose
   and complete them)
 - [ ] Word/char/line count status-bar segment: selection-aware,
