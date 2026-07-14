@@ -194,7 +194,7 @@ cases of "never misrepresent user text")
   is real [danger]
 
 **Track B — large files & performance**
-- [ ] #107: transformLines computes line spans via lineAt instead of
+- [x] #107: transformLines computes line spans via lineAt instead of
   materializing the document
 - [ ] Streaming encoding conversion for large files: >10 MB files
   converted via streaming decode→re-encode with atomic temp+rename and
