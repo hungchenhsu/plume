@@ -1,3 +1,4 @@
+import type { DocumentTextStats } from "./editor";
 import { t } from "./i18n";
 
 interface StatusInfo {
@@ -20,6 +21,7 @@ const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
 const indexingEl = document.querySelector<HTMLElement>("#status-indexing")!;
 const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
+const textStatsEl = document.querySelector<HTMLElement>("#status-textstats")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
 
@@ -49,6 +51,31 @@ export function refreshCursor(): void {
  *  reaching into CodeMirror internals directly. */
 export function currentCursorLine(): number {
   return lastCursor.line;
+}
+
+let lastTextStats: DocumentTextStats | null = null;
+
+/** Update (or hide) the word/char/line count segment (ROADMAP.md v0.4
+ *  Track C). Pass `null` to hide it entirely — no active document, or a
+ *  large-file (truncated) window, where stats over just the loaded window
+ *  would misrepresent the whole file (see main.ts's call sites). */
+export function updateTextStats(result: DocumentTextStats | null): void {
+  lastTextStats = result;
+  textStatsEl.hidden = result === null;
+  if (result === null) {
+    textStatsEl.textContent = "";
+    return;
+  }
+  const { chars, words, lines } = result.stats;
+  textStatsEl.textContent = result.selected
+    ? t("statusbar.textStatsSelection", words, chars, lines)
+    : t("statusbar.textStats", words, chars, lines);
+}
+
+/** Re-render the text-stats segment after a locale change, using the last
+ *  known result (no recomputation needed). */
+export function refreshTextStats(): void {
+  updateTextStats(lastTextStats);
 }
 
 /** Show/hide the "building line index…" status-bar hint (large-file

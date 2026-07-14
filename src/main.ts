@@ -7,7 +7,14 @@ import {
   open as openDialog,
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
-import { contentOf, createEditor, cursorOf, isEmptyBuffer, lineCountOf } from "./editor";
+import {
+  contentOf,
+  createEditor,
+  cursorOf,
+  isEmptyBuffer,
+  lineCountOf,
+  textStatsOf,
+} from "./editor";
 import { encodingChoices, reopenEncodingChoices } from "./encodings";
 import { onLocaleChange, t } from "./i18n";
 import {
@@ -75,10 +82,12 @@ import {
   currentCursorLine,
   refreshCursor,
   refreshStatusBar,
+  refreshTextStats,
   setIndexing,
   updateCursor,
   updatePager,
   updateStatusBar,
+  updateTextStats,
 } from "./statusbar";
 import { TabStore, type Doc } from "./tabs";
 
@@ -102,6 +111,57 @@ const tabs = new TabStore(document.querySelector<HTMLElement>("#tabbar")!, {
   onNew: () => newTab(),
 });
 
+// ---- Word/char/line count status-bar segment (ROADMAP.md v0.4 Track C).
+// textStatsOf's whole-document pass is O(document length) — fine for a
+// one-off (tab switch, open, reload — see showActive below, which calls
+// computeAndShowTextStats directly) but too expensive to redo on every
+// keystroke of a multi-MB file, unlike the cursor-position math in
+// onCursorMoved below (O(log n) via Text.lineAt, and stays synchronous).
+// There's no existing throttle on that cursor/doc-changed path to
+// piggyback on — editor.ts's updateListener calls it synchronously on
+// every CM6 transaction — so the expensive recompute gets its own
+// debounce instead, mirroring scheduleBackup's setTimeout debounce below.
+const TEXTSTATS_DEBOUNCE_MS = 300;
+let textStatsTimer: number | null = null;
+
+/** Compute and show stats for whatever tab is active *right now* — always
+ *  reads tabs.active/editor.snapshot() fresh rather than anything
+ *  captured at schedule time, so a debounced recompute that fires after
+ *  the user has switched (or closed) tabs just shows the new tab's own
+ *  stats instead of stale ones for a tab that's no longer active. Also
+ *  cancels any pending debounced recompute, so calling this directly
+ *  (tab switch, open, reload, large-file jump — see showActive) never
+ *  leaves a stale timer to redundantly re-fire moments later. */
+function computeAndShowTextStats(): void {
+  if (textStatsTimer !== null) {
+    window.clearTimeout(textStatsTimer);
+    textStatsTimer = null;
+  }
+  const doc = tabs.active;
+  if (!doc || doc.truncated) {
+    updateTextStats(null);
+    return;
+  }
+  updateTextStats(textStatsOf(editor.snapshot()));
+}
+
+/** Debounced entry point for the high-frequency path (typing, selecting):
+ *  recomputes only after edits/selection changes settle for a short
+ *  moment, instead of on every keystroke. */
+function scheduleTextStatsUpdate(): void {
+  if (textStatsTimer !== null) window.clearTimeout(textStatsTimer);
+  textStatsTimer = window.setTimeout(computeAndShowTextStats, TEXTSTATS_DEBOUNCE_MS);
+}
+
+/** Cursor-position callback CM6 fires on every doc/selection change (see
+ *  editor.ts's updateListener) — also schedules the debounced text-stats
+ *  recompute above, since the same two triggers (content or selection
+ *  changed) are exactly what should invalidate it. */
+function onCursorMoved(line: number, column: number): void {
+  updateCursor(line, column);
+  scheduleTextStatsUpdate();
+}
+
 const editor = createEditor(
   document.querySelector("#editor")!,
   () => {
@@ -120,7 +180,7 @@ const editor = createEditor(
       scheduleBackup();
     }
   },
-  updateCursor,
+  onCursorMoved,
   () => void autoAppendChunk(),
   () => void prependChunk(),
 );
@@ -215,6 +275,11 @@ function showActive(): void {
   tabs.render();
   updateStatusBar(doc);
   updatePager(pagerState(doc));
+  // Immediate, not debounced: this is a discrete tab switch/open/reload/
+  // jump, not the high-frequency typing path scheduleTextStatsUpdate
+  // exists for. Also cancels whatever editor.swap's own onCursorMoved
+  // call just scheduled, so it can't redundantly re-fire later.
+  computeAndShowTextStats();
   updateWindowTitle();
   editor.focus();
   // No syntax highlighting for large-file windows: parsing tens of MB
@@ -1712,6 +1777,7 @@ onLocaleChange(() => {
   tabs.render();
   refreshStatusBar();
   refreshCursor();
+  refreshTextStats();
   updateWindowTitle();
 });
 
@@ -1721,6 +1787,7 @@ void (async () => {
   await initPreferences(editor);
   refreshStatusBar();
   refreshCursor();
+  refreshTextStats();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused.

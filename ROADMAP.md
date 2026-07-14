@@ -216,9 +216,36 @@ cases of "never misrepresent user text")
 - [x] Line shuffle ops in the Edit menu: move line up/down, duplicate,
   delete (bindings may already exist via the default keymap — expose
   and complete them)
-- [ ] Word/char/line count status-bar segment: selection-aware,
+- [x] Word/char/line count status-bar segment: selection-aware,
   CJK-aware word counting; computed without materializing the document;
-  hidden in large-file windows
+  hidden in large-file windows. Pure counting (`textstats.ts`) is split
+  from the CM6 walk (`editor.ts`'s `textStatsOf`): a streaming accumulator
+  fed one `Text.iterRange` chunk at a time, never `doc.toString()`/a
+  whole-range `sliceDoc` (issue #107's anti-pattern) — verified against
+  `@codemirror/state`'s own source that a chunk is always a whole line, a
+  line break, or (only at the caller's own from/to) a boundary-trimmed
+  partial line, so a word or UTF-16 surrogate pair is never split by an
+  *internal* chunk boundary; the accumulator still carries a trailing
+  high surrogate and an in-word-run flag across chunks defensively. CJK
+  word counting: CJK Unified Ideographs (U+4E00-U+9FFF) + Extension A
+  (U+3400-U+4DBF), Hiragana (U+3040-U+309F), Katakana (U+30A0-U+30FF), and
+  Hangul syllables (U+AC00-U+D7A3) each count as one word per character;
+  everything else groups into `\p{L}\p{N}` runs. No selection shows
+  whole-document stats; one or more non-empty selection ranges show
+  selection stats instead, summed across every range (including "lines,"
+  per spec — two single-line ranges on the same physical line sum to 2,
+  a deliberate, documented trade-off over tracking distinct line numbers
+  touched). Performance: cursor-position updates (`onCursorMoved`) have no
+  existing throttle to piggyback on (called synchronously on every CM6
+  transaction, but O(log n) via `Text.lineAt`) — text stats are O(document
+  length), so they get their own 300ms `setTimeout` debounce
+  (`scheduleTextStatsUpdate` in main.ts, mirroring the existing hot-exit
+  backup debounce), while tab switch/open/reload/large-file jump compute
+  immediately via the same `showActive` choke point everything else
+  already uses. Hidden entirely (`updateTextStats(null)`) for
+  `doc.truncated` large-file windows. i18n: `statusbar.textStats` /
+  `statusbar.textStatsSelection` across en/zh-TW/ja/zh-CN, English
+  pluralizing each noun independently per the `resultSummary` precedent.
 - [ ] Per-tab read-only mode (View menu + status-bar indicator, reusing
   the existing readOnly compartment; large-file preview read-only state
   cannot be lifted)
