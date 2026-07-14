@@ -22,6 +22,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     windowStartLine: null,
     bookmarks: [],
     backupName: null,
+    fingerprint: null,
     buffer: {} as EditorBuffer,
   };
 }

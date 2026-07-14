@@ -3,6 +3,7 @@ mod batch;
 mod chunk;
 mod comparepreview;
 mod encoding;
+mod fsguard;
 mod hexdump;
 mod lineindex;
 mod menu;
@@ -16,6 +17,7 @@ mod store;
 mod streamreplace;
 mod watcher;
 
+use fsguard::Fingerprint;
 use serde::Serialize;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -71,6 +73,13 @@ pub struct OpenedDocument {
     total_size: u64,
     /// When truncated: file offset where the next chunk begins.
     next_offset: Option<u64>,
+    /// Metadata snapshot of the file as it was at open time, opaque to the
+    /// frontend (see `fsguard.rs`). `None` only when the snapshot itself
+    /// couldn't be captured (e.g. a filesystem that doesn't report mtime) —
+    /// the frontend stores whatever comes back and passes it right back as
+    /// `save_document`'s `expected_fingerprint`, where `None` means "no
+    /// verified baseline, skip the staleness check" (issue #113).
+    fingerprint: Option<Fingerprint>,
 }
 
 /// Cut a preview slice at the last line boundary so the tail is not a
@@ -141,6 +150,17 @@ fn preview_slice(bytes: &[u8], max: usize, utf16: Option<encoding::Utf16Variant>
 pub struct SaveResult {
     unmappable: bool,
     written: bool,
+    /// True when `expected_fingerprint` was given and no longer matches the
+    /// file's current on-disk state — something else wrote to `path` since
+    /// the fingerprint was captured. Nothing was written; the caller must
+    /// re-invoke with `force: true` (after explicit user confirmation to
+    /// overwrite) or reload the file's fresh content first (issue #113).
+    stale: bool,
+    /// The file's fingerprint immediately after a successful write, opaque
+    /// to the frontend (see `fsguard.rs`) — store it and pass it back as
+    /// the next save's `expected_fingerprint`. `None` unless `written` is
+    /// true.
+    fingerprint: Option<Fingerprint>,
 }
 
 /// Read a file from disk, decoding with the given encoding label or with
@@ -173,9 +193,15 @@ fn open_document(
     encoding: Option<String>,
     extension_encoding: Option<String>,
 ) -> Result<OpenedDocument, String> {
-    let total_size = std::fs::metadata(&path)
-        .map_err(|e| format!("Failed to read {path}: {e}"))?
-        .len();
+    let meta = std::fs::metadata(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let total_size = meta.len();
+    // Captured from the same metadata snapshot `total_size`/`truncated`
+    // already rest on, so this introduces no new race beyond the one this
+    // function's own doc comment already accepts. `.ok()`: a filesystem
+    // that can't report mtime shouldn't fail the whole open, just leave
+    // this document without a verified save-time baseline (see
+    // `OpenedDocument::fingerprint`).
+    let fingerprint = Fingerprint::from_metadata(&meta).ok();
     let truncated = total_size > LARGE_FILE_THRESHOLD;
     let raw = if truncated {
         // Bounded read: at most PREVIEW_BYTES + 1 bytes are ever read from
@@ -250,6 +276,7 @@ fn open_document(
         truncated,
         total_size,
         next_offset,
+        fingerprint,
     })
 }
 
@@ -419,8 +446,8 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 /// Encode LF-normalized content with the given encoding and line ending,
 /// then write it to disk atomically.
 ///
-/// This is a two-phase save. `unmappable` is true when characters could not
-/// be represented in the target encoding. When that happens and
+/// This is a multi-phase save. `unmappable` is true when characters could
+/// not be represented in the target encoding. When that happens and
 /// `allow_lossy` is `false`, nothing is written — the file on disk is left
 /// exactly as it was, and the caller must re-invoke with `allow_lossy: true`
 /// (after explicit user confirmation) to actually write the lossy bytes.
@@ -434,6 +461,32 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 /// documents, saving can silently canonicalize bytes the user never
 /// touched even when nothing is unmappable and `allow_lossy` never comes
 /// into play. See `encoding.rs`'s module doc.
+///
+/// Issue #113: after encoding but before the commit (`atomic_write`), this
+/// also fail-closes against an external change to `path` since it was last
+/// read — the ordinary Save path had no guard at all against another
+/// process (or a second Plume window) writing to the same file during the
+/// encode step, unlike the large-file streaming replace path's existing
+/// fingerprint check (issue #94, shared here via `fsguard.rs`). When
+/// `expected_fingerprint` is `Some` and `force` is `false`, `path` is
+/// re-fingerprinted right before the write and compared; a mismatch aborts
+/// with `stale: true, written: false` and touches nothing on disk. `force:
+/// true` skips the check entirely — the retry path after the user
+/// explicitly chooses to overwrite. `expected_fingerprint: None` also skips
+/// the check: there is no prior on-disk baseline to compare against for an
+/// untitled document's first save or a Save As to a brand-new path. On a
+/// successful write, the fresh post-write fingerprint is returned so the
+/// caller can use it as the baseline for the *next* save.
+///
+/// Like the streaming-replace guard this shares `fsguard.rs` with (#102),
+/// the check narrows the race to the tiny stat-to-rename window rather
+/// than eliminating it — no portable rename is conditional on file
+/// identity — but that is a vast improvement over leaving the whole
+/// open-to-save span unguarded.
+// Flat parameters (rather than a grouped-struct argument) match every other
+// command in this file, whose shape is dictated by the frontend's IPC call
+// (src/ipc.ts `saveDocument`), not by ordinary Rust API ergonomics.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn save_document(
     path: String,
@@ -442,6 +495,8 @@ fn save_document(
     with_bom: bool,
     line_ending: String,
     allow_lossy: bool,
+    expected_fingerprint: Option<Fingerprint>,
+    force: bool,
 ) -> Result<SaveResult, String> {
     let text = encoding::apply_line_ending(&content, &line_ending);
     let (bytes, unmappable) = encoding::encode(&text, &encoding, with_bom)?;
@@ -449,13 +504,29 @@ fn save_document(
         return Ok(SaveResult {
             unmappable: true,
             written: false,
+            stale: false,
+            fingerprint: None,
         });
     }
-    atomic_write(std::path::Path::new(&path), &bytes)
-        .map_err(|e| format!("Failed to write {path}: {e}"))?;
+    let target = std::path::Path::new(&path);
+    if !force {
+        if let Some(expected) = &expected_fingerprint {
+            if !expected.matches_path(target) {
+                return Ok(SaveResult {
+                    unmappable,
+                    written: false,
+                    stale: true,
+                    fingerprint: None,
+                });
+            }
+        }
+    }
+    atomic_write(target, &bytes).map_err(|e| format!("Failed to write {path}: {e}"))?;
     Ok(SaveResult {
         unmappable,
         written: true,
+        stale: false,
+        fingerprint: Fingerprint::from_path(target).ok(),
     })
 }
 
@@ -1095,6 +1166,8 @@ mod tests {
             opened.had_bom,
             opened.line_ending.clone(),
             false,
+            None,
+            false,
         )
         .unwrap();
         assert!(!saved.unmappable);
@@ -1137,6 +1210,8 @@ mod tests {
             opened.had_bom,
             opened.line_ending.clone(),
             false,
+            None,
+            false,
         )
         .unwrap();
         assert!(!saved.unmappable);
@@ -1173,6 +1248,8 @@ mod tests {
             false,
             "LF".to_string(),
             false,
+            None,
+            false,
         )
         .unwrap();
 
@@ -1208,6 +1285,8 @@ mod tests {
             false,
             "LF".to_string(),
             true,
+            None,
+            false,
         )
         .unwrap();
 
@@ -1219,6 +1298,183 @@ mod tests {
             crate::encoding::encode("hello 🚀 世界", "Big5", false).unwrap();
         assert!(unmappable);
         assert_eq!(on_disk, expected_bytes);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #113 core regression (P1 data loss): the plain Save path had
+    /// no guard at all against another process writing to the same path
+    /// between when the editor's snapshot was taken (here, the
+    /// `open_document` that produced `expected_fingerprint`) and this
+    /// command's own commit. This drives the real end-to-end sequence the
+    /// issue describes — open, external atomic replace, then Save with the
+    /// now-stale fingerprint — and pins both halves of the fix: the call
+    /// reports `stale: true, written: false`, *and* the externally-written
+    /// content is byte-for-byte untouched on disk afterward. The external
+    /// write uses different-length content so the size field alone
+    /// guarantees detection, independent of filesystem mtime resolution or
+    /// of `std::fs::write`'s reuse of the same inode for a same-path
+    /// rewrite (see `fsguard.rs`'s own
+    /// `matches_path_false_after_size_change`).
+    #[test]
+    fn save_document_rejects_stale_fingerprint_and_preserves_external_write() {
+        let dir = std::env::temp_dir().join("plume-save-stale-fingerprint-reject");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+        std::fs::write(&target, b"original content on disk").unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), None, None).unwrap();
+        let expected_fingerprint = opened.fingerprint;
+        assert!(
+            expected_fingerprint.is_some(),
+            "opening a real file must yield a verifiable fingerprint"
+        );
+
+        // Another process (or a second Plume window) replaces the file's
+        // content while this editor's tab still holds the old snapshot.
+        let external_content = b"externally written, much newer and longer content";
+        std::fs::write(&target, external_content).unwrap();
+
+        let result = save_document(
+            path,
+            "editor's stale in-memory buffer content".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            expected_fingerprint,
+            false,
+        )
+        .unwrap();
+
+        assert!(result.stale, "a changed file must be reported stale");
+        assert!(!result.written, "a stale save must not write anything");
+        assert!(result.fingerprint.is_none());
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            external_content,
+            "the externally-written content must survive completely untouched"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The happy-path counterpart: when nothing external touched the file
+    /// between open and save, the matching fingerprint must not block the
+    /// write, and the response carries a fresh fingerprint the caller can
+    /// use as the next save's baseline.
+    #[test]
+    fn save_document_succeeds_when_fingerprint_matches() {
+        let dir = std::env::temp_dir().join("plume-save-fingerprint-matches");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+        std::fs::write(&target, b"original content").unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), None, None).unwrap();
+
+        let result = save_document(
+            path,
+            "freshly edited content".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            opened.fingerprint,
+            false,
+        )
+        .unwrap();
+
+        assert!(!result.stale);
+        assert!(result.written);
+        assert!(
+            result.fingerprint.is_some(),
+            "a successful write must return a fresh fingerprint"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "freshly edited content"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `force: true` is the Overwrite retry path: even against a fingerprint
+    /// that no longer matches (the same external-replace scenario as
+    /// `save_document_rejects_stale_fingerprint_and_preserves_external_write`),
+    /// the caller's explicit choice to overwrite must go through.
+    #[test]
+    fn save_document_force_overwrites_despite_stale_fingerprint() {
+        let dir = std::env::temp_dir().join("plume-save-force-overwrite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+        std::fs::write(&target, b"original content on disk").unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), None, None).unwrap();
+        std::fs::write(
+            &target,
+            b"externally written, much newer and longer content",
+        )
+        .unwrap();
+
+        let result = save_document(
+            path,
+            "user explicitly chose to overwrite".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            opened.fingerprint,
+            true,
+        )
+        .unwrap();
+
+        assert!(!result.stale);
+        assert!(result.written);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "user explicitly chose to overwrite"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `expected_fingerprint: None` is the untitled-first-save / Save As
+    /// path: there is no prior on-disk baseline to compare against (the
+    /// document was never opened from this path), so the check must be
+    /// skipped entirely rather than failing closed on a `None` that was
+    /// never a real mismatch.
+    #[test]
+    fn save_document_skips_check_when_no_expected_fingerprint() {
+        let dir = std::env::temp_dir().join("plume-save-no-expected-fingerprint");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("new-doc.txt");
+        let path = target.to_string_lossy().into_owned();
+
+        let result = save_document(
+            path,
+            "brand new untitled content".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert!(!result.stale);
+        assert!(result.written);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "brand new untitled content"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -14,6 +14,10 @@ export interface OpenedDocument {
   totalSize: number;
   /** When truncated: file offset where the next chunk begins. */
   nextOffset: number | null;
+  /** Opaque metadata snapshot of the file as of this open (see
+   *  src-tauri/src/fsguard.rs); store on the tab's `Doc.fingerprint` and
+   *  pass back as `saveDocument`'s `expectedFingerprint` (issue #113). */
+  fingerprint: unknown;
 }
 
 export interface DocumentChunk {
@@ -93,6 +97,16 @@ export function locateLineOffset(
 export interface SaveResult {
   unmappable: boolean;
   written: boolean;
+  /** True when `expectedFingerprint` was given and no longer matches the
+   *  file's current on-disk state — something else wrote to this path
+   *  since the fingerprint was captured. Nothing was written; re-invoke
+   *  with `force: true` (after explicit user confirmation to overwrite) or
+   *  reload the file's fresh content first (issue #113). */
+  stale: boolean;
+  /** Opaque fingerprint of the file immediately after a successful write —
+   *  store it as the tab's new `Doc.fingerprint` for the next save. `null`
+   *  unless `written` is true. */
+  fingerprint: unknown;
 }
 
 /**
@@ -145,12 +159,22 @@ export function explainDetection(
 }
 
 /**
- * Two-phase save: call with `allowLossy: false` first. If the target
+ * Multi-phase save. Call with `allowLossy: false` first. If the target
  * encoding can't represent some characters, the result comes back with
  * `unmappable: true` and `written: false` — nothing was written and the
  * file on disk is untouched. Re-invoke with `allowLossy: true` (only after
- * explicit user confirmation) to write the lossy bytes; that call always
- * has `written: true`.
+ * explicit user confirmation) to write the lossy bytes.
+ *
+ * Issue #113: `expectedFingerprint` (the tab's `Doc.fingerprint`, from the
+ * last open/reload/save) is re-checked against the file's current on-disk
+ * state right before the write commits. A mismatch — something else wrote
+ * to this path since — comes back as `stale: true, written: false` with
+ * nothing written; re-invoke with `force: true` only after the user
+ * explicitly chooses to overwrite, or reload the file first. Pass `null`
+ * for `expectedFingerprint` when there is no verified baseline yet (an
+ * untitled document's first save, or Save As to a brand-new path) to skip
+ * the check entirely. A call that actually writes (`written: true`) always
+ * returns a fresh `fingerprint` to store as the baseline for the next save.
  */
 export function saveDocument(args: {
   path: string;
@@ -159,6 +183,8 @@ export function saveDocument(args: {
   withBom: boolean;
   lineEnding: string;
   allowLossy: boolean;
+  expectedFingerprint: unknown;
+  force: boolean;
 }): Promise<SaveResult> {
   return invoke<SaveResult>("save_document", args);
 }

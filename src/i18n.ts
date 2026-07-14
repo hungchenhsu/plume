@@ -164,6 +164,8 @@ export interface Messages {
   "dialog.fileChangedTitle": string;
   "dialog.fileChangedMessage": (title: string) => string;
   "dialog.reload": string;
+  "dialog.staleFileMessage": (title: string) => string;
+  "dialog.overwrite": string;
   "dialog.openFailedTitle": string;
   "dialog.readonlyPreviewTitle": string;
   "dialog.readonlyPreviewMessage": (title: string) => string;
@@ -359,6 +361,11 @@ const en: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `"${title}" changed on disk. Reload it and discard your unsaved changes?`,
   "dialog.reload": "Reload",
+  "dialog.staleFileMessage": (title) =>
+    `"${title}" changed on disk since it was opened. Overwrite it with ` +
+    `your version, reload the newer version and discard your unsaved ` +
+    `changes, or cancel this save.`,
+  "dialog.overwrite": "Overwrite",
   "dialog.openFailedTitle": "Open failed",
   "dialog.readonlyPreviewTitle": "Read-only preview",
   "dialog.readonlyPreviewMessage": (title) =>
@@ -557,6 +564,9 @@ const zhTW: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `「${title}」已在磁碟上異動，要重新載入並捨棄未儲存的變更嗎？`,
   "dialog.reload": "重新載入",
+  "dialog.staleFileMessage": (title) =>
+    `「${title}」自開啟後已在磁碟上異動。要覆寫為目前版本、重新載入較新的版本並捨棄未儲存的變更，還是取消這次儲存？`,
+  "dialog.overwrite": "覆寫",
   "dialog.openFailedTitle": "開啟失敗",
   "dialog.readonlyPreviewTitle": "唯讀預覽",
   "dialog.readonlyPreviewMessage": (title) =>
@@ -758,6 +768,10 @@ const ja: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `「${title}」はディスク上で変更されています。再読み込みして未保存の変更を破棄しますか？`,
   "dialog.reload": "再読み込み",
+  "dialog.staleFileMessage": (title) =>
+    `「${title}」を開いた後にディスク上で変更されました。現在の内容で上書きするか、` +
+    `未保存の変更を破棄して新しいバージョンを再読み込みするか、この保存をキャンセルしてください。`,
+  "dialog.overwrite": "上書き",
   "dialog.openFailedTitle": "開くのに失敗しました",
   "dialog.readonlyPreviewTitle": "読み取り専用プレビュー",
   "dialog.readonlyPreviewMessage": (title) =>
@@ -956,6 +970,9 @@ const zhCN: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `“${title}”已在磁盘上更改，是否重新加载并放弃未保存的更改？`,
   "dialog.reload": "重新加载",
+  "dialog.staleFileMessage": (title) =>
+    `“${title}”自打开后已在磁盘上更改。要覆盖为当前版本、重新加载较新的版本并放弃未保存的更改，还是取消这次保存？`,
+  "dialog.overwrite": "覆盖",
   "dialog.openFailedTitle": "打开失败",
   "dialog.readonlyPreviewTitle": "只读预览",
   "dialog.readonlyPreviewMessage": (title) => `“${title}”是大文件的只读预览，无法保存。`,
