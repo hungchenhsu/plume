@@ -31,6 +31,7 @@ export interface Messages {
   "statusbar.buildingIndex": string;
   "statusbar.textStats": (words: number, chars: number, lines: number) => string;
   "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
+  "statusbar.charInspector": (char: string, codepoint: string) => string;
 
   "confirm.unsavedChanges": (title: string) => string;
   "confirm.dontSave": string;
@@ -53,6 +54,13 @@ export interface Messages {
   "detectcard.sampledPartial": (shown: string, total: string) => string;
   "detectcard.wouldChooseValue": (encoding: string, reason: string) => string;
   "detectcard.manualNote": (current: string, detected: string) => string;
+
+  "charinspect.title": (codepoint: string) => string;
+  "charinspect.labelChar": string;
+  "charinspect.labelCodePoint": string;
+  "charinspect.labelUtf8Bytes": string;
+  "charinspect.labelEncodingBytes": (encoding: string) => string;
+  "charinspect.lossyValue": (encoding: string) => string;
 
   "hexview.showingAll": (size: string) => string;
   "hexview.showingPartial": (shown: string, total: string) => string;
@@ -229,6 +237,7 @@ const en: Messages = {
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `Selected: ${words} word${words === 1 ? "" : "s"}, ${chars} char${chars === 1 ? "" : "s"}, ` +
     `${lines} line${lines === 1 ? "" : "s"}`,
+  "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
 
   "confirm.unsavedChanges": (title) => `"${title}" has unsaved changes.`,
   "confirm.dontSave": "Don't Save",
@@ -252,6 +261,13 @@ const en: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding} (${reason})`,
   "detectcard.manualNote": (current, detected) =>
     `Currently using ${current} manually — auto-detect would choose ${detected}.`,
+
+  "charinspect.title": (codepoint) => `Character ${codepoint}`,
+  "charinspect.labelChar": "Character",
+  "charinspect.labelCodePoint": "Code Point",
+  "charinspect.labelUtf8Bytes": "UTF-8 Bytes",
+  "charinspect.labelEncodingBytes": (encoding) => `${encoding} Bytes`,
+  "charinspect.lossyValue": (encoding) => `Cannot be represented in ${encoding}`,
 
   "hexview.showingAll": (size) => `showing all ${size}`,
   "hexview.showingPartial": (shown, total) => `showing first ${shown} of ${total}`,
@@ -454,6 +470,7 @@ const zhTW: Messages = {
   "statusbar.textStats": (words, chars, lines) => `${words} 詞、${chars} 字元、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已選取：${words} 詞、${chars} 字元、${lines} 行`,
+  "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
 
   "confirm.unsavedChanges": (title) => `「${title}」有未儲存的變更。`,
   "confirm.dontSave": "不要儲存",
@@ -477,6 +494,13 @@ const zhTW: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
   "detectcard.manualNote": (current, detected) =>
     `目前手動使用 ${current}——自動偵測會選擇 ${detected}。`,
+
+  "charinspect.title": (codepoint) => `字元 ${codepoint}`,
+  "charinspect.labelChar": "字元",
+  "charinspect.labelCodePoint": "碼位",
+  "charinspect.labelUtf8Bytes": "UTF-8 位元組",
+  "charinspect.labelEncodingBytes": (encoding) => `${encoding} 位元組`,
+  "charinspect.lossyValue": (encoding) => `無法以 ${encoding} 編碼表示`,
 
   "hexview.showingAll": (size) => `顯示全部 ${size}`,
   "hexview.showingPartial": (shown, total) => `顯示前 ${shown}（共 ${total}）`,
@@ -663,6 +687,7 @@ const ja: Messages = {
   "statusbar.textStats": (words, chars, lines) => `${words} 語、${chars} 文字、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
+  "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
 
   "confirm.unsavedChanges": (title) => `「${title}」には保存されていない変更があります。`,
   "confirm.dontSave": "保存しない",
@@ -686,6 +711,13 @@ const ja: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
   "detectcard.manualNote": (current, detected) =>
     `現在手動で ${current} を使用しています。自動検出では ${detected} が選択されます。`,
+
+  "charinspect.title": (codepoint) => `文字 ${codepoint}`,
+  "charinspect.labelChar": "文字",
+  "charinspect.labelCodePoint": "コードポイント",
+  "charinspect.labelUtf8Bytes": "UTF-8 バイト列",
+  "charinspect.labelEncodingBytes": (encoding) => `${encoding} バイト列`,
+  "charinspect.lossyValue": (encoding) => `${encoding} では表現できません`,
 
   "hexview.showingAll": (size) => `全 ${size} を表示`,
   "hexview.showingPartial": (shown, total) => `先頭 ${shown} を表示（全 ${total} 中）`,
@@ -885,6 +917,7 @@ const zhCN: Messages = {
   "statusbar.textStats": (words, chars, lines) => `${words} 词、${chars} 字符、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已选择：${words} 词、${chars} 字符、${lines} 行`,
+  "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
 
   "confirm.unsavedChanges": (title) => `“${title}”有未保存的更改。`,
   "confirm.dontSave": "不保存",
@@ -908,6 +941,13 @@ const zhCN: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
   "detectcard.manualNote": (current, detected) =>
     `目前手动使用 ${current}——自动检测将选择 ${detected}。`,
+
+  "charinspect.title": (codepoint) => `字符 ${codepoint}`,
+  "charinspect.labelChar": "字符",
+  "charinspect.labelCodePoint": "码位",
+  "charinspect.labelUtf8Bytes": "UTF-8 字节",
+  "charinspect.labelEncodingBytes": (encoding) => `${encoding} 字节`,
+  "charinspect.lossyValue": (encoding) => `无法以 ${encoding} 编码表示`,
 
   "hexview.showingAll": (size) => `显示全部 ${size}`,
   "hexview.showingPartial": (shown, total) => `显示前 ${shown}（共 ${total}）`,

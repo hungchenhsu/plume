@@ -1,0 +1,207 @@
+//! Character inspector: for a single Unicode character, the exact byte
+//! sequence it encodes to under a given encoding — backs the status-bar
+//! codepoint segment's popup (ROADMAP.md v0.4 Track A). Bytes cross IPC
+//! only as a hex string (plain text), the same "bytes formatted as text on
+//! the Rust side" precedent `hexdump.rs` established for the
+//! ARCHITECTURE.md raw-bytes-never-cross-IPC constraint.
+//!
+//! UTF-16LE/BE never call `encoding_rs`'s `Encoding::encode()` /
+//! `new_encoder()` here. Per encoding_rs's own docs, "the output encoding
+//! of UTF-16BE, UTF-16LE, and replacement is UTF-8" — there is no real
+//! UTF-16 encoder behind that API, so calling it for a UTF-16 target
+//! silently returns UTF-8 bytes mislabeled as UTF-16 (see
+//! `streamreplace.rs`'s module doc for the fuller account of this dead end
+//! and judgment-overlay.md §4, which is exactly why that module refuses
+//! UTF-16 outright instead of working around it). This module instead
+//! reuses `encoding::encode_utf16`, the same hand-rolled code-unit encoder
+//! the real save path (`encoding::encode`) already uses for UTF-16 — not a
+//! second, independent reimplementation of the same bit-twiddling.
+//!
+//! For every other encoding, a character with no representation at all is
+//! reported as `lossy: true` with an empty `bytes_hex`, never
+//! `encoding_rs`'s own numeric-character-reference fallback (e.g. an
+//! unmappable "é" silently becomes the literal bytes for "&#233;"). That
+//! fallback is the right behavior for an actual lossy *save* the user
+//! explicitly opted into (see `encoding::encode`'s callers in
+//! `lib.rs`/`batch.rs`) — but this command is a read-only diagnostic with
+//! no file being written, and showing "&#233;"'s bytes as if they were "é
+//! encoded in Big5" would misrepresent a character Big5 flatly cannot
+//! represent.
+
+use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
+use serde::Serialize;
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodeCharResult {
+    /// Uppercase, space-separated hex byte pairs, e.g. "E4 B8 AD". Always
+    /// empty when `lossy` is true — see the module doc comment.
+    pub bytes_hex: String,
+    /// True when `ch` has no representation in `encoding` at all.
+    pub lossy: bool,
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Encode a single character to its byte sequence under `encoding`, for the
+/// character-inspector status-bar popup. `ch` must be exactly one Unicode
+/// scalar value — the frontend always passes the single, already
+/// surrogate-pair-assembled code point immediately before the cursor (see
+/// `src/editor.ts`'s `characterBeforeCursor`) — so anything else (empty, or
+/// more than one character) is rejected as a caller bug rather than
+/// silently operating on just the first character. There is no `with_bom`
+/// parameter: a BOM is a file-level, offset-0-only marker, not a property
+/// of one character's bytes, so it never applies here.
+#[tauri::command]
+pub fn encode_char(ch: String, encoding: String) -> Result<EncodeCharResult, String> {
+    if ch.chars().count() != 1 {
+        return Err(format!(
+            "ch must be exactly one Unicode scalar value, got {ch:?}"
+        ));
+    }
+    let enc = Encoding::for_label(encoding.as_bytes())
+        .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
+
+    let (bytes, had_unmappable): (Vec<u8>, bool) = if enc == UTF_16LE || enc == UTF_16BE {
+        // Never call encoding_rs's new_encoder()/encode() for UTF-16 here —
+        // see the module doc comment. Every Unicode scalar value has a
+        // UTF-16 representation (Rust's single-scalar-value `String`
+        // invariant, checked above, already excludes lone surrogates, the
+        // only code points UTF-16 can't encode), so this branch is never
+        // lossy.
+        (
+            crate::encoding::encode_utf16(&ch, enc == UTF_16BE, false),
+            false,
+        )
+    } else {
+        let (encoded, _, had_unmappable) = enc.encode(&ch);
+        (encoded.into_owned(), had_unmappable)
+    };
+
+    if had_unmappable {
+        // Deliberately not `bytes` (encoding_rs's own HTML
+        // numeric-character-reference fallback) -- see the module doc
+        // comment on why that would misrepresent an unrepresentable
+        // character as if it had real bytes in `encoding`.
+        return Ok(EncodeCharResult {
+            bytes_hex: String::new(),
+            lossy: true,
+        });
+    }
+    Ok(EncodeCharResult {
+        bytes_hex: to_hex(&bytes),
+        lossy: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Round-trip table: every expected byte sequence below was
+    // hand-verified against Python's own (encoding_rs-independent) codec
+    // tables, e.g. `'中'.encode('big5').hex()` — not generated by calling
+    // encoding_rs and trusting whatever it produced, which would make the
+    // test tautological:
+    //
+    //   '中'.encode('big5').hex()      == 'a4a4'
+    //   '中'.encode('gb18030').hex()   == 'd6d0'
+    //   'あ'.encode('shift_jis').hex() == '82a0'  (also cp932, WHATWG's
+    //                                              actual Shift_JIS variant
+    //                                              -- the two agree here)
+    //   'é'.encode('big5')  -> UnicodeEncodeError (confirmed unmappable)
+    //
+    // UTF-16 surrogate-pair bytes for U+1F600 were hand-derived from the
+    // surrogate-pair formula (C' = 0x1F600 - 0x10000 = 0x0F600;
+    // high = 0xD800 + (C' >> 10) = 0xD83D; low = 0xDC00 + (C' & 0x3FF) =
+    // 0xDE00) and cross-checked against Python's
+    // `'\U0001F600'.encode('utf-16-le'|'utf-16-be')`.
+
+    #[test]
+    fn ascii_in_utf8() {
+        let result = encode_char("A".to_string(), "UTF-8".to_string()).unwrap();
+        assert_eq!(result.bytes_hex, "41");
+        assert!(!result.lossy);
+    }
+
+    #[test]
+    fn chinese_character_in_big5() {
+        let result = encode_char("中".to_string(), "Big5".to_string()).unwrap();
+        assert_eq!(result.bytes_hex, "A4 A4");
+        assert!(!result.lossy);
+    }
+
+    #[test]
+    fn chinese_character_in_gb18030() {
+        let result = encode_char("中".to_string(), "gb18030".to_string()).unwrap();
+        assert_eq!(result.bytes_hex, "D6 D0");
+        assert!(!result.lossy);
+    }
+
+    #[test]
+    fn japanese_character_in_shift_jis() {
+        let result = encode_char("あ".to_string(), "Shift_JIS".to_string()).unwrap();
+        assert_eq!(result.bytes_hex, "82 A0");
+        assert!(!result.lossy);
+    }
+
+    #[test]
+    fn surrogate_pair_in_utf16le() {
+        // U+1F600 GRINNING FACE: high surrogate 0xD83D, low surrogate
+        // 0xDE00 (derived by hand, see module test-header comment); LE
+        // byte order pairs each unit low-byte-first.
+        let result = encode_char("\u{1F600}".to_string(), "UTF-16LE".to_string()).unwrap();
+        assert_eq!(result.bytes_hex, "3D D8 00 DE");
+        assert!(!result.lossy);
+    }
+
+    #[test]
+    fn surrogate_pair_in_utf16be() {
+        let result = encode_char("\u{1F600}".to_string(), "UTF-16BE".to_string()).unwrap();
+        assert_eq!(result.bytes_hex, "D8 3D DE 00");
+        assert!(!result.lossy);
+    }
+
+    #[test]
+    fn bmp_character_in_utf16le_and_utf16be() {
+        // A single BMP code unit is just the char's own u16 value in the
+        // requested byte order -- no surrogate pair involved.
+        let le = encode_char("中".to_string(), "UTF-16LE".to_string()).unwrap();
+        assert_eq!(le.bytes_hex, "2D 4E");
+        let be = encode_char("中".to_string(), "UTF-16BE".to_string()).unwrap();
+        assert_eq!(be.bytes_hex, "4E 2D");
+    }
+
+    #[test]
+    fn unrepresentable_character_in_big5_is_lossy_with_no_fake_bytes() {
+        // Big5 has no Latin-1 accented letters at all; Python confirms
+        // 'é'.encode('big5') raises UnicodeEncodeError. encoding_rs's own
+        // encode() would otherwise silently substitute the HTML numeric
+        // reference "&#233;" here -- bytes_hex must stay empty instead of
+        // surfacing that substitution as if it were "é in Big5".
+        let result = encode_char("é".to_string(), "Big5".to_string()).unwrap();
+        assert!(result.lossy);
+        assert_eq!(result.bytes_hex, "");
+    }
+
+    #[test]
+    fn rejects_empty_ch() {
+        assert!(encode_char(String::new(), "UTF-8".to_string()).is_err());
+    }
+
+    #[test]
+    fn rejects_multi_character_ch() {
+        assert!(encode_char("ab".to_string(), "UTF-8".to_string()).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_encoding() {
+        assert!(encode_char("A".to_string(), "not-an-encoding".to_string()).is_err());
+    }
+}

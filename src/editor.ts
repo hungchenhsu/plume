@@ -305,6 +305,43 @@ export function cursorOf(buffer: EditorBuffer): number {
   return buffer.selection.main.head;
 }
 
+/**
+ * The single Unicode code point immediately before the cursor in `buffer`
+ * (the character a Backspace would delete) — status-bar character
+ * inspector (ROADMAP.md v0.4 Track A). Returns `null` at a line start
+ * (`pos` equal to its line's `.from`, which also covers the empty-document
+ * case): the character immediately before a line start is the *previous*
+ * line's own trailing newline, not anything in the line the cursor is
+ * actually on, and showing that as "the character at the cursor" would be
+ * misleading — so the segment is simply hidden there instead (see
+ * main.ts / statusbar.ts `updateCharInspector`). This fixes one of the two
+ * semantics the spec allows (character to the left of the cursor vs.
+ * character under the cursor); the empty-doc/line-start "show nothing"
+ * behavior only falls out naturally under this one.
+ *
+ * Surrogate-pair aware: reads up to the two UTF-16 code units immediately
+ * before the cursor (clamped to the current line's start, since a
+ * supplementary character can never itself straddle a line break) and
+ * splits that short slice with `Array.from`, which iterates by Unicode
+ * code point — exactly `codePointAt` semantics — rather than by raw UTF-16
+ * code unit, so a supplementary character (e.g. an emoji split across a
+ * high/low surrogate pair) is read back whole, never as half a pair.
+ *
+ * Cost: `Text.lineAt` is O(log n) (same as `onCursorMoved`'s own line/
+ * column math in editor.ts's `updateListener`) and `sliceString` here reads
+ * at most 2 UTF-16 code units regardless of document size — cheap enough
+ * to run synchronously on every cursor move with no debounce, unlike the
+ * whole-document `textStatsOf` above.
+ */
+export function characterBeforeCursor(buffer: EditorBuffer): string | null {
+  const pos = buffer.selection.main.head;
+  const line = buffer.doc.lineAt(pos);
+  if (pos <= line.from) return null;
+  const windowStart = Math.max(line.from, pos - 2);
+  const codePoints = Array.from(buffer.doc.sliceString(windowStart, pos));
+  return codePoints[codePoints.length - 1] ?? null;
+}
+
 /** Full text content of a detached buffer. */
 export function contentOf(buffer: EditorBuffer): string {
   return buffer.doc.toString();

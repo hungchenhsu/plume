@@ -1,5 +1,6 @@
 mod backup;
 mod batch;
+mod charinspect;
 mod chunk;
 mod comparepreview;
 mod encoding;
@@ -617,6 +618,7 @@ pub fn run() {
             batch::execute_batch_conversion,
             comparepreview::preview_two_encodings,
             streamreplace::stream_replace_in_file,
+            charinspect::encode_char,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())

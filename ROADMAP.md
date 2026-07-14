@@ -171,10 +171,63 @@ commit (judgment overlay §1).
 
 **Track A — character-level trust** (the moat, extended to the sneakiest
 cases of "never misrepresent user text")
-- [ ] Character inspector: status-bar codepoint readout (U+XXXX) for the
+- [x] Character inspector: status-bar codepoint readout (U+XXXX) for the
   character at the cursor, with a popup showing its byte sequence under
   the file's save encoding (bytes rendered in Rust; UTF-16 hand-encoded
-  around the encoder dead end) [danger]
+  around the encoder dead end) [danger]. Semantics: the character
+  *immediately before* the cursor (what Backspace would delete), not
+  under it — chosen because it's the one option under which "empty
+  document / line start shows nothing" falls out naturally (the char
+  before a line start is the *previous* line's own newline, which would
+  be misleading to show), documented on `characterBeforeCursor`
+  (editor.ts). Wired into the existing `onCursorMoved` path (no new
+  update hook): reads up to the last 2 UTF-16 code units before the
+  cursor, clamped to the line start, and splits with `Array.from`
+  (code-point iteration, i.e. `codePointAt` semantics) so a supplementary
+  character split across a surrogate pair (e.g. U+1F600) is read back
+  whole — O(log n) via `Text.lineAt` plus an at-most-2-unit slice, the
+  same cost class as `updateCursor`'s own line/column math, so — unlike
+  the whole-document `textStatsOf` segment — it needs no debounce and
+  runs unconditionally in large-file (truncated) windows too (segment
+  and popup both stay meaningful within whatever window is loaded).
+  New Rust IPC `encode_char(ch, encoding) -> {bytesHex, lossy}`
+  (`src-tauri/src/charinspect.rs`): failing-test-first round-trip table
+  (ASCII, Big5 "中", GB18030 "中", Shift_JIS "あ", UTF-16LE/BE surrogate
+  pair for U+1F600, unmappable "é" in Big5) with every expected byte
+  sequence hand-verified against Python's own (encoding_rs-independent)
+  codec tables rather than encoding_rs self-certifying its own answer;
+  the naive first-draft (calling encoding_rs's whole-buffer `encode()`
+  unconditionally, no UTF-16 special case) failed exactly the two
+  UTF-16 tests — producing the character's *UTF-8* bytes instead,
+  the precise known dead end (`new_encoder()`'s/`encode()`'s output
+  encoding for UTF-16LE/BE is UTF-8, judgment-overlay.md §4) — plus the
+  unmappable-character test, which got back the literal bytes for
+  encoding_rs's own HTML numeric-character-reference fallback
+  ("&#233;") instead of the empty/lossy signal. Fixed by special-casing
+  UTF-16LE/BE to reuse `encoding::encode_utf16` (bumped to `pub(crate)`),
+  the same hand-rolled code-unit encoder the real save path already
+  uses, and by discarding (never surfacing) encoding_rs's fallback bytes
+  on an unmappable character: `lossy: true` with an empty `bytesHex`,
+  since showing "&#233;"'s bytes as if they were "é in Big5" would
+  misrepresent a character Big5 cannot represent at all. No `withBom`
+  parameter — a BOM is a file-level, offset-0-only marker, not a
+  property of one character's bytes. Bytes cross IPC only as an
+  uppercase, space-separated hex string (e.g. "E4 B8 AD"), the same
+  "bytes formatted as text in Rust" precedent hexdump.rs established for
+  the raw-bytes-never-cross-IPC constraint. Popup (`src/charinspect.ts`)
+  mirrors the encoding-detection diagnostics status-bar popup
+  (detectcard.ts) — same anchored-panel positioning, same away-click/
+  Escape close handling, same `.detectcard-header`/`.detectcard-rows`
+  inner CSS classes reused verbatim — but keeps its own outer panel
+  class (`.charinspect-panel`, sharing `.detectcard-panel`'s rule via a
+  combined CSS selector rather than the DOM element carrying both
+  classes) so the two features' "already open" guards can never see
+  each other's popup. Rows: character, code point, UTF-8 bytes always,
+  and a fourth "{encoding} Bytes" row only when the save encoding isn't
+  UTF-8 (two `encode_char` calls total) — showing either the hex or,
+  when lossy, a "cannot be represented in {encoding}" message in place
+  of bytes, styled with the existing `--warning` token. i18n across en/
+  zh-TW/ja/zh-CN.
 - [ ] Invisible/ambiguous character audit: curated highlighting of
   zero-width characters, bidi controls (U+202A–202E, U+2066–2069), NBSP
   variants, soft hyphens, and in-body BOMs, with a status-bar count and

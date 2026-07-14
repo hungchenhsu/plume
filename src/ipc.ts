@@ -595,3 +595,26 @@ export function streamReplaceInFile(
     caseSensitive,
   });
 }
+
+export interface EncodeCharResult {
+  /** Uppercase, space-separated hex byte pairs, e.g. "E4 B8 AD". Empty
+   *  when `lossy` is true — never encoding_rs's own HTML numeric-character-
+   *  reference fallback bytes (see src-tauri/src/charinspect.rs). */
+  bytesHex: string;
+  /** True when `ch` has no representation in `encoding` at all. */
+  lossy: boolean;
+}
+
+/**
+ * Encode a single character (`ch` must be exactly one Unicode code point —
+ * see src/editor.ts's `characterBeforeCursor`) to its byte sequence under
+ * `encoding`, for the status-bar character-inspector popup (ROADMAP.md v0.4
+ * Track A). Read-only and side-effect free: never touches disk. There is no
+ * `withBom` parameter — a BOM is a file-level, offset-0-only marker, not a
+ * property of one character's bytes. UTF-16LE/BE are hand-encoded on the
+ * Rust side rather than going through `encoding_rs`'s `new_encoder()` (see
+ * the Rust module doc comment for the known dead end this avoids).
+ */
+export function encodeChar(ch: string, encoding: string): Promise<EncodeCharResult> {
+  return invoke<EncodeCharResult>("encode_char", { ch, encoding });
+}
