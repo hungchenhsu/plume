@@ -246,9 +246,44 @@ cases of "never misrepresent user text")
   `doc.truncated` large-file windows. i18n: `statusbar.textStats` /
   `statusbar.textStatsSelection` across en/zh-TW/ja/zh-CN, English
   pluralizing each noun independently per the `resultSummary` precedent.
-- [ ] Per-tab read-only mode (View menu + status-bar indicator, reusing
+- [x] Per-tab read-only mode (View menu + status-bar indicator, reusing
   the existing readOnly compartment; large-file preview read-only state
-  cannot be lifted)
+  cannot be lifted): `Doc.userReadOnly` (tabs.ts) is a second, independent
+  read-only source alongside `truncated` — `isEffectivelyReadOnly(doc)` =
+  `truncated || userReadOnly` is the one formula every call site (CM6
+  enforcement, the View menu's checked/enabled sync, the status-bar badge,
+  the Save/line-ops rejection guard) derives from, so none of them can
+  drift out of sync. editor.ts's `newBuffer` already baked
+  `EditorState.readOnly`/`EditorView.editable` in fixed at construction for
+  a truncated preview (unchanged, still unlifted); the toggle itself is a
+  new `Compartment` (`setReadOnly`), reconfigured per-buffer after every
+  `swap` from that doc's own effective value — mirroring `setLanguage`'s
+  per-buffer pattern, not the global-pref compartments (wrapping/
+  invisibles/indentGuides), since read-only is per-tab. CM6's `readOnly`
+  facet ORs every source together, so the two mechanisms layer safely.
+  Verified from source (editor.test.ts): CM6's own commands
+  (moveLineUp/Down, duplicate/deleteLine, Undo/Redo, search's Replace)
+  self-no-op on `state.readOnly` and never dispatch; `transformLines`/
+  `transformSelection` (sort/unique/trim/case, a raw `view.dispatch` with
+  explicit changes) do not consult it on their own, so `runLineOperation`'s
+  JS-level guard is their only protection — extended from `truncated` to
+  `isEffectivelyReadOnly`. Native menu: a new `read_only` CheckMenuItem
+  (menu.rs, LABELS across all four languages) with a new
+  `sync_read_only_menu(checked, enabled)` command — `enabled: false` for a
+  truncated tab (its lock can never be lifted, so the item is shown checked
+  but disabled, the only existing `CheckMenuItem::set_enabled` use in this
+  codebase) — called from main.ts's `syncReadOnlyState` on every tab switch
+  (`showActive`) and on the toggle itself (`toggleReadOnly`), since a plain
+  click's native auto-checkmark-toggle alone can't track switching to a
+  different tab. Status bar: the existing `#status-readonly` badge is
+  reused (not duplicated) — truncated's own sized message wins when both
+  are true, otherwise a plain locale'd "Read-only" label. Session: a new
+  `userReadOnly`/`user_read_only` field (ipc.ts/session.rs) round-trips a
+  locked tab's state across a relaunch, `#[serde(default)]`/`??`-guarded
+  for old sessions. Save on a read-only tab shows the same blocking dialog
+  large-file preview already used (mirrored, not replaced, per existing
+  "action rejected" precedent), with a distinct message telling the user
+  how to unlock (View > Read-Only) instead of the large-file wording.
 - [x] Tab drag-to-reorder (pure reorder logic unit-tested in the tab
   store): `TabStore.moveTab(fromIndex, toIndex)` is a plain splice-out/
   splice-in array move — `activeId` tracks a doc's id, not its array

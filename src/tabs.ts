@@ -22,8 +22,19 @@ export interface Doc {
    *  rather than a fixed 0 means a stale snapshot can never spuriously
    *  match a post-reset value. */
   revision: number;
-  /** Read-only preview of a large file; saving is disabled. */
+  /** Read-only preview of a large file; saving is disabled. This is
+   *  distinct from — and cannot be lifted by — `userReadOnly` below: see
+   *  `isEffectivelyReadOnly`. */
   truncated: boolean;
+  /** User-toggled per-tab read-only lock (View menu; ROADMAP.md v0.4 Track
+   *  C), independent of `truncated`: a small/normal document the user wants
+   *  to guard against accidental edits (e.g. while reading a log). Unlike
+   *  `truncated`, this can be freely toggled back off. Persisted in the
+   *  session (see collectSession/restoreSession in main.ts) so a locked tab
+   *  stays locked across a relaunch. See `isEffectivelyReadOnly` for how the
+   *  two combine into the one CM6 readOnly-compartment value editor.ts
+   *  actually applies. */
+  userReadOnly: boolean;
   totalSize: number;
   /** Paging state for truncated docs (line-aligned chunk offsets). */
   chunkOffset: number;
@@ -81,6 +92,21 @@ export interface Doc {
    *  having been re-read from disk this session. */
   fingerprint: unknown;
   buffer: EditorBuffer;
+}
+
+/** Effective read-only state (ROADMAP.md v0.4 Track C): a large-file
+ *  truncated preview is always read-only and that can never be lifted;
+ *  `userReadOnly` is the user's own per-tab lock, layered on top of it
+ *  independently. This is the single formula every read-only enforcement
+ *  or UI call site derives from — editor.ts's CM6 readOnly-compartment
+ *  toggle, the View menu's checked/enabled sync, the status-bar badge, and
+ *  the saveFlow/runLineOperation rejection guard (all in main.ts) — so
+ *  none of them can drift out of sync with each other. Takes just the two
+ *  fields it needs (not the whole `Doc`) so callers building a partial
+ *  shape (e.g. a menu-sync helper that only tracked these two) don't need
+ *  a full Doc on hand. */
+export function isEffectivelyReadOnly(doc: Pick<Doc, "truncated" | "userReadOnly">): boolean {
+  return doc.truncated || doc.userReadOnly;
 }
 
 export interface TabEvents {

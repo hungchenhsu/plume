@@ -3,9 +3,11 @@
 // (or convincingly faked) layout engine to test meaningfully — this file
 // covers what's reachable without one: which character offsets get an EOL
 // mark. See CLAUDE.md "Frontend logic that doesn't need the WebView".
-import { EditorSelection, EditorState, Text } from "@codemirror/state";
+import { moveLineDown as cmMoveLineDown } from "@codemirror/commands";
+import { Compartment, EditorSelection, EditorState, Text } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { basicSetup } from "codemirror";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   eolMarkPositions,
   indentGuideLevels,
@@ -269,6 +271,59 @@ describe("allowMultipleSelections (ROADMAP.md Track C multi-cursor)", () => {
     const state = EditorState.create({ doc: "abc abc abc", extensions: [basicSetup] });
     const tr = state.update({ selection: twoRanges });
     expect(tr.state.selection.ranges.length).toBe(2);
+  });
+});
+
+// ROADMAP.md v0.4 Track C per-tab read-only mode. editor.ts's setReadOnly
+// (see createEditor) reconfigures a dedicated Compartment between `[]` and
+// `[EditorState.readOnly.of(true), EditorView.editable.of(false)]` — the
+// exact same extension pair newBuffer already applies fixed at construction
+// for a truncated large-file preview. This suite doesn't exercise setReadOnly
+// itself (that needs a live EditorView + DOM parent, which this file's other
+// suites also avoid — see the module header), but pins the CM6-level
+// assumption the whole design leans on: a plain Compartment reconfigure is
+// enough to flip `state.readOnly`, and CM6's own line-operation commands
+// (moveLineUp/moveLineDown/copyLineDown/deleteLine — every one of them
+// reachable outside the Edit menu's own runLineOperation guard via
+// basicSetup's default keymap, see editor.ts's moveLineUp doc comment) look
+// at `state.readOnly` themselves and no-op without ever calling dispatch —
+// verified from source (@codemirror/commands `moveLine`), not assumed.
+describe("read-only via Compartment reconfigure (ROADMAP.md v0.4 Track C)", () => {
+  const READ_ONLY_ON = [EditorState.readOnly.of(true), EditorView.editable.of(false)];
+
+  it("state.readOnly is true once the compartment holds the read-only extensions", () => {
+    const readOnly = new Compartment();
+    const state = EditorState.create({
+      doc: "one\ntwo\nthree",
+      extensions: [readOnly.of(READ_ONLY_ON)],
+    });
+    expect(state.readOnly).toBe(true);
+  });
+
+  it("a CM6 command (moveLineDown) self-no-ops and never dispatches once read-only", () => {
+    const readOnly = new Compartment();
+    const state = EditorState.create({
+      doc: "one\ntwo\nthree",
+      extensions: [readOnly.of(READ_ONLY_ON)],
+    });
+    const dispatch = vi.fn();
+    const ran = cmMoveLineDown({ state, dispatch });
+    expect(ran).toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("the same command runs normally once the compartment reconfigures back to empty", () => {
+    const readOnly = new Compartment();
+    const lockedState = EditorState.create({
+      doc: "one\ntwo\nthree",
+      extensions: [readOnly.of(READ_ONLY_ON)],
+    });
+    const lifted = lockedState.update({ effects: readOnly.reconfigure([]) }).state;
+    expect(lifted.readOnly).toBe(false);
+    const dispatch = vi.fn();
+    const ran = cmMoveLineDown({ state: lifted, dispatch });
+    expect(ran).toBe(true);
+    expect(dispatch).toHaveBeenCalledOnce();
   });
 });
 

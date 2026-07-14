@@ -9,6 +9,9 @@ interface StatusInfo {
   lineEnding: string;
   malformed: boolean;
   truncated: boolean;
+  /** User-toggled per-tab read-only lock (ROADMAP.md v0.4 Track C),
+   *  independent of `truncated` — see tabs.ts's `isEffectivelyReadOnly`. */
+  userReadOnly: boolean;
   totalSize: number;
 }
 
@@ -114,10 +117,17 @@ export function updateStatusBar(doc: StatusInfo | null): void {
     : "";
   lineEndingEl.textContent = doc?.lineEnding ?? "";
   warningEl.hidden = !doc?.malformed;
-  readonlyEl.hidden = !doc?.truncated;
+  // Truncated (large-file preview) and userReadOnly share this one badge
+  // slot rather than each getting their own — truncated wins when both
+  // are true (its own, more specific "preview of an N-size file" message
+  // still applies regardless of the user's own lock), matching
+  // isEffectivelyReadOnly's precedence (tabs.ts).
+  readonlyEl.hidden = !doc || !(doc.truncated || doc.userReadOnly);
   readonlyEl.textContent = doc?.truncated
     ? t("statusbar.readonlyPreview", formatSize(doc.totalSize))
-    : "";
+    : doc?.userReadOnly
+      ? t("statusbar.userReadOnly")
+      : "";
 }
 
 /** Re-render the status bar after a locale change, using the last known

@@ -33,6 +33,7 @@ import {
   saveBackup,
   saveDocument,
   saveSession,
+  syncReadOnlyMenu,
   takePendingFiles,
   unwatchFile,
   watchFile,
@@ -89,7 +90,7 @@ import {
   updateStatusBar,
   updateTextStats,
 } from "./statusbar";
-import { TabStore, type Doc } from "./tabs";
+import { isEffectivelyReadOnly, TabStore, type Doc } from "./tabs";
 
 const defaultLineEnding = navigator.userAgent.includes("Windows")
   ? "CRLF"
@@ -255,6 +256,7 @@ function makeUntitled(): Doc {
     dirty: false,
     revision: 0,
     truncated: false,
+    userReadOnly: false,
     totalSize: 0,
     chunkOffset: 0,
     nextChunkOffset: null,
@@ -271,11 +273,32 @@ function makeUntitled(): Doc {
   };
 }
 
+/** Sync the editor's CM6 readOnly compartment and the View > Read-Only
+ *  native menu item (checked + enabled) to `doc`'s effective read-only
+ *  state (ROADMAP.md v0.4 Track C) — called from `showActive` (every tab
+ *  switch/open/reload/jump) and from `toggleReadOnly` (the menu action
+ *  itself), so both entry points converge on the same doc-derived truth
+ *  rather than each separately guessing whether the menu already agrees.
+ *  `enabled: !doc.truncated` disables the item entirely for a large-file
+ *  preview — its read-only state can never be lifted, so there is nothing
+ *  a click on it could legitimately do (see menu.rs `sync_read_only_menu`
+ *  and its `CheckMenuItem::set_enabled`). Best-effort like the other
+ *  menu-sync IPC calls (syncThemeMenu/retitleMenu): the editor's own
+ *  enforcement via setReadOnly is unaffected if this fails. */
+function syncReadOnlyState(doc: Doc): void {
+  const effective = isEffectivelyReadOnly(doc);
+  editor.setReadOnly(effective);
+  void syncReadOnlyMenu(effective, !doc.truncated).catch(() => {
+    // Best-effort; see doc comment above.
+  });
+}
+
 /** Sync the editor view and status bar to the active tab. */
 function showActive(): void {
   const doc = tabs.active;
   if (!doc) return;
   editor.swap(doc.buffer);
+  syncReadOnlyState(doc);
   tabs.render();
   updateStatusBar(doc);
   updatePager(pagerState(doc));
@@ -295,6 +318,21 @@ function showActive(): void {
   syncBookmarkGutter();
 }
 
+/** Toggle the active tab's user-driven read-only lock (View menu;
+ *  ROADMAP.md v0.4 Track C). A no-op for a truncated large-file preview —
+ *  its read-only state can never be lifted, and the View menu item is
+ *  kept disabled for it (syncReadOnlyState/showActive), so this normally
+ *  isn't even reachable for one, but stays defensive rather than assuming
+ *  the menu's disabled state is the only thing standing in the way. */
+function toggleReadOnly(): void {
+  const doc = tabs.active;
+  if (!doc || doc.truncated) return;
+  doc.userReadOnly = !doc.userReadOnly;
+  syncReadOnlyState(doc);
+  updateStatusBar(doc);
+  persistSession();
+}
+
 function collectSession(): SessionData {
   const sessionDocs = tabs.docs.filter(
     (d) => d.path !== null || (d.dirty && d.backupName !== null),
@@ -307,6 +345,7 @@ function collectSession(): SessionData {
     title: d.title,
     withBom: d.withBom,
     lineEnding: d.lineEnding,
+    userReadOnly: d.userReadOnly,
   }));
   const active = sessionDocs.findIndex((d) => d.id === tabs.activeId);
   return { files, active: Math.max(active, 0) };
@@ -369,6 +408,11 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     dirty: false,
     revision: 0,
     truncated: opened.truncated,
+    // Session-only, not part of an OpenedDocument (the Rust open_document
+    // result knows nothing about it) — restoreSession applies the
+    // persisted value from SessionFile.userReadOnly onto the Doc this
+    // returns, same pattern as its cursor argument above.
+    userReadOnly: false,
     totalSize: opened.totalSize,
     chunkOffset: 0,
     nextChunkOffset: opened.nextOffset,
@@ -972,20 +1016,45 @@ async function openFileFlow(): Promise<void> {
   }
 }
 
+/**
+ * If `doc` is currently read-only (ROADMAP.md v0.4 Track C), shows the
+ * matching rejection dialog and returns true — shared by saveFlow and
+ * runLineOperation so both entry points reject a blocked save/edit the
+ * same way. Truncated (large-file preview) and userReadOnly get distinct
+ * messages: writing a preview slice back would destroy the rest of the
+ * file, unrelated to anything the user chose, whereas a userReadOnly doc
+ * is telling the user exactly how to unlock it (uncheck View >
+ * Read-Only). Truncated is checked first — matching
+ * isEffectivelyReadOnly's own precedence and the status bar's (see
+ * statusbar.ts updateStatusBar) — since a doc can't be edited back to an
+ * un-truncated state from here regardless of userReadOnly.
+ */
+function blockedByReadOnly(doc: Doc): boolean {
+  if (doc.truncated) {
+    // Writing the preview slice back would destroy the rest of the file.
+    void messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
+      title: t("dialog.readonlyPreviewTitle"),
+      kind: "warning",
+    });
+    return true;
+  }
+  if (doc.userReadOnly) {
+    void messageDialog(t("dialog.userReadOnlyMessage", doc.title), {
+      title: t("dialog.userReadOnlyTitle"),
+      kind: "warning",
+    });
+    return true;
+  }
+  return false;
+}
+
 /** Save the active document. Resolves to true only when bytes actually
  *  reached the disk — callers that speculatively changed doc state (e.g.
  *  the save-with-encoding menu) roll back on false. */
 async function saveFlow(saveAs: boolean): Promise<boolean> {
   const doc = tabs.active;
   if (!doc) return false;
-  if (doc.truncated) {
-    // Writing the preview slice back would destroy the rest of the file.
-    await messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
-      title: t("dialog.readonlyPreviewTitle"),
-      kind: "warning",
-    });
-    return false;
-  }
+  if (blockedByReadOnly(doc)) return false;
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
@@ -1377,21 +1446,24 @@ async function closeTab(id: number): Promise<void> {
   persistSession();
 }
 
-/** Guard an Edit > Line Operations menu action against a truncated
- *  (read-only, large-file preview) document, then run it — reuses
- *  saveFlow's readonly-preview dialog and i18n strings, since transforming
- *  a preview slice would silently diverge from the file on disk with no
- *  way to save the result back. */
+/** Guard an Edit > Line Operations menu action against a read-only
+ *  document — truncated (large-file preview: transforming a preview slice
+ *  would silently diverge from the file on disk with no way to save the
+ *  result back) or userReadOnly (ROADMAP.md v0.4 Track C: the user
+ *  explicitly locked this tab) — then run it. Shares blockedByReadOnly's
+ *  dialogs with saveFlow, so both entry points reject the same way.
+ *  transformLines/transformSelection (sort/unique/trim/upper/lowercase)
+ *  are a raw `view.dispatch` with explicit changes, which — unlike a CM6
+ *  "command" — does not consult `state.readOnly` on its own (see
+ *  editor.ts's `setReadOnly` doc comment), so this guard is their only
+ *  protection; move/duplicate/delete are genuine CM6 commands that would
+ *  self-no-op even without it (verified in editor.test.ts), but are
+ *  guarded the same way here for one uniform rejection dialog regardless
+ *  of which line operation was invoked. */
 function runLineOperation(action: () => void): void {
   const doc = tabs.active;
   if (!doc) return;
-  if (doc.truncated) {
-    void messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
-      title: t("dialog.readonlyPreviewTitle"),
-      kind: "warning",
-    });
-    return;
-  }
+  if (blockedByReadOnly(doc)) return;
   action();
 }
 
@@ -1449,6 +1521,9 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "indent_guides":
       toggleIndentGuides();
+      break;
+    case "read_only":
+      toggleReadOnly();
       break;
     case "fold_all":
       editor.foldAll();
@@ -1657,6 +1732,10 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     dirty: true,
     revision: 0,
     truncated: false,
+    // Restored from the session (ROADMAP.md v0.4 Track C) — defaults to
+    // false via `??` for a session file written before this field existed
+    // (see session.rs SessionFile.user_read_only's own #[serde(default)]).
+    userReadOnly: file.userReadOnly ?? false,
     totalSize: 0,
     chunkOffset: 0,
     nextChunkOffset: null,
@@ -1687,7 +1766,12 @@ async function restoreSession(): Promise<void> {
       if (await restoreFromBackup(file)) continue;
       if (file.path) {
         const opened = await openDocument(file.path, file.encoding);
-        tabs.add(docFromOpened(opened, file.cursor ?? 0));
+        const doc = docFromOpened(opened, file.cursor ?? 0);
+        // docFromOpened only knows what open_document returned — the
+        // user-lock is session-only state layered on afterward, same
+        // reasoning as restoreFromBackup's literal above.
+        doc.userReadOnly = file.userReadOnly ?? false;
+        tabs.add(doc);
       }
     } catch {
       // The file may have been moved or deleted since last session.
@@ -1724,6 +1808,8 @@ async function restoreSession(): Promise<void> {
       dirty: true,
       revision: 0,
       truncated: false,
+      // Orphaned backup with no session entry at all to read a lock from.
+      userReadOnly: false,
       totalSize: 0,
       chunkOffset: 0,
       nextChunkOffset: null,

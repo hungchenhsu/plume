@@ -160,6 +160,38 @@ export interface EditorHandle {
    *  math and its blank-line/tab-space design notes). Purely visual, like
    *  `setShowInvisibles` above — never touches the document. */
   setIndentGuides(enabled: boolean): void;
+  /**
+   * Toggle the live buffer's user-driven read-only lock (ROADMAP.md v0.4
+   * Track C per-tab read-only mode), reconfiguring the same
+   * `EditorState.readOnly`/`EditorView.editable` extension pair a
+   * truncated large-file preview already gets fixed at construction (see
+   * `newBuffer`'s `readOnly` param) — CM6's `readOnly` facet combines every
+   * source with a boolean OR (`Facet.define({combine: values =>
+   * values.some(...)})`), so this toggle and a truncated buffer's
+   * permanent extension layer safely regardless of call order or which
+   * one is responsible for the effective state.
+   *
+   * Unlike `setLineWrapping`/`setShowInvisibles`/`setIndentGuides` above
+   * (global preferences re-applied from one shared "current" value on
+   * every `swap`), this is per-buffer like `setLanguage`: main.ts's
+   * `showActive` calls this after every `swap` with that specific doc's
+   * own effective read-only value (`isEffectivelyReadOnly` in tabs.ts), so
+   * a tab's lock state — restored from session, or toggled while some
+   * other tab was active — is always re-applied fresh rather than
+   * assumed to already match what this compartment happens to hold.
+   *
+   * This blocks direct typing (via `editable`) and CM6's own commands
+   * that check `state.readOnly` themselves (Undo/Redo, the search panel's
+   * Replace, and this module's moveLineUp/moveLineDown/duplicateLine/
+   * deleteLine — see their doc comments) — but a raw `view.dispatch` with
+   * explicit `changes` (e.g. `transformLines`/`transformSelection` below)
+   * is a lower-level API that does *not* consult `state.readOnly` on its
+   * own; those two are only reachable from the Edit > Line Operations
+   * menu, which main.ts's `runLineOperation` guards against a read-only
+   * doc before ever calling into them (verified from source — see
+   * editor.test.ts's "read-only via Compartment reconfigure" suite).
+   */
+  setReadOnly(enabled: boolean): void;
   /** Localize the CM6 find/replace panel's built-in strings (labels,
    *  placeholders, screen-reader announcements) via `EditorState.phrases`.
    *  Purely presentational, like show-invisibles/word-wrap above. */
@@ -616,6 +648,19 @@ const indentGuidePlugin = ViewPlugin.fromClass(
  *  `preferences.ts`). */
 const indentGuidesExtension: Extension = indentGuidePlugin;
 
+/** The read-only extension pair: blocks direct typing/IME/paste/drop (via
+ *  `editable`) and every CM6 command that checks `state.readOnly` itself
+ *  (via `readOnly`) — see `EditorHandle.setReadOnly`'s doc comment for the
+ *  full enforcement picture. Shared by `newBuffer`'s fixed, construction-
+ *  time flag (large-file truncated previews) and `setReadOnly`'s
+ *  reconfigurable compartment (the user-toggled per-tab lock) below, so
+ *  the two mechanisms can never drift into applying slightly different
+ *  extensions for what is conceptually the same "read-only" state. */
+const readOnlyExtension: Extension = [
+  EditorState.readOnly.of(true),
+  EditorView.editable.of(false),
+];
+
 // ---- Bookmark gutter (ROADMAP.md Track B). Bookmarks are tracked as plain
 // buffer-relative line numbers (see `EditorHandle.setBookmarks` and
 // src/bookmarks.ts), not CM6 positions: the marker set is replaced wholesale
@@ -732,6 +777,11 @@ export function createEditor(
   const invisibles = new Compartment();
   const indentGuides = new Compartment();
   const phrases = new Compartment();
+  // Named distinctly from newBuffer's own `readOnly` parameter below (the
+  // fixed, construction-time flag truncated large-file buffers use) to
+  // avoid shadowing it — this compartment is the separate, reconfigurable
+  // mechanism behind the *user-toggled* per-tab lock (setReadOnly).
+  const readOnlyCompartment = new Compartment();
   // Wrapping, show-invisibles, indent-guides, and the search-panel locale
   // are global but each tab's EditorState carries its own compartment
   // value, so they're re-applied on every swap. The color theme is fully
@@ -766,6 +816,7 @@ export function createEditor(
     invisibles.of([]),
     indentGuides.of([]),
     phrases.of([]),
+    readOnlyCompartment.of([]),
     EditorView.updateListener.of((update) => {
       wireSearchHistory(update.view);
       if (update.docChanged) onDocChanged();
@@ -792,9 +843,7 @@ export function createEditor(
     EditorState.create({
       doc: content,
       selection: { anchor: Math.min(Math.max(cursor, 0), content.length) },
-      extensions: readOnly
-        ? [extensions, EditorState.readOnly.of(true), EditorView.editable.of(false)]
-        : extensions,
+      extensions: readOnly ? [extensions, readOnlyExtension] : extensions,
     });
 
   const view = new EditorView({ state: newBuffer(""), parent });
@@ -883,6 +932,11 @@ export function createEditor(
     setIndentGuides: (enabled) => {
       currentIndentGuides = enabled ? indentGuidesExtension : [];
       view.dispatch({ effects: indentGuides.reconfigure(currentIndentGuides) });
+    },
+    setReadOnly: (enabled) => {
+      view.dispatch({
+        effects: readOnlyCompartment.reconfigure(enabled ? readOnlyExtension : []),
+      });
     },
     setLocale: (locale) => {
       currentPhrases = EditorState.phrases.of(cm6Phrases(locale));
