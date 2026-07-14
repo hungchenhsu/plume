@@ -229,6 +229,14 @@ cases of "never misrepresent user text")
   shared `fsguard.rs` module extracted from the streaming-replace guard
   (#94/#102), reused as-is. Frontend offers Reload/Overwrite/Cancel on
   conflict [danger]
+- [x] #114: batch conversion's per-file commit (`convert_one` in
+  `batch.rs`) validates the same commit-time fingerprint immediately
+  before its `atomic_write`, fail-closing a stale-file overwrite instead of
+  silently clobbering an externally-changed file mid-batch; reuses
+  `fsguard.rs` (#113) unchanged, fingerprint tied to the same open handle
+  the file is read through. One raced file fails independently and reports
+  "changed on disk during conversion" — the rest of the batch still
+  converts normally [danger]
 - [x] #112: save completion is gated on a per-document revision snapshot —
   edits made while a save is in flight keep the tab dirty and keep the
   hot-exit backup instead of being silently marked as saved (pure

@@ -8,10 +8,9 @@
 //!
 //! Introduced for the large-file streaming replace path (issue #94,
 //! `streamreplace.rs`) and shared with the regular save path (issue #113,
-//! `save_document` in `lib.rs`) so both commit-time checks rest on exactly
-//! one implementation. `batch.rs`'s per-file batch conversion (issue #114)
-//! has the identical read -> encode -> commit race and is expected to adopt
-//! this same `Fingerprint` for its own guard.
+//! `save_document` in `lib.rs`) and per-file batch conversion (issue #114,
+//! `commit_conversion` in `batch.rs`) so all three commit-time checks rest
+//! on exactly one implementation.
 //!
 //! Cross-platform identity: on Unix, `(dev, ino)` — from
 //! `std::os::unix::fs::MetadataExt` — uniquely identifies the underlying
