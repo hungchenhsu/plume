@@ -13,7 +13,6 @@ import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
   buildLineIndex,
-  deleteBackup,
   listBackups,
   loadBackup,
   loadRecentFiles,
@@ -35,6 +34,7 @@ import {
   type SessionData,
   type SessionFile,
 } from "./ipc";
+import { dropBackup } from "./backup";
 import { showBatchConvert } from "./batchconvert";
 import {
   nextBookmark,
@@ -158,13 +158,6 @@ function scheduleBackup(): void {
       void flushBackup(doc, editor.content()).then(persistSession);
     }
   }, BACKUP_DEBOUNCE_MS);
-}
-
-function dropBackup(doc: Doc): void {
-  if (doc.backupName) {
-    void deleteBackup(doc.backupName).catch(() => {});
-    doc.backupName = null;
-  }
 }
 
 function updateWindowTitle(): void {
@@ -673,6 +666,14 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
+    // The buffer is now exactly the on-disk content, so whatever hot-exit
+    // backup covered the just-discarded edits (if any — every caller of
+    // reloadFromDisk has already resolved discarding, via its own
+    // dirty/confirm gate) is stale; leaving it around would let the next
+    // launch's orphan recovery resurrect that discarded content as a
+    // spurious dirty tab (issue #115). dropBackup no-ops when there is
+    // nothing to drop.
+    dropBackup(doc);
     // A fresh baseline unrelated to whatever a still-in-flight saveFlow
     // snapshotted before this reload — draws a new value from the shared
     // sequence rather than resetting to a fixed 0 (issue #112).
@@ -923,6 +924,11 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
+    // Same stale-backup reasoning as reloadFromDisk (issue #115): by this
+    // point the user either wasn't dirty or just confirmed the discard
+    // dialog above, so the buffer's previous content — and whatever backup
+    // covered it — is gone for good.
+    dropBackup(doc);
     // Same fresh-baseline reasoning as reloadFromDisk (issue #112).
     doc.revision = nextRevision++;
     doc.fingerprint = opened.fingerprint;
