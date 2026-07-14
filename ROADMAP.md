@@ -228,10 +228,53 @@ cases of "never misrepresent user text")
   when lossy, a "cannot be represented in {encoding}" message in place
   of bytes, styled with the existing `--warning` token. i18n across en/
   zh-TW/ja/zh-CN.
-- [ ] Invisible/ambiguous character audit: curated highlighting of
+- [x] Invisible/ambiguous character audit: curated highlighting of
   zero-width characters, bidi controls (U+202A–202E, U+2066–2069), NBSP
   variants, soft hyphens, and in-body BOMs, with a status-bar count and
-  a View toggle
+  a View toggle. A single 20-entry curated table (`src/suspiciouschars.ts`)
+  is the one source of truth for what's audited, split into bidi (LRE/RLE/
+  PDF/LRO/RLO/LRI/RLI/FSI/PDI/ALM/LRM/RLM), zeroWidth (ZWSP/ZWNJ/ZWJ/WJ/
+  in-body BOM), and whitespace (NBSP/NNBSP/soft hyphen — U+3000 ideographic
+  space deliberately excluded, routine CJK spacing) categories, each with a
+  pure `scanSuspiciousChars(text)` (offset/char/label/name/category per
+  hit) fully vitest-covered (every category, mixed, none, and
+  surrogate-pair-adjacent cases — all 20 code points are single-UTF-16-unit
+  BMP characters, so unlike textstats.ts's word counter this needs no
+  cross-chunk carry state at all). CM6 wiring
+  (`editor.ts`'s `suspiciousCharsExtension`) *overlays* rather than
+  replaces `basicSetup`'s own bare `highlightSpecialChars()` (which already
+  highlights a subset — SHY/ALM/ZWSP/LRM/RLM/LRO/RLO/LRI/RLI/PDI/in-body
+  BOM — as a generic "•" placeholder): verified from
+  @codemirror/view/state source that `addSpecialChars` is the documented
+  extension point for exactly this, and that basicSetup's own
+  parameterless call contributes zero keys to the `specialCharConfig`
+  facet's `combineConfig`, so this module's own `addSpecialChars`/`render`
+  can never hit its "Config merge conflict" error regardless of extension
+  order — pinned by a dedicated `EditorState.create` regression test
+  (editor.test.ts) alongside a real `basicSetup`. The custom `render`
+  callback labels curated hits `[RLO]`/`[ZWSP]`/etc. (`.cm-suspicious-char`,
+  editor-theme.ts, reusing the `--warning`/`--warning-soft` tokens the
+  status-bar decode-error/read-only badges already use) and returns `null`
+  for anything else, falling back to CM6's stock rendering unchanged for
+  its own baseline control-character set — a deliberate `as` cast bridges
+  `@codemirror/view`'s `render` type (declared non-nullable `HTMLElement`)
+  against its own documented falsy-fallback runtime behavior. View menu
+  toggle (`suspicious_chars`, default **on** — a trust/security signal,
+  not a convenience default like indent guides) only gates the inline
+  highlight; the whole-document status-bar count
+  (`suspiciousCharCountOf`, chunked via `Text.iterRange` like
+  `textStatsOf`, no cross-chunk state needed for the same reason as
+  above) is intentionally independent of that toggle — no other
+  status-bar badge (decode error, read-only) is gated by a View-menu
+  display preference either, and hiding a trust signal behind an
+  easy-to-forget toggle would work against the feature's own purpose.
+  Truncated (large-file) windows hide the count entirely rather than
+  showing a "window"-qualified partial total, matching the Track C
+  text-stats precedent exactly (`computeAndShowSuspiciousChars` in
+  main.ts) — inline highlighting still applies as usual within whatever
+  window is loaded, unaffected, same as indent guides/EOL marks. i18n
+  across en/zh-TW/ja/zh-CN (`statusbar.suspiciousChars`, menu.rs `LABELS`
+  with a dedicated pinned-translation test mirroring `read_only`'s).
 - [ ] Full-width ⇄ half-width conversion (selection-scoped, Edit menu):
   FF01–FF5E ⇄ ASCII plus ideographic space [danger]
 - [ ] Unicode normalization: non-NFC detection plus Edit-menu Normalize

@@ -57,6 +57,11 @@ let current: Preferences = {
   // JetBrains is on-by-default), whereas rendering raw whitespace glyphs
   // is visually noisier and better opt-in.
   indentGuides: true,
+  // Default on too, but for a different reason than indentGuides: this is
+  // a trust/security signal (ROADMAP.md v0.4 Track A — bidi-control/
+  // zero-width character highlighting), not a convenience aid, so it
+  // should be visible without the user having to know to opt in.
+  suspiciousChars: true,
   extensionEncodings: [],
 };
 
@@ -108,6 +113,7 @@ function applyAll(): void {
   editorRef?.setLineWrapping(current.wordWrap);
   editorRef?.setShowInvisibles(current.showInvisibles);
   editorRef?.setIndentGuides(current.indentGuides);
+  editorRef?.setSuspiciousChars(current.suspiciousChars);
   editorRef?.setLocale(locale);
 }
 
@@ -151,6 +157,18 @@ export function toggleShowInvisibles(): void {
 export function toggleIndentGuides(): void {
   current.indentGuides = !current.indentGuides;
   editorRef?.setIndentGuides(current.indentGuides);
+  void savePreferences(current).catch(() => {
+    // Best-effort persistence; the in-memory setting still applies.
+  });
+}
+
+/** Toggle inline highlighting of the suspicious/invisible character audit
+ *  (driven by the View menu check item; ROADMAP.md v0.4 Track A) and
+ *  persist. Only affects the inline highlight — the status-bar count is
+ *  independent (see main.ts `computeAndShowSuspiciousChars`). */
+export function toggleSuspiciousChars(): void {
+  current.suspiciousChars = !current.suspiciousChars;
+  editorRef?.setSuspiciousChars(current.suspiciousChars);
   void savePreferences(current).catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
@@ -364,6 +382,7 @@ export function showPreferencesDialog(): void {
       wordWrap: current.wordWrap,
       showInvisibles: current.showInvisibles,
       indentGuides: current.indentGuides,
+      suspiciousChars: current.suspiciousChars,
       extensionEncodings: normalizeTable(extensions.read()),
     };
     applyAll();

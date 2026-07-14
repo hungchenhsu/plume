@@ -14,6 +14,7 @@ import {
   cursorOf,
   isEmptyBuffer,
   lineCountOf,
+  suspiciousCharCountOf,
   textStatsOf,
 } from "./editor";
 import { showCharInspector } from "./charinspect";
@@ -79,6 +80,7 @@ import {
   showPreferencesDialog,
   toggleIndentGuides,
   toggleShowInvisibles,
+  toggleSuspiciousChars,
   toggleWordWrap,
 } from "./preferences";
 import {
@@ -87,12 +89,14 @@ import {
   refreshCharInspector,
   refreshCursor,
   refreshStatusBar,
+  refreshSuspiciousChars,
   refreshTextStats,
   setIndexing,
   updateCharInspector,
   updateCursor,
   updatePager,
   updateStatusBar,
+  updateSuspiciousChars,
   updateTextStats,
 } from "./statusbar";
 import { isEffectivelyReadOnly, TabStore, type Doc } from "./tabs";
@@ -163,6 +167,50 @@ function scheduleTextStatsUpdate(): void {
   textStatsTimer = window.setTimeout(computeAndShowTextStats, TEXTSTATS_DEBOUNCE_MS);
 }
 
+// ---- Suspicious/invisible character audit status-bar count (ROADMAP.md
+// v0.4 Track A). Same cost class and shape as the text-stats segment just
+// above (O(document length) whole-document walk, so it needs its own
+// debounce on the typing path and hides for large-file/truncated windows)
+// but a distinct concern — kept as its own timer/function pair rather than
+// folded into computeAndShowTextStats/scheduleTextStatsUpdate so each stays
+// focused on one status-bar segment, matching how the character-inspector
+// segment above already gets its own dedicated update call rather than
+// being merged into the text-stats one it happens to share a trigger with.
+// Unlike text stats, this never needs to distinguish "selection changed"
+// from "document changed" (the audit is always whole-document, never
+// selection-scoped — see editor.ts's `suspiciousCharCountOf`), so
+// recomputing on every onCursorMoved call (which fires on both) is a
+// harmless superset rather than a precision requirement.
+const SUSPICIOUS_DEBOUNCE_MS = 300;
+let suspiciousCharsTimer: number | null = null;
+
+/** Compute and show the suspicious-char count for whatever tab is active
+ *  *right now* — same freshness/cancel-pending-timer contract as
+ *  `computeAndShowTextStats` above. Intentionally does NOT consult
+ *  `preferences().suspiciousChars` (the View-menu inline-highlight toggle):
+ *  that toggle only controls the CM6 decoration (editor.ts's
+ *  `setSuspiciousChars`), not this status-bar count, the same way no other
+ *  status-bar badge (decode-error, read-only) is gated by a View-menu
+ *  display preference — see editor.ts's `setSuspiciousChars` doc comment. */
+function computeAndShowSuspiciousChars(): void {
+  if (suspiciousCharsTimer !== null) {
+    window.clearTimeout(suspiciousCharsTimer);
+    suspiciousCharsTimer = null;
+  }
+  const doc = tabs.active;
+  if (!doc || doc.truncated) {
+    updateSuspiciousChars(null);
+    return;
+  }
+  updateSuspiciousChars(suspiciousCharCountOf(editor.snapshot()));
+}
+
+/** Debounced entry point mirroring `scheduleTextStatsUpdate` above. */
+function scheduleSuspiciousCharsUpdate(): void {
+  if (suspiciousCharsTimer !== null) window.clearTimeout(suspiciousCharsTimer);
+  suspiciousCharsTimer = window.setTimeout(computeAndShowSuspiciousChars, SUSPICIOUS_DEBOUNCE_MS);
+}
+
 /** Cursor-position callback CM6 fires on every doc/selection change (see
  *  editor.ts's updateListener) — also schedules the debounced text-stats
  *  recompute above, since the same two triggers (content or selection
@@ -179,6 +227,7 @@ function onCursorMoved(line: number, column: number): void {
   updateCursor(line, column);
   updateCharInspector(characterBeforeCursor(editor.snapshot()));
   scheduleTextStatsUpdate();
+  scheduleSuspiciousCharsUpdate();
 }
 
 const editor = createEditor(
@@ -321,6 +370,7 @@ function showActive(): void {
   // exists for. Also cancels whatever editor.swap's own onCursorMoved
   // call just scheduled, so it can't redundantly re-fire later.
   computeAndShowTextStats();
+  computeAndShowSuspiciousChars();
   updateWindowTitle();
   editor.focus();
   // No syntax highlighting for large-file windows: parsing tens of MB
@@ -1549,6 +1599,9 @@ void listen<string>("plume://menu", (event) => {
     case "indent_guides":
       toggleIndentGuides();
       break;
+    case "suspicious_chars":
+      toggleSuspiciousChars();
+      break;
     case "read_only":
       toggleReadOnly();
       break;
@@ -1901,6 +1954,7 @@ onLocaleChange(() => {
   refreshCursor();
   refreshCharInspector();
   refreshTextStats();
+  refreshSuspiciousChars();
   updateWindowTitle();
 });
 
@@ -1912,6 +1966,7 @@ void (async () => {
   refreshCursor();
   refreshCharInspector();
   refreshTextStats();
+  refreshSuspiciousChars();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused.
