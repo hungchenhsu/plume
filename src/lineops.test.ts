@@ -12,6 +12,8 @@ import {
   lineSpanForSelection,
   lowerCase,
   sortLines,
+  toFullWidth,
+  toHalfWidth,
   trimTrailingWhitespace,
   uniqueLines,
   upperCase,
@@ -184,6 +186,150 @@ describe("lowerCase", () => {
 
   it("round-trips with upperCase for plain ASCII", () => {
     expect(lowerCase(upperCase("MixedCase"))).toBe("mixedcase");
+  });
+});
+
+// ROADMAP.md v0.4 Track A: Edit > Line Operations' "Convert to Full-width" /
+// "Convert to Half-width". Scope is deliberately narrow: only the Fullwidth
+// Forms block's ASCII-mapped range (U+FF01-FF5E, a fixed +0xFEE0 offset from
+// ASCII U+0021-007E) and the ideographic space (U+3000 <-> U+0020) convert.
+// Halfwidth katakana (U+FF61-FF9F -- a *different* "half-width" block, for a
+// different reason) and every other character (CJK ideographs, tabs,
+// newlines) pass through untouched in both directions, so the two functions
+// are exact inverses of each other on their shared domain.
+describe("toHalfWidth", () => {
+  it("returns an empty string for an empty string", () => {
+    expect(toHalfWidth("")).toBe("");
+  });
+
+  it("converts fullwidth ASCII letters, digits, and punctuation to their ASCII equivalents", () => {
+    expect(toHalfWidth("Ａ１！")).toBe("A1!");
+  });
+
+  it("converts the fullwidth dollar sign (within FF01-FF5E, no separate currency case needed)", () => {
+    expect(toHalfWidth("＄100")).toBe("$100");
+  });
+
+  it("converts the ideographic space (U+3000) to an ASCII space", () => {
+    expect(toHalfWidth("a　b")).toBe("a b");
+  });
+
+  it("converts the first character of the range (U+FF01) correctly (inclusive lower bound)", () => {
+    expect(toHalfWidth("！")).toBe("!");
+  });
+
+  it("converts the last character of the range (U+FF5E) correctly (inclusive upper bound)", () => {
+    expect(toHalfWidth("～")).toBe("~");
+  });
+
+  it("does not convert the character just past the range's upper bound (U+FF5F)", () => {
+    expect(toHalfWidth("｟")).toBe("｟");
+  });
+
+  it("does not touch halfwidth katakana (U+FF61-FF9F), a different Unicode block", () => {
+    expect(toHalfWidth("ｱｲｳ")).toBe("ｱｲｳ");
+  });
+
+  it("does not touch CJK ideographs", () => {
+    expect(toHalfWidth("中文漢字")).toBe("中文漢字");
+  });
+
+  it("does not touch plain ASCII space, tab, or newline", () => {
+    expect(toHalfWidth("a\tb\nc d")).toBe("a\tb\nc d");
+  });
+
+  it("converts a mixed string, touching only the in-scope characters", () => {
+    expect(toHalfWidth("Ｈｅｌｌｏ　中文ｱｲｳ！")).toBe("Hello 中文ｱｲｳ!");
+  });
+
+  it("does not break an adjacent surrogate pair (supplementary-plane emoji)", () => {
+    // 😀 is U+1F600, a surrogate pair in UTF-16. It sits directly next to a
+    // fullwidth character on both sides here; iterating by code point (not
+    // UTF-16 code unit) must leave the emoji intact while still converting
+    // its fullwidth neighbors.
+    expect(toHalfWidth("＄😀Ａ")).toBe("$😀A");
+  });
+
+  it("is idempotent: applying it twice is the same as applying it once", () => {
+    const text = "Ａ＄　中文ｱｲｳ😀plain";
+    const once = toHalfWidth(text);
+    expect(toHalfWidth(once)).toBe(once);
+  });
+});
+
+describe("toFullWidth", () => {
+  it("returns an empty string for an empty string", () => {
+    expect(toFullWidth("")).toBe("");
+  });
+
+  it("converts ASCII letters, digits, and punctuation to their fullwidth equivalents", () => {
+    expect(toFullWidth("A1!")).toBe("Ａ１！");
+  });
+
+  it("converts an ASCII space to the ideographic space (U+3000) -- the standard symmetric CJK-typesetting counterpart, not a Western-space no-op", () => {
+    // CJK characters flank the space so only the space's own conversion is
+    // under test here (the surrounding letters' ASCII->fullwidth conversion
+    // is covered by the "mixed string" and bijection tests below).
+    expect(toFullWidth("中 文")).toBe("中　文");
+  });
+
+  it("converts the first character of the ASCII range (U+0021) correctly (inclusive lower bound)", () => {
+    expect(toFullWidth("!")).toBe("！");
+  });
+
+  it("converts the last character of the ASCII range (U+007E) correctly (inclusive upper bound)", () => {
+    expect(toFullWidth("~")).toBe("～");
+  });
+
+  it("does not touch halfwidth katakana (already outside the ASCII range)", () => {
+    expect(toFullWidth("ｱｲｳ")).toBe("ｱｲｳ");
+  });
+
+  it("does not touch CJK ideographs", () => {
+    expect(toFullWidth("中文漢字")).toBe("中文漢字");
+  });
+
+  it("does not touch tab or newline -- only U+0020 maps to the ideographic space", () => {
+    // CJK characters (not ASCII letters) flank the whitespace here for the
+    // same isolation reason as the space-conversion test above.
+    expect(toFullWidth("中\t文\n漢 字")).toBe("中\t文\n漢　字");
+  });
+
+  it("converts a mixed string, touching only the in-scope characters", () => {
+    expect(toFullWidth("Hello 中文ｱｲｳ!")).toBe("Ｈｅｌｌｏ　中文ｱｲｳ！");
+  });
+
+  it("does not break an adjacent surrogate pair (supplementary-plane emoji)", () => {
+    expect(toFullWidth("$😀A")).toBe("＄😀Ａ");
+  });
+
+  it("is idempotent: applying it twice is the same as applying it once", () => {
+    const text = "A! 中文ｱｲｳ😀plain";
+    const once = toFullWidth(text);
+    expect(toFullWidth(once)).toBe(once);
+  });
+});
+
+describe("toHalfWidth / toFullWidth bijection", () => {
+  it("round-trips every ASCII printable character (U+0021-U+007E) through toFullWidth and back, and vice versa, for the whole table", () => {
+    for (let code = 0x21; code <= 0x7e; code++) {
+      const ascii = String.fromCodePoint(code);
+      const full = String.fromCodePoint(code + 0xfee0);
+      expect(toFullWidth(ascii)).toBe(full);
+      expect(toHalfWidth(full)).toBe(ascii);
+      expect(toHalfWidth(toFullWidth(ascii))).toBe(ascii);
+      expect(toFullWidth(toHalfWidth(full))).toBe(full);
+    }
+  });
+
+  it("round-trips the ASCII space <-> ideographic space pair in both directions", () => {
+    expect(toHalfWidth(toFullWidth(" "))).toBe(" ");
+    expect(toFullWidth(toHalfWidth("　"))).toBe("　");
+  });
+
+  it("round-trips a full mixed-content document (ASCII text, spaces, CJK, halfwidth katakana) through toFullWidth and back", () => {
+    const text = "Hello, World! 123 test ｱｲｳ 中文漢字";
+    expect(toHalfWidth(toFullWidth(text))).toBe(text);
   });
 });
 

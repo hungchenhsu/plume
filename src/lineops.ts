@@ -131,6 +131,67 @@ export function lowerCase(text: string): string {
 }
 
 /**
+ * Convert fullwidth ASCII-range characters (U+FF01-FF5E, the Unicode
+ * "Fullwidth Forms" block's fixed +0xFEE0 offset from ASCII U+0021-007E --
+ * '！' through '～', which already includes the fullwidth dollar sign '＄'
+ * at U+FF04, so no separate currency-symbol case is needed) to their plain
+ * ASCII equivalents, and the ideographic space (U+3000, CJK's full-width
+ * space) to a plain ASCII space (U+0020). This is the conventional
+ * CJK-input-method "convert to half-width" operation (ROADMAP.md v0.4
+ * Track A). Deliberately narrow: halfwidth katakana (U+FF61-FF9F -- a
+ * *different* Unicode block, already called "half-width" for an unrelated
+ * reason) and every other character (CJK ideographs, tabs, newlines, plain
+ * ASCII space) pass through unchanged, which is what makes this the exact
+ * inverse of `toFullWidth` on their shared domain (see that function's
+ * docs and lineops.test.ts's bijection suite). Iterates with the string
+ * iterator (whole code points, not UTF-16 code units), the same technique
+ * `compareCodePoints` above uses, so an adjacent supplementary-plane
+ * character (a surrogate pair) is never split.
+ */
+export function toHalfWidth(text: string): string {
+  let result = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code === 0x3000) {
+      result += " ";
+    } else if (code >= 0xff01 && code <= 0xff5e) {
+      result += String.fromCodePoint(code - 0xfee0);
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
+/**
+ * Inverse of `toHalfWidth`: ASCII printable characters (U+0021-007E) to
+ * their fullwidth counterparts (+0xFEE0, landing in U+FF01-FF5E), and the
+ * plain ASCII space (U+0020) to the ideographic space (U+3000). Converting
+ * an ordinary Western space to a fullwidth one can look surprising out of
+ * context, but it is the standard, symmetric counterpart the CJK
+ * typesetting workflow this command targets expects -- a document run
+ * through "convert to full-width" is meant to read as uniformly
+ * full-width, spaces included, and the pair round-trips exactly back
+ * through `toHalfWidth` either way. Every other character (CJK ideographs,
+ * halfwidth katakana, tabs, newlines) passes through unchanged, and code
+ * points are iterated the same surrogate-pair-safe way as `toHalfWidth`.
+ */
+export function toFullWidth(text: string): string {
+  let result = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code === 0x0020) {
+      result += "　";
+    } else if (code >= 0x0021 && code <= 0x007e) {
+      result += String.fromCodePoint(code + 0xfee0);
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
+/**
  * Clamp a tab/indent width to a positive integer — guards
  * `convertLeadingTabsToSpaces`/`convertLeadingSpacesToTabs` below against a
  * zero or negative width, which would otherwise hit a modulo-by-zero
