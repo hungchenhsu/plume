@@ -242,6 +242,13 @@ cases of "never misrepresent user text")
   hot-exit backup instead of being silently marked as saved (pure
   decision table in `savecompletion.ts`, exhaustively unit-tested)
   [danger]
+- [x] #115: reload-from-disk and reopen-with-encoding now drop the doc's
+  hot-exit backup once its buffer is replaced by on-disk content —
+  previously left behind, the stale backup was resurrected by the next
+  launch's orphan recovery as a spurious dirty tab, reviving content the
+  user had just explicitly discarded. `dropBackup` extracted out of
+  main.ts (not unit-testable directly) into its own tested `backup.ts`
+  module, mirroring the `savecompletion.ts` (#112) extraction [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
