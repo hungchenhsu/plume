@@ -337,6 +337,48 @@ cases of "never misrepresent user text")
   call-site pattern (bump, await, guarded apply) for a rapid-Next/Next
   race, a tab-switch-during-load race, and a reload-during-load race, plus
   full branch coverage of the pure guard [danger]
+- [x] #118: large-file paging silently skipped bytes when a single line
+  exceeded `CHUNK_BYTES` (2 MiB) — `align_start`'s "skip forward to the
+  next line start" is only safe when a *later* read can recover whatever
+  it discards, true for backward paging but never true going forward.
+  Once a chunk finally reached an overlong line's own closing terminator,
+  the old `read_document_chunk` treated the mid-line continuation offset
+  as "misaligned" and skipped past that terminator, discarding the entire
+  unterminated remainder it was continuing (up to just under CHUNK_BYTES
+  per occurrence). `read_document_chunk` now takes a caller-declared
+  `OffsetKind`: a `continuation` offset (paging's own next_offset chain —
+  either a genuine line start or a raw mid-line continuation point) is
+  never realigned, read from exactly that offset and cut at the last
+  complete terminator (or kept whole if none exists yet), while a
+  `lineStart` offset (goto/bookmark jumps, riding on a line index that a
+  missed watcher event can leave stale — mid-line, even mid-character) is
+  verified and defensively realigned to the next real line start, falling
+  back to a raw head-trimmed read when the window contains no line start
+  at all — never an empty window, never a skipped one (goto is a fresh
+  jump, so realignment there moves the window instead of losing bytes
+  from an assembled sequence). `read_document_chunk_before` keeps
+  `align_start` (backward paging's leading-fragment discard is usually
+  safe — a further backward read recovers it) but no longer trusts a
+  result that would consume the *entire* window: a CHUNK_BYTES backward
+  window landing entirely inside one overlong line has its only
+  terminator-like byte at the window's very last position (`end`'s own
+  predecessor byte), and "skipping past it" used to collapse the chunk to
+  empty with offset == end, hanging paging in place forever. A raw,
+  non-terminator cut can also land mid-character; new
+  `encoding::trim_truncated_utf8_head` (mirroring the existing
+  `trim_truncated_utf8_tail`) fixes the boundary back up on both ends,
+  gated to UTF-8 (the one paging-supported encoding where this can
+  happen), with the same "never consume the entire window" guard on the
+  backward head-trim. Regression tests: forward and backward round-trip
+  across a ~12 MB unterminated line with normal lines on both sides (the
+  exact byte-loss count is asserted directly), a minimal repro of the
+  backward degenerate case, exact mid-line cut offset/character-boundary
+  arithmetic for a multibyte (CJK) overlong line, the
+  EOF/no-trailing-newline case, stale mid-line and mid-character goto
+  offsets realigning to the next line start, a stale goto offset inside
+  an overlong line falling back raw, and an all-continuation-bytes
+  backward window staying an honest U+FFFD chunk instead of collapsing
+  empty [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
