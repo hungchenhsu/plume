@@ -1353,6 +1353,16 @@ void listen<string>("plume://menu", (event) => {
     case "close_tab":
       if (tabs.activeId !== null) void closeTab(tabs.activeId);
       break;
+    // Selection commands, not edits — like "find"/"goto_line" below, these
+    // run unguarded (no runLineOperation truncated-preview check): they
+    // only move/extend the selection, never touch buffer content, so a
+    // large-file read-only preview has nothing to silently diverge.
+    case "select_next_occurrence":
+      editor.selectNextOccurrence();
+      break;
+    case "select_all_occurrences":
+      editor.selectAllOccurrences();
+      break;
     case "find":
       editor.openSearch();
       break;

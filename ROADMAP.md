@@ -205,8 +205,14 @@ cases of "never misrepresent user text")
   never CI — known runner dead end) *(optional)*
 
 **Track C — everyday editing comfort**
-- [ ] Multi-cursor: allowMultipleSelections plus select-next/all
-  occurrence commands, Edit-menu entries, platform shortcuts
+- [x] Multi-cursor: allowMultipleSelections plus select-next/all
+  occurrence commands, Edit-menu entries, platform shortcuts (verified
+  from source: `basicSetup` already sets `allowMultipleSelections` and
+  bundles `searchKeymap`'s Mod-d/Mod-Shift-l for select-next/all-occurrence
+  — this cycle's actual work was Edit-menu exposure; CM6's own
+  Cmd/Ctrl-click already adds a cursor and does not conflict with the
+  existing Alt-drag rectangular selection, so that gesture was left as-is
+  rather than remapped to Alt-click)
 - [x] Line shuffle ops in the Edit menu: move line up/down, duplicate,
   delete (bindings may already exist via the default keymap — expose
   and complete them)
