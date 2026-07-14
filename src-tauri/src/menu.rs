@@ -59,6 +59,20 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
     ),
     ("edit", "Edit", "編輯", "編集", "编辑"),
     (
+        "select_next_occurrence",
+        "Select Next Occurrence",
+        "選取下一個符合項目",
+        "次の一致を選択",
+        "选取下一个匹配项",
+    ),
+    (
+        "select_all_occurrences",
+        "Select All Occurrences",
+        "選取所有符合項目",
+        "すべての一致を選択",
+        "选取所有匹配项",
+    ),
+    (
         "find",
         "Find and Replace…",
         "尋找與取代…",
@@ -382,6 +396,21 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .paste()
         .select_all()
         .separator()
+        // No accelerators: @codemirror/search's `searchKeymap` (bundled into
+        // editor.ts's `basicSetup`) already binds Mod-d and Mod-Shift-l
+        // inside the editor. A native menu accelerator on the same keys
+        // would give the shortcut two owners — the same double-fire
+        // pitfall the Line Operations move/duplicate/delete items and the
+        // View menu's Fold All/Unfold All avoid.
+        .item(
+            &MenuItemBuilder::with_id("select_next_occurrence", l("select_next_occurrence"))
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("select_all_occurrences", l("select_all_occurrences"))
+                .build(app)?,
+        )
+        .separator()
         .item(
             &MenuItemBuilder::with_id("find", l("find"))
                 .accelerator("CmdOrCtrl+F")
@@ -604,6 +633,8 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
     if let Some(edit) = menu.get("edit").and_then(|item| item.as_submenu().cloned()) {
         edit.set_text(l("edit")).map_err(|e| e.to_string())?;
         for id in [
+            "select_next_occurrence",
+            "select_all_occurrences",
             "find",
             "find_in_files",
             "goto_line",

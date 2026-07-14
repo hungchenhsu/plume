@@ -36,7 +36,11 @@ import {
   moveLineUp as cmMoveLineUp,
 } from "@codemirror/commands";
 import { languages } from "@codemirror/language-data";
-import { openSearchPanel } from "@codemirror/search";
+import {
+  openSearchPanel,
+  selectNextOccurrence as cmSelectNextOccurrence,
+  selectSelectionMatches as cmSelectSelectionMatches,
+} from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
 import type { Locale } from "./i18n";
@@ -197,6 +201,32 @@ export interface EditorHandle {
    *  to Shift-Mod-k (Shift-Cmd-K on macOS, Shift-Ctrl-K elsewhere); see
    *  `moveLineUp`'s doc comment for the no-native-accelerator rationale. */
   deleteLine(): void;
+  /**
+   * Add the next occurrence of the current selection's text as an
+   * additional selection range, growing a multi-cursor selection one match
+   * at a time — an empty selection (a plain cursor) is expanded to the
+   * word under it first, same as double-click. CM6's `selectNextOccurrence`
+   * command (`@codemirror/search`), already bound to Mod-d by
+   * `searchKeymap` inside `basicSetup`; this wrapper exists only so the
+   * same action is also reachable from the Edit menu (see menu.rs's
+   * `select_next_occurrence` — no native accelerator there, same
+   * double-fire reasoning as `moveLineUp` above). Relies on
+   * `EditorState.allowMultipleSelections` being on (it is: `basicSetup`
+   * sets it, see ROADMAP.md Track C) — without it, CM6's own transaction
+   * pipeline would collapse the added range straight back down to one
+   * (see editor.test.ts's `allowMultipleSelections` suite).
+   */
+  selectNextOccurrence(): void;
+  /**
+   * Select every occurrence of the current selection's text in the live
+   * buffer, each as its own range — CM6's `selectSelectionMatches`
+   * command, already bound to Mod-Shift-l (Shift-Cmd-L on macOS,
+   * Shift-Ctrl-L elsewhere). A no-op (CM6's own guard) when the selection
+   * is empty or already spans multiple ranges — there is then no single
+   * "current selection text" to match against. See `selectNextOccurrence`
+   * above for the no-native-accelerator rationale.
+   */
+  selectAllOccurrences(): void;
   /**
    * Apply a pure text transform (see lineops.ts) to a line-bounded region
    * of the live buffer: the current selection expanded to the start of
@@ -809,6 +839,12 @@ export function createEditor(
     },
     deleteLine: () => {
       cmDeleteLine(view);
+    },
+    selectNextOccurrence: () => {
+      cmSelectNextOccurrence(view);
+    },
+    selectAllOccurrences: () => {
+      cmSelectSelectionMatches(view);
     },
     transformLines: (fn) => {
       const { state } = view;

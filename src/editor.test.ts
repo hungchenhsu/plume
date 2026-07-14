@@ -3,7 +3,8 @@
 // (or convincingly faked) layout engine to test meaningfully — this file
 // covers what's reachable without one: which character offsets get an EOL
 // mark. See CLAUDE.md "Frontend logic that doesn't need the WebView".
-import { Text } from "@codemirror/state";
+import { EditorSelection, EditorState, Text } from "@codemirror/state";
+import { basicSetup } from "codemirror";
 import { describe, expect, it } from "vitest";
 import { eolMarkPositions, indentGuideLevels, lineSpanForSelectionInDoc } from "./editor";
 import { lineSpanForSelection } from "./lineops";
@@ -220,5 +221,47 @@ describe("lineSpanForSelectionInDoc (oracle: must match lineops.ts's lineSpanFor
       expect(() => lineSpanForSelectionInDoc(doc, pos, pos)).toThrow();
       expect(() => lineSpanForSelection(text, pos, pos)).toThrow();
     }
+  });
+});
+
+// ROADMAP.md Track C multi-cursor: unlike everything above, this needs no
+// live EditorView — `EditorState.create`/`state.update` are pure and need
+// no layout engine, so the actual mechanism Mod-d (`selectNextOccurrence`)
+// and Mod-Shift-l (`selectSelectionMatches`, both @codemirror/search,
+// already in basicSetup's searchKeymap) rely on is directly testable: a
+// transaction's selection only keeps more than one range when
+// `EditorState.allowMultipleSelections` is on, per @codemirror/state's
+// own `EditorState.applyTransaction` (`tr.newSelection` vs
+// `tr.newSelection.asSingle()`). `createEditor`'s extensions always start
+// with `basicSetup` (see editor.ts), which is what actually turns this on
+// for the app — verified from source, not assumed (basicSetup's own
+// module includes `EditorState.allowMultipleSelections.of(true)`).
+describe("allowMultipleSelections (ROADMAP.md Track C multi-cursor)", () => {
+  // Two ranges a command like selectNextOccurrence would dispatch after
+  // matching a second "abc" in "abc abc abc".
+  const twoRanges = EditorSelection.create([EditorSelection.range(0, 3), EditorSelection.range(4, 7)]);
+
+  it("collapses a multi-range selection to just the main range when the extension is absent", () => {
+    // Baseline with no extensions at all: this is what would silently
+    // defeat Mod-d/Mod-Shift-l if createEditor's extensions ever stopped
+    // including basicSetup (or some other source of this facet).
+    const state = EditorState.create({ doc: "abc abc abc" });
+    const tr = state.update({ selection: twoRanges });
+    expect(tr.state.selection.ranges.length).toBe(1);
+  });
+
+  it("keeps every range once allowMultipleSelections is on", () => {
+    const state = EditorState.create({
+      doc: "abc abc abc",
+      extensions: [EditorState.allowMultipleSelections.of(true)],
+    });
+    const tr = state.update({ selection: twoRanges });
+    expect(tr.state.selection.ranges.length).toBe(2);
+  });
+
+  it("is already on via basicSetup, the extension bundle createEditor always includes", () => {
+    const state = EditorState.create({ doc: "abc abc abc", extensions: [basicSetup] });
+    const tr = state.update({ selection: twoRanges });
+    expect(tr.state.selection.ranges.length).toBe(2);
   });
 });
