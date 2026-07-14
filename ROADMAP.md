@@ -889,8 +889,9 @@ cases of "never misrepresent user text")
   all 8 wizard hypotheses. 22 new tests at CI scale (~2s), plus two
   `#[ignore]`d 50x-larger variants for manual runs (verified to pass in
   release mode). No round-trip failures found.
-- [ ] Cycle close-out: version bump to 0.4.0, tag v0.4.0-alpha.1, draft
-  release (publish remains user-gated)
+- [x] Cycle close-out: version bump to 0.4.0, tag v0.4.0-alpha.1 (the
+  draft-release workflow is billing-blocked — re-run it on the tag once
+  Actions billing is restored; publish remains user-gated)
 
 ## Explicit non-goals
 

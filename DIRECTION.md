@@ -42,7 +42,7 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-14)
+## 2. Current state (2026-07-15)
 
 - **v0.2 feature cycle complete** (PRs #34–#50): full visual refresh on
   design tokens, built-in themes, UI i18n (zh-TW first), all six Tier-1
@@ -59,13 +59,29 @@ faster for text files, or is it IDE creep?*
   handling, bounded large-file read) and three P2s. Tagged
   **v0.3.0-alpha.1**. D1 (naming) explicitly deferred by the user; D2
   blocked behind it.
-- **P3 v0.4 cycle active** (2026-07-14): planned autonomously under an
-  explicit user delegation (user away; merge on green CI, post-merge
-  review), adversarially reviewed against the mission and non-goals
-  before start. Tracks: character-level trust, large files &
-  performance, editing comfort, robustness — see ROADMAP.md §v0.4.
-- Tests at cycle start: 182 Rust unit tests + 245 frontend vitest tests;
-  release pipeline builds six installers per tag as a draft release.
+- **v0.4 feature cycle complete** (2026-07-14→15, PRs #110–#152):
+  planned and executed autonomously under an explicit user delegation
+  (user away; post-merge review pending), adversarially reviewed before
+  start. All four tracks delivered — **character-level trust**
+  (character inspector, invisible/bidi-character audit, width
+  conversion, Unicode normalization with representability guard,
+  lossy-save character preview, BOM-toggle gap verification), **large
+  files & performance** (#107 fix, streaming encoding conversion,
+  open-latency bench script — numbers pending user), **editing comfort**
+  (multi-cursor menu exposure, line shuffle ops, word/char count, tab
+  drag-reorder, per-tab read-only, indentation tools), **robustness**
+  (round-trip fuzz across all 10 encodings). Mid-cycle S1 interrupt: a
+  10-issue external review batch (#112–#121) — 3 P1 save-path
+  stale-overwrite bugs and 6 P2s — was fixed first (PRs #123–#137,
+  fsguard fingerprint module, revision-gated save completion, shared
+  line-break semantics). Also: repo visibility was found PUBLIC and
+  restored to private (D3 gates unmet; #121 open for the user), after
+  which GitHub Actions became billing-blocked — every PR since carries
+  local full-matrix verification evidence instead; re-run CI on main
+  once billing is fixed.
+- Tests at cycle end: 333 Rust + 572 vitest (cycle start: 182/245).
+  Tagged **v0.4.0-alpha.1** (draft-release workflow blocked on Actions
+  billing — re-run the tag workflow after billing is restored).
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
