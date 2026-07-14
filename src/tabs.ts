@@ -49,6 +49,26 @@ export interface Doc {
    *  (non-truncated) docs use these directly as buffer line numbers.
    *  Session-local only — never persisted (see ROADMAP.md Track B). */
   bookmarks: number[];
+  /** Monotonically increasing per-doc counter (never reset), bumped by
+   *  every chunk-window-mutating operation before issuing its IPC call(s)
+   *  — Next/Prev paging, continuous-reading auto append/prepend, go-to-
+   *  line/bookmark jump — and by reload-from-disk/reopen-with-encoding
+   *  even though they have no chunk response of their own to gate, purely
+   *  to invalidate whatever chunk request might still be in flight once
+   *  they reset this doc's chunk-window state from scratch. A chunk
+   *  response is only applied if it still matches this value once its IPC
+   *  round trip resolves — see chunkguard.ts's shouldApplyChunkResponse
+   *  (issue #120). */
+  chunkGeneration: number;
+  /** True while a chunk-window-mutating IPC call (any of the operations
+   *  described on chunkGeneration above, except reload/reopen — which
+   *  invalidate and clear this instead of waiting on it) is in flight for
+   *  this doc. Serializes them so, say, a manual Next click and an
+   *  in-progress continuous-reading auto-append never overlap for the
+   *  same doc (issue #120). Per-doc rather than the single module-level
+   *  flag this replaces, so an in-flight load in one tab no longer blocks
+   *  unrelated auto-loading in another tab. */
+  chunkLoadInFlight: boolean;
   /** Hot-exit backup file name once unsaved content has been flushed. */
   backupName: string | null;
   /** Opaque metadata snapshot of the on-disk file as of the last open,

@@ -43,6 +43,7 @@ import {
   windowRelativeBookmarks,
 } from "./bookmarks";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
+import { shouldApplyChunkResponse } from "./chunkguard";
 import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
@@ -198,6 +199,8 @@ function makeUntitled(): Doc {
     lineIndex: null,
     windowStartLine: null,
     bookmarks: [],
+    chunkGeneration: 0,
+    chunkLoadInFlight: false,
     backupName: null,
     fingerprint: null,
     buffer: editor.newBuffer(""),
@@ -313,6 +316,8 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     // Offset 0 is unambiguously line 1 — no scan needed to know this yet.
     windowStartLine: opened.truncated ? 1 : null,
     bookmarks: [],
+    chunkGeneration: 0,
+    chunkLoadInFlight: false,
     backupName: null,
     fingerprint: opened.fingerprint,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
@@ -332,21 +337,53 @@ function pagerState(doc: Doc): { hasPrev: boolean; hasNext: boolean } | null {
   };
 }
 
+/**
+ * Next/Prev pager button. Guarded against issue #120's stale-response
+ * class of bugs two ways: `doc.chunkLoadInFlight` keeps a second click (or
+ * an overlapping auto append/prepend/goto for the same doc) from ever
+ * firing while this one is still in flight, and `doc.chunkGeneration` —
+ * bumped here and checked via `shouldApplyChunkResponse` once the IPC call
+ * resolves — catches a response that a reload/reopen has since made
+ * irrelevant (those don't wait on `chunkLoadInFlight`; they preempt it).
+ * The Prev offset is only popped off `prevChunkOffsets` once the response
+ * is actually about to be applied — previously it was popped eagerly,
+ * before the request was even known to succeed, so a failed or
+ * superseded Prev silently dropped that offset from the history stack.
+ */
 async function pageChunk(direction: 1 | -1): Promise<void> {
   const doc = tabs.active;
   if (!doc?.path || !pagingSupported(doc)) return;
+  if (doc.chunkLoadInFlight) return;
   let target: number;
   if (direction === 1) {
     if (doc.nextChunkOffset === null) return;
     target = doc.nextChunkOffset;
   } else {
-    const prev = doc.prevChunkOffsets.pop();
+    // Peeked, not popped: popping happens only once this request's
+    // response is confirmed current, below.
+    const prev = doc.prevChunkOffsets[doc.prevChunkOffsets.length - 1];
     if (prev === undefined) return;
     target = prev;
   }
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
   try {
     const chunkData = await readDocumentChunk(doc.path, target, doc.encoding);
-    if (direction === 1) doc.prevChunkOffsets.push(doc.chunkOffset);
+    if (
+      !shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: tabs.activeId === doc.id,
+      })
+    ) {
+      return;
+    }
+    if (direction === 1) {
+      doc.prevChunkOffsets.push(doc.chunkOffset);
+    } else {
+      doc.prevChunkOffsets.pop();
+    }
     doc.chunkOffset = chunkData.offset;
     doc.nextChunkOffset = chunkData.nextOffset;
     doc.malformed = chunkData.malformed;
@@ -363,14 +400,31 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
     doc.buffer = editor.newBuffer(chunkData.content, true);
     showActive();
   } catch (error) {
+    // A superseded request's failure is exactly as irrelevant as its
+    // success would have been — surfacing this dialog after the user has
+    // already moved on (a newer request, or a reload) would be confusing.
+    if (
+      !shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: tabs.activeId === doc.id,
+      })
+    ) {
+      return;
+    }
     await messageDialog(String(error), {
       title: t("dialog.pagingTitle"),
       kind: "warning",
     });
+  } finally {
+    // Only release the lock if nothing has superseded this request —
+    // otherwise a reload/reopen (which bump the generation and clear this
+    // flag themselves, see reloadFromDisk/reopenWithEncoding) or a newer
+    // chunk request already owns it, and this stale request clearing it
+    // out from under them would let a third request overlap.
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
   }
 }
-
-let chunkLoadInFlight = false;
 
 /** Scrolling near the end of a large-file window loads the next chunk. */
 async function autoAppendChunk(): Promise<void> {
@@ -379,17 +433,26 @@ async function autoAppendChunk(): Promise<void> {
   if (
     !canAutoAppend({
       nextOffset: doc.nextChunkOffset,
-      inFlight: chunkLoadInFlight,
+      inFlight: doc.chunkLoadInFlight,
     })
   ) {
     return;
   }
-  chunkLoadInFlight = true;
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
   try {
     const loadedAt = doc.nextChunkOffset!;
     const chunkData = await readDocumentChunk(doc.path, loadedAt, doc.encoding);
-    // The user may have switched tabs while the chunk was loading.
-    if (tabs.activeId === doc.id) {
+    // The user may have switched tabs while the chunk was loading, or a
+    // newer request/reload/reopen may have superseded this one (#120).
+    if (
+      shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: tabs.activeId === doc.id,
+      })
+    ) {
       editor.appendText(chunkData.content);
       doc.nextChunkOffset = chunkData.nextOffset;
       const trim = pushBack(doc.windowChunks, {
@@ -410,7 +473,7 @@ async function autoAppendChunk(): Promise<void> {
   } catch {
     // Transient read failure; the manual pager remains available.
   } finally {
-    chunkLoadInFlight = false;
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
   }
 }
 
@@ -421,12 +484,14 @@ async function prependChunk(): Promise<void> {
   if (
     !canPrepend({
       windowStart: doc.chunkOffset,
-      inFlight: chunkLoadInFlight,
+      inFlight: doc.chunkLoadInFlight,
     })
   ) {
     return;
   }
-  chunkLoadInFlight = true;
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
   try {
     const windowStart = doc.chunkOffset;
     const chunkData = await readDocumentChunkBefore(
@@ -434,8 +499,15 @@ async function prependChunk(): Promise<void> {
       windowStart,
       doc.encoding,
     );
-    // The user may have switched tabs while the chunk was loading.
-    if (tabs.activeId === doc.id) {
+    // The user may have switched tabs while the chunk was loading, or a
+    // newer request/reload/reopen may have superseded this one (#120).
+    if (
+      shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: tabs.activeId === doc.id,
+      })
+    ) {
       editor.prependText(chunkData.content);
       doc.chunkOffset = chunkData.offset;
       const trim = pushFront(doc.windowChunks, {
@@ -457,7 +529,7 @@ async function prependChunk(): Promise<void> {
   } catch {
     // Transient read failure; the manual pager remains available.
   } finally {
-    chunkLoadInFlight = false;
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
   }
 }
 
@@ -474,8 +546,14 @@ async function prependChunk(): Promise<void> {
  * the reported line number can be off until the watcher catches up.
  * Returns null on failure or for a doc with no path to index; the
  * caller treats that as a no-op.
+ *
+ * `myGeneration` is the caller's (gotoLargeFileLine's) own generation,
+ * captured before this was called — if a reload/reopen bumps
+ * `doc.chunkGeneration` while `buildLineIndex`'s IPC call is in flight,
+ * the result is discarded rather than resurrecting a line index for a
+ * file version reload just replaced (issue #120).
  */
-async function ensureLineIndex(doc: Doc): Promise<LineIndex | null> {
+async function ensureLineIndex(doc: Doc, myGeneration: number): Promise<LineIndex | null> {
   if (!doc.path) return null;
   if (doc.lineIndex && doc.lineIndex.indexedSize === doc.totalSize) {
     return doc.lineIndex;
@@ -483,6 +561,7 @@ async function ensureLineIndex(doc: Doc): Promise<LineIndex | null> {
   setIndexing(true);
   try {
     const report = await buildLineIndex(doc.path, doc.encoding);
+    if (doc.chunkGeneration !== myGeneration) return null;
     doc.lineIndex = report;
     // Keep totalSize in lockstep with what was actually just scanned, so
     // the staleness check above compares against the index's own baseline
@@ -493,10 +572,12 @@ async function ensureLineIndex(doc: Doc): Promise<LineIndex | null> {
     doc.totalSize = report.indexedSize;
     return report;
   } catch (error) {
-    await messageDialog(String(error), {
-      title: t("dialog.lineIndexFailedTitle"),
-      kind: "warning",
-    });
+    if (doc.chunkGeneration === myGeneration) {
+      await messageDialog(String(error), {
+        title: t("dialog.lineIndexFailedTitle"),
+        kind: "warning",
+      });
+    }
     return null;
   } finally {
     setIndexing(false);
@@ -515,19 +596,39 @@ async function ensureLineIndex(doc: Doc): Promise<LineIndex | null> {
  * in a byte/char/line-unit danger domain for what's a rare-ish operation.
  * The cost is one extra IPC round trip when the target was already
  * visible — see the PR description for the full trade-off.
+ *
+ * Shares `doc.chunkLoadInFlight`/`doc.chunkGeneration` with
+ * pageChunk/autoAppendChunk/prependChunk (issue #120): this can be
+ * triggered mid-paging (Go to Line, or a bookmark jump via
+ * jumpToBookmark) and its own IPC chain (buildLineIndex, optionally
+ * locateLineOffset, then readDocumentChunk) must not overlap with those,
+ * nor apply once superseded by a newer request or a reload/reopen.
  */
 async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
   if (!doc.path) return;
-  const index = await ensureLineIndex(doc);
-  if (!index || index.totalLines === 0) return;
-  const target0 = clampLine(targetLine1 - 1, index.totalLines);
-  const checkpoint = selectCheckpoint(index.checkpoints, target0);
+  if (doc.chunkLoadInFlight) return;
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
   try {
+    const index = await ensureLineIndex(doc, myGeneration);
+    if (!index || index.totalLines === 0) return;
+    const target0 = clampLine(targetLine1 - 1, index.totalLines);
+    const checkpoint = selectCheckpoint(index.checkpoints, target0);
     const offset =
       target0 === checkpoint.line
         ? checkpoint.offset
         : await locateLineOffset(doc.path, target0, checkpoint.offset, checkpoint.line);
     const chunkData = await readDocumentChunk(doc.path, offset, doc.encoding);
+    if (
+      !shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: tabs.activeId === doc.id,
+      })
+    ) {
+      return;
+    }
     doc.chunkOffset = chunkData.offset;
     doc.nextChunkOffset = chunkData.nextOffset;
     doc.prevChunkOffsets = [];
@@ -542,10 +643,14 @@ async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
     doc.windowStartLine = target0 + 1;
     showActive();
   } catch (error) {
-    await messageDialog(String(error), {
-      title: t("dialog.pagingTitle"),
-      kind: "warning",
-    });
+    if (doc.chunkGeneration === myGeneration) {
+      await messageDialog(String(error), {
+        title: t("dialog.pagingTitle"),
+        kind: "warning",
+      });
+    }
+  } finally {
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
   }
 }
 
@@ -697,6 +802,15 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     // rebuilds from scratch (offset 0) so there's nothing to salvage anyway.
     doc.lineIndex = null;
     doc.windowStartLine = opened.truncated ? 1 : null;
+    // Invalidate any pageChunk/autoAppendChunk/prependChunk/
+    // gotoLargeFileLine response still in flight for this doc (issue
+    // #120): bumping the generation makes it discard itself instead of
+    // clobbering the fresh state just set above once it resolves; clearing
+    // the in-flight flag immediately (rather than waiting for that
+    // now-irrelevant response to actually settle) lets a new chunk
+    // request start right away.
+    doc.chunkGeneration += 1;
+    doc.chunkLoadInFlight = false;
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     if (tabs.activeId === doc.id) showActive();
     else tabs.render();
@@ -950,6 +1064,10 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     // 0 anyway, so any prior index is discarded rather than re-validated.
     doc.lineIndex = null;
     doc.windowStartLine = opened.truncated ? 1 : null;
+    // Same in-flight-chunk-request invalidation as reloadFromDisk (issue
+    // #120) — this doc's chunk window was just reset from scratch too.
+    doc.chunkGeneration += 1;
+    doc.chunkLoadInFlight = false;
     doc.buffer = editor.newBuffer(opened.content, opened.truncated);
     showActive();
     persistSession();
@@ -1444,6 +1562,8 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     lineIndex: null,
     windowStartLine: null,
     bookmarks: [],
+    chunkGeneration: 0,
+    chunkLoadInFlight: false,
     backupName: file.backup,
     // Restored from the hot-exit backup blob, not from a fresh disk read —
     // there is no verified on-disk baseline for this tab's content this
@@ -1509,6 +1629,8 @@ async function restoreSession(): Promise<void> {
       lineIndex: null,
       windowStartLine: null,
       bookmarks: [],
+      chunkGeneration: 0,
+      chunkLoadInFlight: false,
       backupName: name,
       // Orphaned backup with no session entry at all — path is always
       // null here, so this is the same "no on-disk baseline yet" case as
