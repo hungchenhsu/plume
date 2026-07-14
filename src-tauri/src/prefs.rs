@@ -32,6 +32,18 @@ pub struct Preferences {
     /// suspicious-character count is independent of this preference (see
     /// `src/main.ts` `computeAndShowSuspiciousChars`).
     pub suspicious_chars: bool,
+    /// Fallback indent width (spaces-per-level / tab display width) used
+    /// when per-buffer indentation detection can't confidently infer one —
+    /// no indentation in the file, or an inconsistent tabs+spaces mix
+    /// (ROADMAP.md v0.4 Track C; see `src/indentdetect.ts`
+    /// `detectIndentation` and `src/editor.ts`
+    /// `EditorHandle.setIndentation`). Also the tab *display* width for a
+    /// tabs-indented file: unlike a spaces file's step, a tab's own visual
+    /// width can never be inferred from the tab characters themselves, so
+    /// detected "tabs" indentation always falls back to this value for
+    /// `EditorState.tabSize` even though its `indentUnit` ("\t") is still
+    /// confidently detected.
+    pub indent_width: u32,
     /// Per-extension default encoding, e.g. `[("txt", "Big5")]`. Extension
     /// is stored without a leading dot, lowercase (the frontend normalizes
     /// before persisting; see `src/extensionEncodings.ts`). Auto-detection
@@ -63,6 +75,10 @@ impl Default for Preferences {
             // zero-width character highlighting), not a convenience aid, so
             // it should be visible without the user having to know to opt in.
             suspicious_chars: true,
+            // Common default across editors (VS Code, Sublime, JetBrains);
+            // only used as a fallback when detection can't infer a width —
+            // see the field's own doc comment above.
+            indent_width: 4,
             extension_encodings: Vec::new(),
         }
     }
@@ -104,6 +120,7 @@ mod tests {
             prefs.suspicious_chars,
             "suspicious character audit default on"
         );
+        assert_eq!(prefs.indent_width, 4, "default fallback indent width");
     }
 
     #[test]
@@ -129,6 +146,7 @@ mod tests {
             show_invisibles: true,
             indent_guides: false,
             suspicious_chars: false,
+            indent_width: 8,
             extension_encodings: vec![("txt".into(), "Big5".into())],
         };
         let json = serde_json::to_vec(&prefs).unwrap();
@@ -141,6 +159,7 @@ mod tests {
         assert!(back.show_invisibles);
         assert!(!back.indent_guides);
         assert!(!back.suspicious_chars);
+        assert_eq!(back.indent_width, 8);
         assert_eq!(
             back.extension_encodings,
             vec![("txt".to_string(), "Big5".to_string())]
@@ -243,6 +262,52 @@ mod tests {
         assert_eq!(prefs.language, "zh-TW");
         assert!(prefs.show_invisibles);
         assert!(!prefs.indent_guides);
+    }
+
+    /// `indent_width` was added after `suspicious_chars` (v0.4 Track C
+    /// indentation tools); an old `preferences.json` written before it
+    /// existed has no such key. Like `indent_guides`/`suspicious_chars`
+    /// above, this defaults to a specific value (4), not just "some
+    /// number" — `serde(default)` falls back to the whole struct's
+    /// `Default::default()` for any missing field, so this only holds
+    /// because `Preferences::default()` sets `indent_width: 4`.
+    #[test]
+    fn old_preferences_json_without_indent_width_loads_with_default_four() {
+        let json = r#"{
+            "fontFamily": "SF Mono",
+            "fontSize": 15,
+            "theme": "dark",
+            "language": "zh-TW",
+            "defaultEncoding": "Big5",
+            "defaultBom": false,
+            "wordWrap": false,
+            "showInvisibles": true,
+            "indentGuides": false,
+            "suspiciousChars": false
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.indent_width, 4, "missing key must default to 4");
+        assert_eq!(prefs.font_family, "SF Mono");
+        assert_eq!(prefs.language, "zh-TW");
+        assert!(prefs.show_invisibles);
+        assert!(!prefs.indent_guides);
+        assert!(!prefs.suspicious_chars);
+    }
+
+    /// `indent_width` round-trips through JSON for a few representative
+    /// values — pins the plain-`u32`, no-enum/schema shape (like `theme`'s
+    /// own `new_builtin_theme_values_round_trip_through_json` above).
+    #[test]
+    fn indent_width_values_round_trip_through_json() {
+        for width in [2, 4, 8] {
+            let prefs = Preferences {
+                indent_width: width,
+                ..Preferences::default()
+            };
+            let json = serde_json::to_vec(&prefs).unwrap();
+            let back: Preferences = serde_json::from_slice(&json).unwrap();
+            assert_eq!(back.indent_width, width);
+        }
     }
 
     /// `language` accepts "en", "zh-TW", "ja", and "zh-CN" and round-trips

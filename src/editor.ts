@@ -28,6 +28,7 @@ import {
 import {
   LanguageDescription,
   foldAll as cmFoldAll,
+  indentUnit,
   unfoldAll as cmUnfoldAll,
 } from "@codemirror/language";
 import {
@@ -44,6 +45,7 @@ import {
 } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
+import { detectIndentation, type IndentInfo } from "./indentdetect";
 import type { Locale } from "./i18n";
 import {
   findHistory,
@@ -211,6 +213,28 @@ export interface EditorHandle {
    * editor.test.ts's "read-only via Compartment reconfigure" suite).
    */
   setReadOnly(enabled: boolean): void;
+  /**
+   * Apply a detected indentation style (indentdetect.ts, ROADMAP.md v0.4
+   * Track C) to the live buffer's CM6 `indentUnit`/`tabSize` — reconfigured
+   * via a dedicated Compartment, mirroring `setReadOnly`/`setLanguage`'s
+   * per-buffer (not global-preference) pattern above: this is content-
+   * derived per document, not a shared user preference like wrapping/
+   * invisibles/indentGuides, so it is not auto-reapplied inside `swap`
+   * itself. main.ts recomputes (`detectIndentationOf`) and calls this after
+   * every buffer swap and, debounced, after edits — see that function's doc
+   * comment for why whole-document detection gets its own debounce, same
+   * reasoning as the text-stats segment.
+   *
+   * `fallbackWidth` is the user's preference default (`indentWidth`,
+   * prefs.rs `indent_width`), used for `tabSize` when `info.kind` is
+   * `"tabs"` (a tab's own display width can never be inferred from the tab
+   * characters themselves, unlike a space run's length) and for both
+   * `indentUnit` and `tabSize` when it's `"mixed"`/`"none"` (no confident
+   * style at all). See `indentExtensionsFor`'s doc comment for the exact
+   * mapping and the `indentUnit` facet's own validity constraint it must
+   * satisfy.
+   */
+  setIndentation(info: IndentInfo, fallbackWidth: number): void;
   /** Localize the CM6 find/replace panel's built-in strings (labels,
    *  placeholders, screen-reader announcements) via `EditorState.phrases`.
    *  Purely presentational, like show-invisibles/word-wrap above. */
@@ -795,6 +819,106 @@ const indentGuidePlugin = ViewPlugin.fromClass(
  *  `preferences.ts`). */
 const indentGuidesExtension: Extension = indentGuidePlugin;
 
+// ---- Indentation detection & CM6 indentUnit/tabSize wiring (ROADMAP.md
+// v0.4 Track C): per-buffer detected indentation style (tabs/spaces+width/
+// mixed/none — see indentdetect.ts for the heuristic itself), applied to
+// CM6's own `indentUnit` (@codemirror/language — the string Tab-press/
+// auto-indent inserts) and `EditorState.tabSize` (how wide an existing tab
+// character counts/renders, also read by `indentGuideLevels` above), plus
+// shown in the status bar (see statusbar.ts `updateIndentInfo`). Unlike the
+// global-preference compartments (wrapping/invisibles/indentGuides), this
+// is per-buffer content-derived data, so it is not auto-reapplied inside
+// `swap` — see `EditorHandle.setIndentation`'s doc comment for the
+// setReadOnly-style call pattern main.ts uses instead.
+
+/**
+ * How many of the document's lines `detectIndentationOf` samples, at most.
+ * Indentation style is highly consistent throughout a real file — a file's
+ * first lines (imports, a class/function header) are already
+ * representative of the whole — so, like `encoding.rs`'s charset detection
+ * sampling a bounded byte prefix rather than the whole file, this caps the
+ * work at a fixed size regardless of total document length: even a multi-
+ * GB large-file buffer only ever walks this many lines. 1000 is
+ * comfortably more than almost any file needs to establish its style, while
+ * staying cheap enough to recompute off a 300ms debounce (see main.ts's
+ * `scheduleIndentUpdate`) without ever materializing the document itself
+ * (`doc.iterLines` below yields line strings one at a time; issue #107's
+ * anti-pattern is `doc.toString()`/a whole-document `sliceDoc`, neither of
+ * which this calls).
+ */
+export const INDENT_DETECTION_SAMPLE_LINES = 1000;
+
+/**
+ * Detected indentation style for `buffer`, sampling at most `sampleLimit`
+ * lines from the start (see `INDENT_DETECTION_SAMPLE_LINES`). Walks
+ * `doc.iterLines(1, limit + 1)` — line content only, no line-break
+ * characters, never the whole document as one string — and hands the
+ * sampled lines to indentdetect.ts's pure `detectIndentation` for the
+ * actual classification.
+ *
+ * Deliberately not gated on `doc.truncated` the way `textStatsOf`/
+ * `suspiciousCharCountOf` above are for a large-file preview window:
+ * indentation style is a "whatever's currently loaded" question, same as
+ * `characterBeforeCursor`, not a whole-file total that a partial window
+ * would misrepresent — a truncated buffer's own loaded lines are exactly
+ * as meaningful a sample as a small file's are. (Callers still choose to
+ * hide the status-bar segment when there is no active document at all —
+ * see main.ts's `computeAndShowIndent`.)
+ */
+export function detectIndentationOf(
+  buffer: EditorBuffer,
+  sampleLimit: number = INDENT_DETECTION_SAMPLE_LINES,
+): IndentInfo {
+  const limit = Math.min(buffer.doc.lines, sampleLimit);
+  const lines: string[] = [];
+  for (const line of buffer.doc.iterLines(1, limit + 1)) lines.push(line);
+  return detectIndentation(lines);
+}
+
+/** Defensive upper bound for a resolved indent width, regardless of source
+ *  (detection always returns a positive, reasonable width already — see
+ *  indentdetect.ts — but a hand-edited or corrupted preferences.json
+ *  fallback value should never be able to hand `" ".repeat(...)` an
+ *  unreasonable size). Mirrors `preferences.ts`'s own font-size clamp. */
+const MAX_INDENT_WIDTH = 32;
+
+/** Clamp a width to a positive integer no larger than `MAX_INDENT_WIDTH` —
+ *  guards both the `indentUnit` facet's validity check just below (an
+ *  empty string is invalid) and `" ".repeat`/modulo-by-zero edge cases a
+ *  0-or-negative width would otherwise hit. */
+function resolveIndentWidth(width: number): number {
+  return Math.min(Math.max(Math.trunc(width), 1), MAX_INDENT_WIDTH);
+}
+
+/**
+ * Resolve a detected indentation style plus a fallback width (prefs
+ * `indentWidth`, used whenever detection can't infer one) into the CM6
+ * extensions that actually apply it: `indentUnit.of(...)` and
+ * `EditorState.tabSize.of(...)`.
+ *
+ * `indentUnit`'s own facet combiner requires a non-empty string made of one
+ * repeated character (verified from @codemirror/language source:
+ * `Array.from(unit).some(e => e != unit[0])` throws "Invalid indent unit"
+ * otherwise) — `" ".repeat(width)` and `"\t"` both satisfy that trivially,
+ * so this never risks constructing a mixed unit string the way naively
+ * concatenating detected characters could.
+ *
+ * `"tabs"`: indentUnit is confidently `"\t"`, but tabSize always falls back
+ * to `fallbackWidth` — a tab's own display width can never be inferred
+ * from the tab characters themselves, unlike a space run's length (see
+ * indentdetect.ts's header comment). `"mixed"`/`"none"`: no confident style
+ * at all, so both indentUnit and tabSize fall back. `"spaces"`: both are
+ * driven by the detected width.
+ */
+function indentExtensionsFor(info: IndentInfo, fallbackWidth: number): Extension {
+  const fallback = resolveIndentWidth(fallbackWidth);
+  if (info.kind === "tabs") {
+    return [indentUnit.of("\t"), EditorState.tabSize.of(fallback)];
+  }
+  const width = info.kind === "spaces" ? resolveIndentWidth(info.width) : fallback;
+  return [indentUnit.of(" ".repeat(width)), EditorState.tabSize.of(width)];
+}
+
 /** The read-only extension pair: blocks direct typing/IME/paste/drop (via
  *  `editable`) and every CM6 command that checks `state.readOnly` itself
  *  (via `readOnly`) — see `EditorHandle.setReadOnly`'s doc comment for the
@@ -930,6 +1054,12 @@ export function createEditor(
   // avoid shadowing it — this compartment is the separate, reconfigurable
   // mechanism behind the *user-toggled* per-tab lock (setReadOnly).
   const readOnlyCompartment = new Compartment();
+  // Per-buffer detected indentation (indentUnit/tabSize) — like
+  // readOnlyCompartment above, not part of `swap`'s own reconfigure list:
+  // main.ts calls `setIndentation` explicitly after every swap and,
+  // debounced, after edits (see `EditorHandle.setIndentation`'s doc
+  // comment).
+  const indentation = new Compartment();
   // Wrapping, show-invisibles, indent-guides, and the search-panel locale
   // are global but each tab's EditorState carries its own compartment
   // value, so they're re-applied on every swap. The color theme is fully
@@ -967,6 +1097,7 @@ export function createEditor(
     suspiciousChars.of([]),
     phrases.of([]),
     readOnlyCompartment.of([]),
+    indentation.of([]),
     EditorView.updateListener.of((update) => {
       wireSearchHistory(update.view);
       if (update.docChanged) onDocChanged();
@@ -1091,6 +1222,11 @@ export function createEditor(
     setReadOnly: (enabled) => {
       view.dispatch({
         effects: readOnlyCompartment.reconfigure(enabled ? readOnlyExtension : []),
+      });
+    },
+    setIndentation: (info, fallbackWidth) => {
+      view.dispatch({
+        effects: indentation.reconfigure(indentExtensionsFor(info, fallbackWidth)),
       });
     },
     setLocale: (locale) => {

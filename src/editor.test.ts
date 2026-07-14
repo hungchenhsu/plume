@@ -10,12 +10,15 @@ import { basicSetup } from "codemirror";
 import { describe, expect, it, vi } from "vitest";
 import {
   characterBeforeCursor,
+  detectIndentationOf,
   eolMarkPositions,
+  INDENT_DETECTION_SAMPLE_LINES,
   indentGuideLevels,
   lineSpanForSelectionInDoc,
   suspiciousCharCountOf,
   textStatsOf,
 } from "./editor";
+import { detectIndentation } from "./indentdetect";
 import { lineSpanForSelection } from "./lineops";
 import { scanSuspiciousChars, SUSPICIOUS_CHARS_PATTERN } from "./suspiciouschars";
 import { countTextStats } from "./textstats";
@@ -584,5 +587,72 @@ describe("characterBeforeCursor", () => {
     const pos = state.doc.line(2).from;
     const withCursor = state.update({ selection: EditorSelection.cursor(pos) }).state;
     expect(characterBeforeCursor(withCursor)).toBeNull();
+  });
+});
+
+// ROADMAP.md v0.4 Track C indentation tools: the CM6-facing sampling
+// wrapper around indentdetect.ts's pure `detectIndentation`. Like
+// textStatsOf/suspiciousCharCountOf above, EditorState.create needs no live
+// view, so the `Text.iterLines` sampling walk is fully reachable here. The
+// classification heuristic itself (mode of adjacent depth diffs, tabs vs.
+// spaces vs. mixed vs. none) is exhaustively covered in indentdetect.test.ts
+// against plain string arrays — this suite only proves the wrapper samples
+// a live buffer's lines correctly and agrees with that oracle, plus the
+// sample-limit boundary itself.
+describe("detectIndentationOf", () => {
+  it("agrees with detectIndentation for ordinary space-indented content", () => {
+    const text = "function foo() {\n    return 1;\n}";
+    const state = EditorState.create({ doc: text });
+    expect(detectIndentationOf(state)).toEqual(detectIndentation(text.split("\n")));
+    expect(detectIndentationOf(state)).toEqual({ kind: "spaces", width: 4 });
+  });
+
+  it("agrees with detectIndentation for tab-indented content", () => {
+    const text = "function foo() {\n\treturn 1;\n}";
+    const state = EditorState.create({ doc: text });
+    expect(detectIndentationOf(state)).toEqual({ kind: "tabs" });
+  });
+
+  it("reports none for an empty document", () => {
+    const state = EditorState.create({ doc: "" });
+    expect(detectIndentationOf(state)).toEqual({ kind: "none" });
+  });
+
+  it("honors an explicit sampleLimit smaller than the document, ignoring later lines entirely", () => {
+    // First 2 lines are consistently 2-space indented; a later tab-indented
+    // line would flip the result to "mixed" if it were ever sampled —
+    // passing sampleLimit=2 must exclude it.
+    const text = "a\n  b\na2\n\tc";
+    const state = EditorState.create({ doc: text });
+    expect(detectIndentationOf(state, 2)).toEqual({ kind: "spaces", width: 2 });
+    // Sanity: without the limit (or a large enough one), the later line
+    // does change the answer, proving the limit is actually doing something.
+    expect(detectIndentationOf(state, 4)).toEqual({ kind: "mixed" });
+    expect(detectIndentation(text.split("\n"))).toEqual({ kind: "mixed" });
+  });
+
+  it("defaults to sampling only the first 1000 lines of a much larger document", () => {
+    // Lines 1-1000: consistent 2-space indentation (a clean "spaces" file).
+    // Lines 1001+: tab-indented instead. If the default sample window were
+    // larger than 1000 (or unbounded), those later tab-indented lines would
+    // flip the result to "mixed" (spaces and tabs both present) — the
+    // default must stop exactly at 1000 and never see them.
+    const head = Array.from({ length: 1000 }, (_, i) => (i % 2 === 0 ? "a" : "  b"));
+    const tail = Array.from({ length: 50 }, () => "\tc");
+    const text = [...head, ...tail].join("\n");
+    const state = EditorState.create({ doc: text });
+    expect(state.doc.lines).toBe(1050);
+    expect(INDENT_DETECTION_SAMPLE_LINES).toBe(1000);
+    expect(detectIndentationOf(state)).toEqual({ kind: "spaces", width: 2 });
+    // Sanity: a large-enough explicit sample does see the tab-indented
+    // tail and correctly flips to "mixed", proving the boundary is real
+    // and not just a coincidental match.
+    expect(detectIndentationOf(state, 1050)).toEqual({ kind: "mixed" });
+  });
+
+  it("uses the whole document when it has fewer lines than the sample limit", () => {
+    const text = "a\n  b\nc";
+    const state = EditorState.create({ doc: text });
+    expect(detectIndentationOf(state, 1000)).toEqual(detectIndentationOf(state, 3));
   });
 });

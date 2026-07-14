@@ -254,6 +254,17 @@ export interface Preferences {
    *  highlight; the status-bar suspicious-character count is independent
    *  of this preference (see main.ts `computeAndShowSuspiciousChars`). */
   suspiciousChars: boolean;
+  /** Fallback indent width (spaces-per-level / tab display width) used when
+   *  per-buffer indentation detection can't confidently infer one — no
+   *  indentation in the file, or an inconsistent tabs+spaces mix (ROADMAP.md
+   *  v0.4 Track C; see src/indentdetect.ts `detectIndentation` and
+   *  src/editor.ts `EditorHandle.setIndentation`). Also the tab *display*
+   *  width for a tabs-indented file: unlike a spaces file's step, a tab's
+   *  own visual width can never be inferred from the tab characters
+   *  themselves, so detected "tabs" indentation always falls back to this
+   *  value for `EditorState.tabSize` even though its `indentUnit` ("\t") is
+   *  still confidently detected. Mirrors prefs.rs `indent_width: u32`. */
+  indentWidth: number;
   /** Per-extension default encodings, e.g. [["txt", "Big5"]]. Extensions
    *  are lowercase without a leading dot (see extensionEncodings.ts);
    *  mirrors prefs.rs `extension_encodings: Vec<(String, String)>`. */

@@ -143,6 +143,20 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "删除行尾空白",
     ),
     (
+        "convert_leading_tabs_to_spaces",
+        "Convert Leading Tabs to Spaces",
+        "轉換前導 Tab 為空格",
+        "先頭のタブをスペースに変換",
+        "转换前导 Tab 为空格",
+    ),
+    (
+        "convert_leading_spaces_to_tabs",
+        "Convert Leading Spaces to Tabs",
+        "轉換前導空格為 Tab",
+        "先頭のスペースをタブに変換",
+        "转换前导空格为 Tab",
+    ),
+    (
         "move_line_up",
         "Move Line Up",
         "上移一行",
@@ -375,6 +389,20 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(
             &MenuItemBuilder::with_id("trim_trailing_whitespace", l("trim_trailing_whitespace"))
                 .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(
+                "convert_leading_tabs_to_spaces",
+                l("convert_leading_tabs_to_spaces"),
+            )
+            .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(
+                "convert_leading_spaces_to_tabs",
+                l("convert_leading_spaces_to_tabs"),
+            )
+            .build(app)?,
         )
         .separator()
         // No accelerators: CM6's own `defaultKeymap` (bundled into
@@ -723,6 +751,8 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 "sort_lines",
                 "unique_lines",
                 "trim_trailing_whitespace",
+                "convert_leading_tabs_to_spaces",
+                "convert_leading_spaces_to_tabs",
                 "move_line_up",
                 "move_line_down",
                 "duplicate_line",
@@ -884,6 +914,50 @@ mod tests {
         assert_eq!(label("suspicious_chars", "zh-TW"), "可疑字元");
         assert_eq!(label("suspicious_chars", "ja"), "疑わしい文字");
         assert_eq!(label("suspicious_chars", "zh-CN"), "可疑字符");
+    }
+
+    // ROADMAP.md v0.4 Track C indentation tools: the Edit > Line Operations
+    // submenu's two new leading-indentation conversion items, pinned across
+    // all four languages — same rationale as read_only/suspicious_chars's
+    // dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_convert_leading_tabs_to_spaces_text_for_every_language() {
+        assert_eq!(
+            label("convert_leading_tabs_to_spaces", "en"),
+            "Convert Leading Tabs to Spaces"
+        );
+        assert_eq!(
+            label("convert_leading_tabs_to_spaces", "zh-TW"),
+            "轉換前導 Tab 為空格"
+        );
+        assert_eq!(
+            label("convert_leading_tabs_to_spaces", "ja"),
+            "先頭のタブをスペースに変換"
+        );
+        assert_eq!(
+            label("convert_leading_tabs_to_spaces", "zh-CN"),
+            "转换前导 Tab 为空格"
+        );
+    }
+
+    #[test]
+    fn label_returns_the_correct_convert_leading_spaces_to_tabs_text_for_every_language() {
+        assert_eq!(
+            label("convert_leading_spaces_to_tabs", "en"),
+            "Convert Leading Spaces to Tabs"
+        );
+        assert_eq!(
+            label("convert_leading_spaces_to_tabs", "zh-TW"),
+            "轉換前導空格為 Tab"
+        );
+        assert_eq!(
+            label("convert_leading_spaces_to_tabs", "ja"),
+            "先頭のスペースをタブに変換"
+        );
+        assert_eq!(
+            label("convert_leading_spaces_to_tabs", "zh-CN"),
+            "转换前导空格为 Tab"
+        );
     }
 
     #[test]
