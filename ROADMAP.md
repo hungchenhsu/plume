@@ -540,8 +540,35 @@ cases of "never misrepresent user text")
   character's own 4 UTF-8 bytes split exactly 2/2 across the raw chunk
   boundary. 331 Rust tests total (up from 299), 572 frontend tests (up from
   565).
-- [ ] File-open latency budget script (local-only, like startup-bench;
-  never CI — known runner dead end) *(optional)*
+- [x] File-open latency budget script (local-only, like startup-bench;
+  never CI — known runner dead end) *(optional)* — new
+  `scripts/openfile-bench.mjs` mirrors startup-bench's env-gated probe
+  pattern with its own separate probe rather than reusing the cold-start
+  one, so open latency is isolated from WebView/prefs/session-restore
+  overhead instead of folded into it: `PLUME_OPENFILE_PROBE=<path>` plus
+  new `openfile_probe_path`/`report_openfile_ready` commands
+  (`src-tauri/src/openfile_probe.rs`), hooked right after the existing
+  cold-start probe at the end of the init IIFE in `src/main.ts`. Both
+  timing endpoints (trigger, post-paint) live in the frontend, so elapsed
+  is measured there with `performance.now()` around the real `openPath()`
+  codepath a drag-drop/file-association open already uses (a
+  `requestAnimationFrame` wait after it stands in for "content rendered").
+  The script generates its own synthetic UTF-8 fixtures in a temp dir,
+  cleaned up after — 1 MiB (full open) and 50 MiB (crosses
+  `LARGE_FILE_THRESHOLD`, exercises the read-only preview path) — and
+  reports median/p95 over a parameterizable run count, with optional
+  independent thresholds per size. Verified via `node --check`, `--dry-run`
+  (fixture generation/cleanup, no binary spawn — confirmed clean, no temp
+  dirs left behind), a standalone import-based check of the pure
+  median/percentile/synthDoc helpers, and the usual app-code gate (`npm
+  run build`/`npm test`, `cargo fmt`/`clippy`/`test`: 333 Rust tests, up
+  from 331; 572 frontend tests, unchanged — this addition has no unit-level
+  surface of its own, same as the pre-existing startup probe hook).
+  Actually launching the script spawns a real GUI window, which agents in
+  this repo must never do (TCC-incident rule), so real `openfile_ms`
+  numbers were not gathered in this change; a human should run
+  `node scripts/openfile-bench.mjs` on an unlocked desktop after
+  `cargo build --release` to get them.
 
 **Track C — everyday editing comfort**
 - [x] Multi-cursor: allowMultipleSelections plus select-next/all

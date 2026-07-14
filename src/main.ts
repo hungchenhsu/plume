@@ -32,9 +32,11 @@ import {
   loadSession,
   locateLineOffset,
   openDocument,
+  openfileProbePath,
   printWindow,
   readDocumentChunk,
   readDocumentChunkBefore,
+  reportOpenfileReady,
   reportStartupReady,
   saveBackup,
   saveDocument,
@@ -2249,4 +2251,18 @@ void (async () => {
   // Cold-start probe hook: no-op unless PLUME_STARTUP_PROBE=1 (see
   // scripts/startup-bench.mjs). Marks "frontend ready" for the benchmark.
   void reportStartupReady().catch(() => {});
+  // Open-file probe hook: no-op unless PLUME_OPENFILE_PROBE=<path> is set
+  // on the Rust side (see scripts/openfile-bench.mjs). Reuses the exact
+  // openPath() codepath a real drag-drop/file-association open takes,
+  // timing trigger -> next paint — decoupled from the cold-start budget
+  // above, so it isolates open latency rather than compounding it with
+  // WebView/prefs/session-restore overhead.
+  const openfileProbeTarget = await openfileProbePath().catch(() => null);
+  if (openfileProbeTarget) {
+    const openStart = performance.now();
+    await openPath(openfileProbeTarget);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const elapsedMs = performance.now() - openStart;
+    void reportOpenfileReady(elapsedMs).catch(() => {});
+  }
 })();

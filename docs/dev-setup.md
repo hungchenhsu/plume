@@ -78,6 +78,10 @@ in [CLAUDE.md](../CLAUDE.md) / [CONTRIBUTING.md](../CONTRIBUTING.md).
   unlocked desktop session — WKWebView does not execute frontend JS while
   the screen is locked, and the same silence occurs on CI runners, which
   is why there is no startup-bench CI job; see the script header).
+- Local open-file benchmark: `node scripts/openfile-bench.mjs` (same
+  unlocked-desktop requirement and no-CI reason as the startup benchmark
+  above; generates its own synthetic 1 MiB / 50 MiB fixtures and cleans
+  them up — see the script header).
 
 ## Troubleshooting
 

@@ -449,6 +449,25 @@ export function reportStartupReady(): Promise<void> {
   return invoke<void>("report_startup_ready");
 }
 
+/**
+ * Path to open for the open-file latency probe, or `null` on a normal
+ * launch. Reflects the `PLUME_OPENFILE_PROBE` env var on the Rust side —
+ * see `scripts/openfile-bench.mjs`.
+ */
+export function openfileProbePath(): Promise<string | null> {
+  return invoke<string | null>("openfile_probe_path");
+}
+
+/**
+ * Reports the open-file probe's elapsed milliseconds (trigger open ->
+ * content rendered), timed in the frontend since both endpoints live here.
+ * No-op unless `PLUME_OPENFILE_PROBE` is set on the Rust side — see
+ * `scripts/openfile-bench.mjs`.
+ */
+export function reportOpenfileReady(elapsedMs: number): Promise<void> {
+  return invoke<void>("report_openfile_ready", { elapsedMs });
+}
+
 export interface RepairCandidate {
   /** The wrong encoding the bytes were mis-decoded with, e.g. "windows-1252". */
   intermediate: string;
