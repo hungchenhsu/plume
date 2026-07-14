@@ -33,7 +33,6 @@ import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
-import { lineSpanForSelection } from "./lineops";
 import type { Locale } from "./i18n";
 import {
   findHistory,
@@ -531,6 +530,56 @@ const bookmarkGutter = Prec.highest(
   }),
 );
 
+// ---- Line-operations selection expansion (Edit > Line Operations menu;
+// see lineops.ts for the actual sort/unique/trim/case transforms).
+// `transformLines` below needs the [from, to) span a non-empty selection
+// expands to once its first and last lines are included in full. lineops.ts
+// has a pure-string version of this same computation, `lineSpanForSelection`
+// — unit-testable without a live view, same reason `eolMarkPositions` and
+// `indentGuideLevels` above are pure functions here instead of living
+// inline in a ViewPlugin. But answering it from a plain string means
+// materializing the whole document with `doc.toString()` first, which
+// `transformLines` used to do on every line-operation dispatch just to
+// compute two offsets — wasteful for a large document (issue #107).
+// `Text.lineAt` answers the identical question directly against the CM6
+// rope, with no materialization, so `transformLines` uses that instead.
+// `lineSpanForSelection` is kept (not deleted) as a pure-string reference
+// implementation; editor.test.ts checks the two agree on every boundary
+// case lineops.test.ts already exercises against the string version, so
+// this can't silently drift from that one's issue #99/PR #106 to-1
+// semantics.
+
+/**
+ * Character offsets marking the `[from, to)` span, expanded to whole
+ * lines, that `transformLines` should act on for a given non-empty
+ * selection — the `Text.lineAt`-based counterpart of lineops.ts's
+ * `lineSpanForSelection`, operating on a live CM6 document (`Text`)
+ * instead of a materialized string.
+ *
+ * Same to-1 semantics as `lineSpanForSelection` (issue #99 / PR #106): the
+ * end line is resolved from `to - 1`, the offset of the last character
+ * actually inside the selection, never from `to` itself — otherwise a
+ * selection whose exclusive end lands exactly at column 1 of the next line
+ * (right after some line's newline) would pull that whole next line into
+ * the span even though the user never selected any of it.
+ *
+ * Not defined for an empty selection (`from === to`, a cursor): callers
+ * give a cursor its own whole-document meaning instead of a line span (see
+ * `transformLines` below), so this throws rather than silently returning a
+ * nonsensical (possibly inverted) range — same contract as
+ * `lineSpanForSelection`.
+ */
+export function lineSpanForSelectionInDoc(
+  doc: Text,
+  from: number,
+  to: number,
+): { from: number; to: number } {
+  if (from === to) {
+    throw new RangeError("lineSpanForSelectionInDoc requires a non-empty selection (from !== to)");
+  }
+  return { from: doc.lineAt(from).from, to: doc.lineAt(to - 1).to };
+}
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
@@ -716,16 +765,12 @@ export function createEditor(
     transformLines: (fn) => {
       const { state } = view;
       const range = state.selection.main;
-      // range.to is exclusive; the line-span expansion below (issue #99)
-      // must resolve the end line from range.to - 1, not range.to itself
-      // — see lineSpanForSelection's doc comment in lineops.ts. That
-      // arithmetic lives there, pure and unit-tested, rather than here
-      // where it cannot be: this whole callback only runs against a live
-      // CM6 EditorView, which jsdom cannot provide (see lineops.test.ts's
-      // file comment).
+      // range.to is exclusive; the line-span expansion (issue #99) must
+      // resolve the end line from range.to - 1, not range.to itself — see
+      // lineSpanForSelectionInDoc's doc comment above.
       const { from, to } = range.empty
         ? { from: 0, to: state.doc.length }
-        : lineSpanForSelection(state.doc.toString(), range.from, range.to);
+        : lineSpanForSelectionInDoc(state.doc, range.from, range.to);
       const original = state.sliceDoc(from, to);
       const insert = fn(original);
       if (insert === original) return;
