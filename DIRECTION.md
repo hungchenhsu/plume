@@ -42,7 +42,7 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-12)
+## 2. Current state (2026-07-14)
 
 - **v0.2 feature cycle complete** (PRs #34–#50): full visual refresh on
   design tokens, built-in themes, UI i18n (zh-TW first), all six Tier-1
@@ -59,8 +59,13 @@ faster for text files, or is it IDE creep?*
   handling, bounded large-file read) and three P2s. Tagged
   **v0.3.0-alpha.1**. D1 (naming) explicitly deferred by the user; D2
   blocked behind it.
-- Tests: 155 Rust unit tests + 206 frontend vitest tests; release
-  pipeline builds six installers per tag as a draft release.
+- **P3 v0.4 cycle active** (2026-07-14): planned autonomously under an
+  explicit user delegation (user away; merge on green CI, post-merge
+  review), adversarially reviewed against the mission and non-goals
+  before start. Tracks: character-level trust, large files &
+  performance, editing comfort, robustness — see ROADMAP.md §v0.4.
+- Tests at cycle start: 182 Rust unit tests + 245 frontend vitest tests;
+  release pipeline builds six installers per tag as a draft release.
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
@@ -222,7 +227,9 @@ user decision recorded in this file.
 - **Entry:** a user-approved backlog (promoted from §6 into ROADMAP.md
   as checkboxes). *(v0.2 cycle: approved 2026-07-10 by session
   instruction, completed 2026-07-11. v0.3 cycle: four parallel tracks
-  approved 2026-07-11 — see ROADMAP.md §v0.3.)*
+  approved 2026-07-11 — see ROADMAP.md §v0.3. v0.4 cycle: planned
+  2026-07-14 under an explicit user delegation of cycle planning and
+  merges — user reviews post-merge; see ROADMAP.md §v0.4.)*
 - **Work:** normal feature PRs under the existing Definition of Done.
   One coherent item per PR; danger domains get the full treatment
   (§5-S1 discipline even without an incident).
