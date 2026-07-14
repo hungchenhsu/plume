@@ -62,6 +62,7 @@ import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
+import { showLossySaveConfirm } from "./lossysave";
 import { showStaleFileConfirm } from "./stalefile";
 import { showDetectionCard } from "./detectcard";
 import { showFindInFiles } from "./findinfiles";
@@ -1251,14 +1252,16 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
       force: false,
     });
     if (result.unmappable && !result.written) {
-      const proceed = await confirmDialog(
-        t("dialog.lossyEncodingMessage", doc.encoding),
-        {
-          title: t("dialog.lossyEncodingTitle"),
-          kind: "warning",
-          okLabel: t("dialog.lossyEncodingConfirm"),
-        },
-      );
+      // lossyReport is always populated on this path (see save_document's
+      // doc comment) — the empty fallback is defensive only, so the dialog
+      // degrades to "0 characters" rather than throwing if it were ever
+      // absent.
+      const report = result.lossyReport ?? {
+        unmappableCount: 0,
+        samples: [],
+        samplesTruncated: false,
+      };
+      const proceed = await showLossySaveConfirm(doc.encoding, report);
       // Cancelled: the doc stays exactly as it was before Save was
       // invoked — dirty, on its old path, no watcher/session changes.
       if (!proceed) return false;

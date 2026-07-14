@@ -360,9 +360,69 @@ cases of "never misrepresent user text")
   (failing-test-first: a stubbed always-zero implementation fails these
   first), plain Traditional Chinese text and UTF-8/UTF-16 → 0, sample
   cap/dedup/truncated-flag semantics, unknown encoding → `Err`.
-- [ ] Lossy-save character preview: when a save is rejected as lossy,
+- [x] Lossy-save character preview: when a save is rejected as lossy,
   list *which* characters can't be encoded (char + position, capped),
-  not just a count, before offering the lossy path [danger]
+  not just a count, before offering the lossy path [danger]. Previously
+  `save_document`'s two-phase lossy gate returned only a bare `unmappable:
+  bool` -- not even a count, let alone which characters. The scan-and-
+  sample machinery already existed one item up: A3's
+  `check_representability` (`src-tauri/src/normalize.rs`) probes each
+  character's representability via `encoding_rs::Encoding::encode()` and
+  collects up to `SAMPLE_CAP` (20) deduped samples plus a
+  `samples_truncated` flag. This item extracts that scan into a shared
+  `scan_unmappable` helper (`(count, hits, truncated)`, `hits:
+  Vec<UnmappableHit>` carrying each first-encountered character's
+  position) so `check_representability` and the new `lossy_save_report`
+  are the same source rather than two implementations of the same cap/
+  dedup/truncation logic -- `check_representability`'s own 13 tests are
+  unchanged (pure refactor). `lossy_save_report(text, label)` returns
+  `LossySaveReport { unmappable_count, samples: Vec<UnmappableSample>,
+  samples_truncated }`, where `UnmappableSample` adds `line`/`column`
+  (1-based) to `RepresentabilityReport`'s plain formatted-string samples.
+  Position is computed by scanning `save_document`'s `content` parameter
+  (the LF-normalized buffer as sent by the frontend) -- deliberately never
+  the line-ending-converted `text` that `encoding::encode` actually
+  writes, since a CR-only (classic Mac) conversion replaces every `\n`
+  with a bare `\r`, which would silently collapse every reported line to
+  "line 1"; a dedicated regression test saves multi-line content with
+  `line_ending: "CR"` and asserts the reported line/column still match the
+  LF buffer. Column counts UTF-16 code units, not Unicode scalar values --
+  matching `editor.ts`'s `onCursorMoved` (`head - line.from`), the same
+  convention `statusbar.cursor` already displays with, so an astral
+  character (e.g. an emoji) earlier on the same line advances the column
+  by 2, not 1; pinned by a dedicated test (rocket emoji followed by "é" on
+  one line). `SaveResult` gains `lossy_report: Option<LossySaveReport>`,
+  populated only on the lossy-rejection branch (`unmappable: true,
+  written: false`) -- `None` on a successful write and on a `stale`
+  rejection (issue #113's retry never needs a fresh sample list there).
+  Failing-test-first: a stubbed always-clean `lossy_save_report`/always-
+  `None` `lossy_report` wiring landed first, the new tests expecting real
+  samples/positions failed against it, then the real scan/wiring replaced
+  the stub -- 14 new Rust tests (11 in normalize.rs, 3 in lib.rs), full
+  suite 299 passed (2 pre-existing `#[ignore]`d fuzz variants unaffected).
+  Frontend: the lossy-save confirm outgrew the native `confirm()` dialog
+  plugin (main.ts's `saveFlow` used to call directly) -- a native dialog
+  can only show a flat string with no way to make a capped 20-line sample
+  list scrollable -- so it gets its own in-DOM modal, `src/lossysave.ts`,
+  mirroring confirm.ts's `showCloseConfirm`/stalefile.ts's
+  `showStaleFileConfirm` (same `.confirm-overlay`/`.confirm-dialog`/
+  `.confirm-buttons` classes, Escape cancels, initial focus on Cancel --
+  irreversible once confirmed, so, like the stale-file dialog, there is no
+  global Enter shortcut). A pure `buildLossySaveDialogContent` (vitest-
+  covered, no WebView) composes the title/summary/per-sample lines/
+  truncation note from `t()` calls; the DOM builder itself is untested,
+  matching the existing confirm.ts/stalefile.ts precedent. i18n:
+  `dialog.lossyEncodingMessage` gained a `count` parameter (replacing the
+  old vague "some characters"); new `dialog.lossySampleLine` (reusing
+  `statusbar.cursor`'s own per-locale Ln/Col phrasing convention verbatim)
+  and `dialog.lossySamplesTruncated`, across en/zh-TW/ja/zh-CN. New
+  styles.css: `.confirm-dialog-title` (a small heading the two existing
+  confirm-style modals didn't need) and `.lossy-samples` (max-height/
+  overflow-y: auto, same scrollable-list idiom as
+  `.batchconvert-scan-errors-list`). Batch conversion's own lossy
+  classification (`batch.rs`'s scan report) is untouched -- out of scope;
+  per-file lossy flags already exist there and this item only concerns the
+  single-document save dialog.
 - [ ] UTF-8 BOM toggle gap check: verify whether add/remove BOM on an
   existing UTF-8 file has a user-level path; close the gap only if it
   is real [danger]

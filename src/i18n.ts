@@ -191,8 +191,18 @@ export interface Messages {
   "dialog.userReadOnlyMessage": (title: string) => string;
   "dialog.saveFailedTitle": string;
   "dialog.lossyEncodingTitle": string;
-  "dialog.lossyEncodingMessage": (encoding: string) => string;
+  "dialog.lossyEncodingMessage": (encoding: string, count: number) => string;
   "dialog.lossyEncodingConfirm": string;
+  /** One line per sample in the lossy-save preview dialog (ROADMAP.md v0.4
+   *  Track A "Lossy-save character preview"): `display` is the Rust-
+   *  formatted "char (U+XXXX)" text (src-tauri/src/normalize.rs's
+   *  `format_sample`, shared with `dialog.normalizeUnrepresentableMessage`'s
+   *  samples), `line`/`column` are 1-based and localized the same way
+   *  `statusbar.cursor` already phrases a cursor position. */
+  "dialog.lossySampleLine": (display: string, line: number, column: number) => string;
+  /** Shown below the sample list only when `LossyReport.samplesTruncated` —
+   *  a capped list must never be mistaken for a complete one. */
+  "dialog.lossySamplesTruncated": string;
   "dialog.backupFailedTitle": string;
   "dialog.backupFailedMessage": (titles: string[]) => string;
   "dialog.backupFailedDiscard": string;
@@ -434,10 +444,13 @@ const en: Messages = {
     `"${title}" is marked read-only. Uncheck View > Read-Only to edit it.`,
   "dialog.saveFailedTitle": "Save failed",
   "dialog.lossyEncodingTitle": "Encoding warning",
-  "dialog.lossyEncodingMessage": (encoding) =>
-    `Some characters can't be represented in ${encoding}. Continuing to save ` +
-    `will write replacement characters in their place, and this can't be undone.`,
+  "dialog.lossyEncodingMessage": (encoding, count) =>
+    `${count} character${count === 1 ? "" : "s"} can't be represented in ${encoding}. ` +
+    `Continuing to save will write replacement characters in their place, and this ` +
+    `can't be undone.`,
   "dialog.lossyEncodingConfirm": "Save Anyway",
+  "dialog.lossySampleLine": (display, line, column) => `${display} — Ln ${line}, Col ${column}`,
+  "dialog.lossySamplesTruncated": "More distinct characters exist beyond this list.",
   "dialog.backupFailedTitle": "Backup failed",
   "dialog.backupFailedMessage": (titles) =>
     `Unsaved changes in ${titles.join(", ")} could not be written to their ` +
@@ -672,9 +685,11 @@ const zhTW: Messages = {
     `「${title}」已設為唯讀，取消勾選「檢視 > 唯讀」即可編輯。`,
   "dialog.saveFailedTitle": "儲存失敗",
   "dialog.lossyEncodingTitle": "編碼警告",
-  "dialog.lossyEncodingMessage": (encoding) =>
-    `有字元無法以 ${encoding} 表示，繼續儲存將以替代字元寫入且無法復原。`,
+  "dialog.lossyEncodingMessage": (encoding, count) =>
+    `有 ${count} 個字元無法以 ${encoding} 表示，繼續儲存將以替代字元寫入且無法復原。`,
   "dialog.lossyEncodingConfirm": "仍要儲存",
+  "dialog.lossySampleLine": (display, line, column) => `${display} — 第 ${line} 行，第 ${column} 欄`,
+  "dialog.lossySamplesTruncated": "尚有更多不同字元未列出。",
   "dialog.backupFailedTitle": "備份寫入失敗",
   "dialog.backupFailedMessage": (titles) =>
     `${titles.join("、")} 的未儲存變更無法寫入備份（磁碟已滿或資料夾` +
@@ -912,10 +927,12 @@ const ja: Messages = {
     `「${title}」は読み取り専用に設定されています。「表示 > 読み取り専用」のチェックを外すと編集できます。`,
   "dialog.saveFailedTitle": "保存に失敗しました",
   "dialog.lossyEncodingTitle": "エンコーディングに関する警告",
-  "dialog.lossyEncodingMessage": (encoding) =>
-    `一部の文字は ${encoding} で表現できません。このまま保存すると代替文字が書き込まれ、` +
+  "dialog.lossyEncodingMessage": (encoding, count) =>
+    `${count} 文字が ${encoding} で表現できません。このまま保存すると代替文字が書き込まれ、` +
     `元に戻すことはできません。`,
   "dialog.lossyEncodingConfirm": "このまま保存",
+  "dialog.lossySampleLine": (display, line, column) => `${display} — 行 ${line}、列 ${column}`,
+  "dialog.lossySamplesTruncated": "このほかにも表現できない文字があります。",
   "dialog.backupFailedTitle": "バックアップに失敗しました",
   "dialog.backupFailedMessage": (titles) =>
     `${titles.join("、")} の未保存の変更をバックアップに書き込めませんでした` +
@@ -1147,9 +1164,11 @@ const zhCN: Messages = {
     `“${title}”已设为只读，取消勾选“视图 > 只读”即可编辑。`,
   "dialog.saveFailedTitle": "保存失败",
   "dialog.lossyEncodingTitle": "编码警告",
-  "dialog.lossyEncodingMessage": (encoding) =>
-    `有字符无法以 ${encoding} 表示，继续保存将写入替代字符，且无法撤销。`,
+  "dialog.lossyEncodingMessage": (encoding, count) =>
+    `有 ${count} 个字符无法以 ${encoding} 表示，继续保存将写入替代字符，且无法撤销。`,
   "dialog.lossyEncodingConfirm": "仍要保存",
+  "dialog.lossySampleLine": (display, line, column) => `${display} — 第 ${line} 行，第 ${column} 列`,
+  "dialog.lossySamplesTruncated": "还有更多不同字符未列出。",
   "dialog.backupFailedTitle": "备份写入失败",
   "dialog.backupFailedMessage": (titles) =>
     `${titles.join("、")} 的未保存更改无法写入备份（磁盘已满或文件夹` +
