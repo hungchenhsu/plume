@@ -33,6 +33,7 @@ export interface Messages {
   "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
   "statusbar.charInspector": (char: string, codepoint: string) => string;
   "statusbar.suspiciousChars": (count: number) => string;
+  "statusbar.nonNfc": string;
   "statusbar.indentSpaces": (width: number) => string;
   "statusbar.indentTabs": string;
   "statusbar.indentMixed": string;
@@ -205,6 +206,18 @@ export interface Messages {
   "dialog.lineIndexFailedTitle": string;
   "dialog.bookmarkNeedsGotoTitle": string;
   "dialog.bookmarkNeedsGotoMessage": string;
+  "dialog.normalizeConfirmTitle": (form: string) => string;
+  "dialog.normalizeConfirmMessage": (count: number, form: string) => string;
+  "dialog.normalizeConfirmButton": string;
+  "dialog.normalizeUnrepresentableTitle": string;
+  "dialog.normalizeUnrepresentableMessage": (
+    encoding: string,
+    count: number,
+    samples: string[],
+    truncated: boolean,
+  ) => string;
+  "dialog.normalizeUnrepresentableConfirm": string;
+  "dialog.normalizeFailedTitle": string;
 
   "encoding.utf8": string;
   "encoding.utf8Bom": string;
@@ -243,6 +256,7 @@ const en: Messages = {
     `${lines} line${lines === 1 ? "" : "s"}`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ ${count} suspicious char${count === 1 ? "" : "s"}`,
+  "statusbar.nonNfc": "Non-NFC",
   "statusbar.indentSpaces": (width) => `Spaces: ${width}`,
   "statusbar.indentTabs": "Tabs",
   "statusbar.indentMixed": "Mixed",
@@ -445,6 +459,18 @@ const en: Messages = {
   "dialog.bookmarkNeedsGotoMessage":
     "This window's position in the file isn't known yet. Use Go to Line " +
     "to jump somewhere first, then bookmark it.",
+  "dialog.normalizeConfirmTitle": (form) => `Normalize to ${form}`,
+  "dialog.normalizeConfirmMessage": (count, form) =>
+    `${count} character sequence${count === 1 ? "" : "s"} will change when ` +
+    `normalizing to ${form}. Continue?`,
+  "dialog.normalizeConfirmButton": "Normalize",
+  "dialog.normalizeUnrepresentableTitle": "Characters Not Representable",
+  "dialog.normalizeUnrepresentableMessage": (encoding, count, samples, truncated) =>
+    `Saving as ${encoding} would lose ${count} character${count === 1 ? "" : "s"} ` +
+    `after normalizing: ${samples.join(", ")}${truncated ? " and more" : ""}. ` +
+    `Normalize anyway?`,
+  "dialog.normalizeUnrepresentableConfirm": "Normalize Anyway",
+  "dialog.normalizeFailedTitle": "Normalize failed",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8 with BOM",
@@ -480,6 +506,7 @@ const zhTW: Messages = {
     `已選取：${words} 詞、${chars} 字元、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ ${count} 可疑字元`,
+  "statusbar.nonNfc": "非 NFC",
   "statusbar.indentSpaces": (width) => `空格：${width}`,
   "statusbar.indentTabs": "Tab",
   "statusbar.indentMixed": "混合",
@@ -666,6 +693,15 @@ const zhTW: Messages = {
   "dialog.bookmarkNeedsGotoTitle": "位置未知",
   "dialog.bookmarkNeedsGotoMessage":
     "目前視窗在檔案中的位置尚未確定。請先用「跳至行號」跳轉一次，再設定書籤。",
+  "dialog.normalizeConfirmTitle": (form) => `正規化為 ${form}`,
+  "dialog.normalizeConfirmMessage": (count, form) =>
+    `正規化為 ${form} 將變更 ${count} 處字元序列，是否繼續？`,
+  "dialog.normalizeConfirmButton": "正規化",
+  "dialog.normalizeUnrepresentableTitle": "字元無法表示",
+  "dialog.normalizeUnrepresentableMessage": (encoding, count, samples, truncated) =>
+    `以 ${encoding} 儲存將在正規化後遺失 ${count} 個字元：${samples.join("、")}${truncated ? " 等" : ""}。仍要正規化嗎？`,
+  "dialog.normalizeUnrepresentableConfirm": "仍要正規化",
+  "dialog.normalizeFailedTitle": "正規化失敗",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（含 BOM）",
@@ -701,6 +737,7 @@ const ja: Messages = {
     `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ 疑わしい文字 ${count} 件`,
+  "statusbar.nonNfc": "非NFC",
   "statusbar.indentSpaces": (width) => `スペース：${width}`,
   "statusbar.indentTabs": "タブ",
   "statusbar.indentMixed": "混在",
@@ -900,6 +937,16 @@ const ja: Messages = {
   "dialog.bookmarkNeedsGotoMessage":
     "このウィンドウのファイル内での位置がまだ確定していません。先に「行に移動」で" +
     "ジャンプしてから、ブックマークを設定してください。",
+  "dialog.normalizeConfirmTitle": (form) => `${form} に正規化`,
+  "dialog.normalizeConfirmMessage": (count, form) =>
+    `${form} に正規化すると ${count} 件の文字シーケンスが変更されます。続行しますか？`,
+  "dialog.normalizeConfirmButton": "正規化",
+  "dialog.normalizeUnrepresentableTitle": "表現できない文字があります",
+  "dialog.normalizeUnrepresentableMessage": (encoding, count, samples, truncated) =>
+    `${encoding} で保存すると、正規化後に ${count} 文字が失われます：${samples.join("、")}` +
+    `${truncated ? " など" : ""}。それでも正規化しますか？`,
+  "dialog.normalizeUnrepresentableConfirm": "このまま正規化",
+  "dialog.normalizeFailedTitle": "正規化に失敗しました",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（BOM 付き）",
@@ -935,6 +982,7 @@ const zhCN: Messages = {
     `已选择：${words} 词、${chars} 字符、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
   "statusbar.suspiciousChars": (count) => `⚠ ${count} 可疑字符`,
+  "statusbar.nonNfc": "非 NFC",
   "statusbar.indentSpaces": (width) => `空格：${width}`,
   "statusbar.indentTabs": "Tab",
   "statusbar.indentMixed": "混合",
@@ -1119,6 +1167,15 @@ const zhCN: Messages = {
   "dialog.bookmarkNeedsGotoTitle": "位置未知",
   "dialog.bookmarkNeedsGotoMessage":
     "当前窗口在文件中的位置尚未确定。请先使用“跳转到行”跳转一次，再设置书签。",
+  "dialog.normalizeConfirmTitle": (form) => `规范化为 ${form}`,
+  "dialog.normalizeConfirmMessage": (count, form) =>
+    `规范化为 ${form} 将更改 ${count} 处字符序列，是否继续？`,
+  "dialog.normalizeConfirmButton": "规范化",
+  "dialog.normalizeUnrepresentableTitle": "字符无法表示",
+  "dialog.normalizeUnrepresentableMessage": (encoding, count, samples, truncated) =>
+    `以 ${encoding} 保存将在规范化后丢失 ${count} 个字符：${samples.join("、")}${truncated ? " 等" : ""}。仍要规范化吗？`,
+  "dialog.normalizeUnrepresentableConfirm": "仍要规范化",
+  "dialog.normalizeFailedTitle": "规范化失败",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（带 BOM）",

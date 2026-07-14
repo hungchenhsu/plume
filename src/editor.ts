@@ -62,6 +62,7 @@ import {
   type TextStatsAccumulator,
 } from "./textstats";
 import { scanSuspiciousChars, SUSPICIOUS_CHARS_PATTERN, suspiciousCharFor } from "./suspiciouschars";
+import { isNfcChunked } from "./normalize";
 
 /**
  * Traditional-Chinese phrases for CM6's own translatable UI strings, keyed
@@ -488,6 +489,23 @@ export function suspiciousCharCountOf(buffer: EditorBuffer): number {
     count += scanSuspiciousChars(chunk).length;
   }
   return count;
+}
+
+/**
+ * Whether `buffer`'s content is not already fully NFC-normalized
+ * (ROADMAP.md v0.4 Track A status-bar marker) [danger]. Feeds `Text.iter()`
+ * chunk by chunk into normalize.ts's `isNfcChunked`, never materializing the
+ * whole document as one string via `doc.toString()` first — same
+ * "don't defeat the point of chunking" reasoning as `statsForRange` above.
+ * Always whole-document, like `suspiciousCharCountOf` above (not
+ * selection-scoped): non-NFC content is a fact about the *file*, and the
+ * eventual Normalize commands this status feeds always act on the whole
+ * document too (see main.ts's `runNormalizeFlow`). Callers (main.ts) are
+ * expected to skip this for large-file (truncated) windows, matching the
+ * suspicious-chars/text-stats precedent.
+ */
+export function isNonNfcOf(buffer: EditorBuffer): boolean {
+  return !isNfcChunked(buffer.doc.iter());
 }
 
 const FIND_DATALIST_ID = "plume-find-history";

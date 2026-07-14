@@ -143,6 +143,38 @@ describe("t", () => {
     setLocale("zh-CN");
     expect(t("statusbar.textStats", 1, 1, 1)).toBe("1 词、1 字符、1 行");
   });
+
+  // ROADMAP.md v0.4 Track A Unicode normalization [danger]: the
+  // representability warning's sample list is capped and deduplicated
+  // (src-tauri/src/normalize.rs's SAMPLE_CAP / distinct-character
+  // sampling) while its count never is — the message must never imply a
+  // capped list is exhaustive, and must not bolt a note onto a complete
+  // one (a count above samples.length from repeats alone is complete).
+  it("appends an and-more note to dialog.normalizeUnrepresentableMessage only when the sample list is truncated", () => {
+    const samples = ["a (U+0061)", "b (U+0062)"];
+    const capped = t("dialog.normalizeUnrepresentableMessage", "Big5", 25, samples, true);
+    expect(capped).toContain("a (U+0061), b (U+0062) and more");
+    // Repeats alone: count 25, two distinct samples, nothing truncated.
+    const complete = t("dialog.normalizeUnrepresentableMessage", "Big5", 25, samples, false);
+    expect(complete).not.toContain("and more");
+    expect(complete).toContain("25 characters");
+
+    setLocale("zh-TW");
+    expect(t("dialog.normalizeUnrepresentableMessage", "Big5", 25, samples, true)).toContain(
+      "b (U+0062) 等。",
+    );
+    expect(t("dialog.normalizeUnrepresentableMessage", "Big5", 25, samples, false)).not.toContain(
+      "等。",
+    );
+    setLocale("ja");
+    expect(t("dialog.normalizeUnrepresentableMessage", "Big5", 25, samples, true)).toContain(
+      "など。",
+    );
+    setLocale("zh-CN");
+    expect(t("dialog.normalizeUnrepresentableMessage", "Big5", 25, samples, true)).toContain(
+      "b (U+0062) 等。",
+    );
+  });
 });
 
 describe("getLocale / setLocale / onLocaleChange", () => {

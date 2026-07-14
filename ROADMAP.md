@@ -298,11 +298,68 @@ cases of "never misrepresent user text")
   representable in Big5/legacy CJK encodings (fullwidth forms sit in
   Big5's mapped range, ASCII is universal), so no new lossy-save risk —
   the existing save-time lossy gate is untouched and sufficient.
-- [ ] Unicode normalization: non-NFC detection plus Edit-menu Normalize
+- [x] Unicode normalization: non-NFC detection plus Edit-menu Normalize
   to NFC / NFD with a previewed change count — validating
   representability under the file's save encoding first (NFD output can
   be unrepresentable in legacy encodings; normalize must never set up a
-  lossy save) [danger]
+  lossy save) [danger]. Detection (`normalize.ts` `isNfcChunked`) walks
+  CM6's `Text.iter()` chunk by chunk instead of materializing
+  `doc.toString()`, carrying the tail back to the last *normalization
+  boundary* (UAX #15 `hasBoundaryBefore`) across each chunk cut: `\p{M}`
+  marks plus the non-Mark canonical-composition second elements —
+  conjoining Hangul V/T jamo and U+16D67 (Kirat Rai, Unicode 16.0), both
+  category Lo, which a `\p{M}`-only proxy misjudged (NFD Hangul open
+  syllables read as already-NFC even single-chunk; caught by adversarial
+  review) — and never cutting at a trailing lone high surrogate (astral
+  marks like U+110BA would otherwise have their base flushed away when a
+  chunk cut lands mid-surrogate-pair). Proven failing-test-first at each
+  step, and pinned by an exhaustive sweep: the NFD expansion of every
+  decomposable code point in planes 0-2 (Hangul sampled), every split
+  point, against whole-string ground truth — which is also the
+  maintenance contract for the hardcoded jamo/Kirat list (a future
+  Unicode version adding another non-Mark second element fails the sweep
+  naming the exact code point). Status shown as a new small, hidden-until-
+  relevant status-bar segment (`#status-nonnfc`, statusbar.ts
+  `updateNormalizationStatus`), mirroring the existing suspicious-chars/
+  indent segments' debounce-and-hide-when-truncated pattern, rather than
+  a new always-visible segment or a diagnostics popup. Edit > Line
+  Operations gains `normalize_nfc`/`normalize_nfd` (menu.rs `LABELS`,
+  i18n across en/zh-TW/ja/zh-CN with a pinned-translation test), wired
+  through `runLineOperation` — the same truncated/userReadOnly guard
+  sort/unique/trim use, which also covers the large-file-preview-
+  disabled requirement with no separate native-menu-enabled wiring
+  needed. Always whole-document (`editor.content()`/
+  `editor.replaceContent`), never selection-scoped. Confirm flow
+  (main.ts `runNormalizeFlow`): a no-op (already the target form — the
+  common case for plain CJK text, which has no canonical decomposition)
+  applies nothing and shows no dialog, matching the existing line-
+  operations' no-op-dispatches-nothing precedent; otherwise a confirm
+  dialog names the affected sequence count (`normalize.ts`
+  `countChangedSequences`, a normalization-boundary-sequence diff — not
+  a raw code-point count, which would misalign or double-count once
+  composition/decomposition changes how many code points encode one
+  character; the boundary-based split keeps NFD and NFC Hangul at the
+  same per-syllable sequence count, so this figure stays consistent
+  with the representability dialog's own character count). The
+  representability guard — the actual point of the feature — is a new
+  Rust IPC command, `check_representable`
+  (src-tauri/src/normalize.rs), reusing charinspect.rs's per-character
+  `encoding_rs::Encoding::encode()` probing technique (encoding_rs only
+  reports one whole-string bool, never which characters) to report an
+  uncapped per-occurrence unmappable count plus up to 20
+  distinct-character samples and a `samplesTruncated` flag (the dialog
+  appends "and more" only when distinct characters overflowed the cap —
+  repeats alone never imply an incomplete list); UTF-8/UTF-16 targets
+  are skipped on both the frontend and the Rust side (every Unicode
+  scalar value is representable in either). A non-zero count surfaces a
+  second, explicit warning naming the encoding, the count, and the
+  samples before the user can still choose to proceed — and
+  `save_document`'s own lossy gate remains a second, independent line
+  of defense at actual save time regardless. Rust tests: Big5/
+  Shift_JIS + an NFD combining sequence → unmappable > 0
+  (failing-test-first: a stubbed always-zero implementation fails these
+  first), plain Traditional Chinese text and UTF-8/UTF-16 → 0, sample
+  cap/dedup/truncated-flag semantics, unknown encoding → `Err`.
 - [ ] Lossy-save character preview: when a save is rejected as lossy,
   list *which* characters can't be encoded (char + position, capped),
   not just a count, before offering the lossy path [danger]

@@ -14,6 +14,7 @@ import {
   cursorOf,
   detectIndentationOf,
   isEmptyBuffer,
+  isNonNfcOf,
   lineCountOf,
   suspiciousCharCountOf,
   textStatsOf,
@@ -24,6 +25,7 @@ import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
   buildLineIndex,
+  checkRepresentable,
   listBackups,
   loadBackup,
   loadRecentFiles,
@@ -78,6 +80,7 @@ import {
   upperCase,
 } from "./lineops";
 import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
+import { planNormalization, type NormalizeForm } from "./normalize";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
@@ -100,6 +103,7 @@ import {
   refreshCharInspector,
   refreshCursor,
   refreshIndentInfo,
+  refreshNormalizationStatus,
   refreshStatusBar,
   refreshSuspiciousChars,
   refreshTextStats,
@@ -107,6 +111,7 @@ import {
   updateCharInspector,
   updateCursor,
   updateIndentInfo,
+  updateNormalizationStatus,
   updatePager,
   updateStatusBar,
   updateSuspiciousChars,
@@ -224,6 +229,41 @@ function scheduleSuspiciousCharsUpdate(): void {
   suspiciousCharsTimer = window.setTimeout(computeAndShowSuspiciousChars, SUSPICIOUS_DEBOUNCE_MS);
 }
 
+// ---- "Non-NFC" status-bar marker (ROADMAP.md v0.4 Track A Unicode
+// normalization [danger]). Same cost class and shape as the suspicious-
+// chars segment just above (an O(document length) whole-document walk via
+// editor.ts's `isNonNfcOf`, so it needs its own debounce and hides for
+// large-file/truncated windows) and, like that segment, always
+// whole-document rather than selection-scoped, so recomputing on every
+// onCursorMoved call is a harmless superset.
+const NORMALIZATION_DEBOUNCE_MS = 300;
+let normalizationTimer: number | null = null;
+
+/** Compute and show the non-NFC marker for whatever tab is active *right
+ *  now* — same freshness/cancel-pending-timer contract as
+ *  `computeAndShowTextStats` above. */
+function computeAndShowNormalizationStatus(): void {
+  if (normalizationTimer !== null) {
+    window.clearTimeout(normalizationTimer);
+    normalizationTimer = null;
+  }
+  const doc = tabs.active;
+  if (!doc || doc.truncated) {
+    updateNormalizationStatus(null);
+    return;
+  }
+  updateNormalizationStatus(isNonNfcOf(editor.snapshot()));
+}
+
+/** Debounced entry point mirroring `scheduleTextStatsUpdate` above. */
+function scheduleNormalizationStatusUpdate(): void {
+  if (normalizationTimer !== null) window.clearTimeout(normalizationTimer);
+  normalizationTimer = window.setTimeout(
+    computeAndShowNormalizationStatus,
+    NORMALIZATION_DEBOUNCE_MS,
+  );
+}
+
 // ---- Indentation detection status-bar segment + CM6 indentUnit/tabSize
 // wiring (ROADMAP.md v0.4 Track C). Same cost class and shape as text
 // stats/suspicious chars above (an O(sampled-lines) walk, bounded by
@@ -284,6 +324,7 @@ function onCursorMoved(line: number, column: number): void {
   updateCharInspector(characterBeforeCursor(editor.snapshot()));
   scheduleTextStatsUpdate();
   scheduleSuspiciousCharsUpdate();
+  scheduleNormalizationStatusUpdate();
   scheduleIndentUpdate();
 }
 
@@ -428,6 +469,7 @@ function showActive(): void {
   // call just scheduled, so it can't redundantly re-fire later.
   computeAndShowTextStats();
   computeAndShowSuspiciousChars();
+  computeAndShowNormalizationStatus();
   computeAndShowIndent();
   updateWindowTitle();
   editor.focus();
@@ -1602,6 +1644,102 @@ function runLineOperation(action: () => void): void {
   action();
 }
 
+/** Whether `encoding` (a canonical encoding_rs name, e.g. "UTF-8",
+ *  "UTF-16LE") can represent every Unicode scalar value — used by
+ *  `runNormalizeFlow` to skip the representability IPC round trip entirely
+ *  for these targets (ROADMAP.md v0.4 Track A: UTF-8/UTF-16 documents are
+ *  always fully representable, so the check can only ever come back
+ *  clean), mirroring the same fast path src-tauri/src/normalize.rs's
+ *  `check_representability` applies independently on the Rust side. */
+function isUnicodeEncoding(encoding: string): boolean {
+  return encoding === "UTF-8" || encoding.startsWith("UTF-16");
+}
+
+/**
+ * Edit > Normalize to NFC/NFD (ROADMAP.md v0.4 Track A) [danger]. Never
+ * applies silently:
+ *
+ * 1. normalize.ts's `planNormalization` computes the result and how many
+ *    combining-character sequences would change; a no-op (already in the
+ *    target form — the common case for this app's CJK-heavy documents,
+ *    since plain ideographs have no canonical decomposition) applies
+ *    nothing and shows no dialog, matching the existing sort/trim/
+ *    case-conversion Line Operations' own no-op-dispatches-nothing
+ *    precedent (editor.ts's `transformLines`/`transformSelection`).
+ * 2. A confirm dialog names the affected sequence count; declining leaves
+ *    the buffer untouched.
+ * 3. Unless the document's current save encoding is UTF-8/UTF-16
+ *    (`isUnicodeEncoding`), a Rust representability dry-run (ipc.ts's
+ *    `checkRepresentable`, mirroring `save_document`'s own lossy-encode
+ *    gate) checks whether the normalized result can still be losslessly
+ *    saved — this is the actual point of the whole feature: NFD's
+ *    decomposed combining sequences are frequently unrepresentable in
+ *    legacy encodings even when the precomposed NFC form was fine. If
+ *    anything is unmappable, a second, explicit warning names the
+ *    encoding, the count, and a sample of the characters that would be
+ *    lost; declining leaves the buffer untouched. Accepting still leaves
+ *    `save_document`'s own lossy gate in place at actual save time —
+ *    defense in depth, not a replacement for it.
+ * 4. Only then is the transform applied, via `editor.replaceContent` (CM6
+ *    undo history intact — one Undo reverts the whole normalization, same
+ *    as the mojibake repair wizard).
+ *
+ * Always whole-document (`editor.content()`/`editor.replaceContent`),
+ * never selection-scoped — see menu.rs's `normalize_nfc`/`normalize_nfd`
+ * doc comment. Wrapped in `runLineOperation` (see the switch cases below)
+ * for the same truncated/userReadOnly guard sort/unique/trim use: a
+ * large-file preview's transform would silently diverge from the file on
+ * disk with no way to save it back, exactly like those (ROADMAP.md v0.4
+ * Track A item 6 — no separate native-menu-disabled wiring needed, this is
+ * the same runtime guard).
+ */
+async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
+  const doc = tabs.active;
+  if (!doc) return;
+  try {
+    const plan = planNormalization(editor.content(), form);
+    if (!plan.changed) return;
+
+    const proceed = await confirmDialog(
+      t("dialog.normalizeConfirmMessage", plan.changedCount, form),
+      {
+        title: t("dialog.normalizeConfirmTitle", form),
+        kind: "warning",
+        okLabel: t("dialog.normalizeConfirmButton"),
+      },
+    );
+    if (!proceed) return;
+
+    if (!isUnicodeEncoding(doc.encoding)) {
+      const report = await checkRepresentable(plan.normalized, doc.encoding);
+      if (report.unmappableCount > 0) {
+        const proceedAnyway = await confirmDialog(
+          t(
+            "dialog.normalizeUnrepresentableMessage",
+            doc.encoding,
+            report.unmappableCount,
+            report.samples,
+            report.samplesTruncated,
+          ),
+          {
+            title: t("dialog.normalizeUnrepresentableTitle"),
+            kind: "warning",
+            okLabel: t("dialog.normalizeUnrepresentableConfirm"),
+          },
+        );
+        if (!proceedAnyway) return;
+      }
+    }
+
+    editor.replaceContent(plan.normalized);
+  } catch (error) {
+    await messageDialog(String(error), {
+      title: t("dialog.normalizeFailedTitle"),
+      kind: "error",
+    });
+  }
+}
+
 // File shortcuts (Mod-T/O/S/W) are owned by the native menu accelerators —
 // binding them here as well would double-fire. Only tab cycling stays in
 // the WebView because Ctrl+Tab is not reliable as a menu accelerator.
@@ -1748,6 +1886,17 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "to_half_width":
       runLineOperation(() => editor.transformSelection(toHalfWidth));
+      break;
+    // ROADMAP.md v0.4 Track A [danger]: unlike the transforms above,
+    // `runNormalizeFlow` is async (confirm dialogs, a representability IPC
+    // round trip) and decides for itself whether there is anything to
+    // apply at all — see its own doc comment. `runLineOperation` still
+    // guards the read-only/truncated check synchronously before it starts.
+    case "normalize_nfc":
+      runLineOperation(() => void runNormalizeFlow("NFC"));
+      break;
+    case "normalize_nfd":
+      runLineOperation(() => void runNormalizeFlow("NFD"));
       break;
     case "batch_convert":
       showBatchConvert();
@@ -2040,6 +2189,7 @@ onLocaleChange(() => {
   refreshCharInspector();
   refreshTextStats();
   refreshSuspiciousChars();
+  refreshNormalizationStatus();
   refreshIndentInfo();
   updateWindowTitle();
 });
@@ -2053,6 +2203,7 @@ void (async () => {
   refreshCharInspector();
   refreshTextStats();
   refreshSuspiciousChars();
+  refreshNormalizationStatus();
   refreshIndentInfo();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();

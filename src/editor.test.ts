@@ -14,6 +14,7 @@ import {
   eolMarkPositions,
   INDENT_DETECTION_SAMPLE_LINES,
   indentGuideLevels,
+  isNonNfcOf,
   lineSpanForSelectionInDoc,
   suspiciousCharCountOf,
   textStatsOf,
@@ -497,6 +498,62 @@ describe("suspiciousCharCountOf", () => {
     // mirrors textStatsOf's many-leaf test comparing against countTextStats.
     expect(suspiciousCharCountOf(state)).toBe(scanSuspiciousChars(text).length);
     expect(suspiciousCharCountOf(state)).toBe(20); // sanity: one per 10th line, 200/10
+  });
+});
+
+// ROADMAP.md v0.4 Track A Unicode normalization [danger].
+describe("isNonNfcOf", () => {
+  it("is false for an empty document", () => {
+    const state = EditorState.create({ doc: "" });
+    expect(isNonNfcOf(state)).toBe(false);
+  });
+
+  it("is false for ordinary already-NFC text (ASCII and CJK)", () => {
+    const state = EditorState.create({ doc: "hello world\n中文編碼偵測測試" });
+    expect(isNonNfcOf(state)).toBe(false);
+  });
+
+  // NFD/NFC fixtures below spell "cafe" plus an accented "e" via
+  // explicit \u escapes rather than a literal accented character in
+  // source: a bare literal risks silently being whichever Unicode
+  // normalization form it happens to get typed as, defeating the point
+  // of pinning one specific form.
+  const NFD_CAFE = "cafe" + "\u0301"; // "e" + combining acute accent (NFD)
+  const NFC_CAFE = "cafe\u0301".normalize("NFC"); // precomposed U+00E9 (NFC)
+
+  it("is true for a decomposed (NFD) combining sequence", () => {
+    const state = EditorState.create({ doc: NFD_CAFE });
+    expect(isNonNfcOf(state)).toBe(true);
+  });
+
+  it("is false once the same content is precomposed", () => {
+    const state = EditorState.create({ doc: NFC_CAFE });
+    expect(isNonNfcOf(state)).toBe(false);
+  });
+
+  /**
+   * `isNonNfcOf` must still find a decomposed sequence correctly once the
+   * document spans multiple internal `Text` leaves (`TextLeaf` caps at 32
+   * lines per node — same technique `suspiciousCharCountOf`'s own many-leaf
+   * test above uses), proving the chunk-by-chunk walk doesn't drop or
+   * misjudge anything just because `Text.iter()` enumerates many chunks
+   * rather than one. This does not (and — per `isNfcChunked`'s doc comment —
+   * cannot) exercise a combining sequence actually split *across* a chunk
+   * boundary: CM6's chunk boundaries are always real line breaks, and a
+   * combining mark right after a "\n" never composes with the previous
+   * line's last character (verified: `("e\n" + "́").normalize("NFC")`
+   * is a no-op) — so placing the decomposed sequence on its own line, far
+   * from line 1, is what actually exercises "found deep inside a multi-leaf
+   * document", not a boundary split. The chunk-boundary-splitting hazard
+   * itself is exercised directly on `isNfcChunked` with hand-built chunk
+   * arrays in normalize.test.ts, where a chunk source that isn't
+   * line-aligned is possible to construct at all.
+   */
+  it("still detects a decomposed sequence deep inside a document spanning many internal Text leaves", () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `line ${i}`);
+    lines[75] = NFD_CAFE; // "e" + combining acute, on a line past the first leaf
+    const state = EditorState.create({ doc: lines.join("\n") });
+    expect(isNonNfcOf(state)).toBe(true);
   });
 });
 
