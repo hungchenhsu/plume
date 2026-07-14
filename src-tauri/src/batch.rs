@@ -357,26 +357,23 @@ pub fn scan_batch_conversion(
     )
 }
 
-/// Read `path`'s current bytes together with a [`Fingerprint`] tied to the
-/// exact handle they were read through: `path` is opened once, and the
-/// size check, fingerprint capture, and read all go through that same
-/// `File`, so the fingerprint is guaranteed to describe precisely the
-/// bytes this call returns — not merely whatever the path happened to
-/// resolve to at a separate, independent `stat` (mirroring
-/// `streamreplace.rs`'s `capture_fingerprint`, both via `fsguard.rs`).
-/// Tighter than re-`stat`ing the path is worth it here even though this
-/// call is a single one-shot read rather than a long streaming run: it
-/// also collapses the size-check-then-read into one held-open file
-/// descriptor instead of two independent path resolutions.
+/// Open `path` once, run the fast metadata size check, and capture the
+/// [`Fingerprint`] tied to that same handle — but read no bytes yet.
+/// Split out from [`read_for_conversion`] so a test can grow the file
+/// behind the returned handle (through a second, independent handle to
+/// the same path) before ever calling [`bounded_read`] on it,
+/// deterministically exercising the metadata-check -> read TOCTOU (issue
+/// #117) instead of timing a real race — the same seam-splitting
+/// [`read_for_conversion`]/[`commit_conversion`] already use for issue
+/// #114's race (see `external_write_after_read_is_not_clobbered`).
 ///
-/// Split out from `convert_one` so [`commit_conversion`] below has an
-/// injectable seam: a test can call this, replace the file out from under
-/// the returned fingerprint, then call `commit_conversion` directly to
-/// exercise the read -> commit race deterministically instead of trying to
-/// literally win a timing race against a background writer (see
-/// `external_write_after_read_is_not_clobbered`).
-fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConvertResult> {
-    let mut file = std::fs::File::open(path).map_err(|e| BatchConvertResult {
+/// The size check here is a fast path only, *not* the guard: it lets an
+/// already-oversized file fail before any read is attempted, but a file
+/// that passes this check can still grow past `MAX_FILE_SIZE` before
+/// [`bounded_read`] actually runs — that call, not this metadata, is what
+/// bounds the real memory use.
+fn open_for_conversion(path: &str) -> Result<(std::fs::File, Fingerprint), BatchConvertResult> {
+    let file = std::fs::File::open(path).map_err(|e| BatchConvertResult {
         path: path.to_string(),
         ok: false,
         message: format!("Failed to read: {e}"),
@@ -386,8 +383,8 @@ fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConver
         ok: false,
         message: format!("Failed to read: {e}"),
     })?;
-    // Same guard as the scan side: a file that grew past the size cap
-    // between scan and execute must not be slurped into memory.
+    // Fast path only (see doc comment above): lets an already-oversized
+    // file fail before attempting any read at all.
     if meta.len() > MAX_FILE_SIZE {
         return Err(BatchConvertResult {
             path: path.to_string(),
@@ -400,13 +397,74 @@ fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConver
         ok: false,
         message: format!("Failed to read: {e}"),
     })?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|e| BatchConvertResult {
+    Ok((file, fingerprint))
+}
+
+/// Read at most `MAX_FILE_SIZE + 1` bytes from `file` — the real size
+/// guard for batch conversion (issue #117). Unlike the metadata check in
+/// [`open_for_conversion`], this bounds the bytes actually pulled into
+/// memory no matter how much the file has grown since that check,
+/// including growth that happens entirely within the gap between the
+/// check and this call: `Read::take` caps the underlying reads
+/// themselves, so a file that keeps growing indefinitely still costs at
+/// most `O(MAX_FILE_SIZE)` here, never `O(file size)`. The `+ 1` sentinel
+/// turns "read exactly `MAX_FILE_SIZE` bytes, file fits" (fine) into a
+/// distinguishable "there was at least one more byte past the cap" (too
+/// large) without ever reading further to confirm it — same technique as
+/// `open_document`'s bounded preview read (issue #59/#69).
+fn take_bounded(file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(MAX_FILE_SIZE as usize + 1);
+    file.take(MAX_FILE_SIZE + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// [`take_bounded`] wrapped with the `BatchConvertResult` failure this
+/// module reports through: a file whose bounded read comes back longer
+/// than `MAX_FILE_SIZE` grew past the cap since [`open_for_conversion`]'s
+/// metadata check, and must fail here exactly as if it had already been
+/// too large at open time (issue #117).
+fn bounded_read(file: std::fs::File, path: &str) -> Result<Vec<u8>, BatchConvertResult> {
+    let bytes = take_bounded(file).map_err(|e| BatchConvertResult {
+        path: path.to_string(),
+        ok: false,
+        message: format!("Failed to read: {e}"),
+    })?;
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        return Err(BatchConvertResult {
             path: path.to_string(),
             ok: false,
-            message: format!("Failed to read: {e}"),
-        })?;
+            message: "File grew past the size limit during read; skipped.".to_string(),
+        });
+    }
+    Ok(bytes)
+}
+
+/// Read `path`'s current bytes together with a [`Fingerprint`] tied to the
+/// exact handle they were read through: `path` is opened once
+/// ([`open_for_conversion`]), and the size check, fingerprint capture, and
+/// read ([`bounded_read`]) all go through that same `File`, so the
+/// fingerprint is guaranteed to describe precisely the bytes this call
+/// returns — not merely whatever the path happened to resolve to at a
+/// separate, independent `stat` (mirroring `streamreplace.rs`'s
+/// `capture_fingerprint`, both via `fsguard.rs`). Tighter than
+/// re-`stat`ing the path is worth it here even though this call is a
+/// single one-shot read rather than a long streaming run: it also
+/// collapses the size-check-then-read into one held-open file descriptor
+/// instead of two independent path resolutions.
+///
+/// Split into [`open_for_conversion`] and [`bounded_read`] so tests get
+/// two independent injectable seams: a test can call this whole function,
+/// replace the file out from under the returned fingerprint, then call
+/// `commit_conversion` directly to exercise the read -> commit race
+/// deterministically (issue #114, see
+/// `external_write_after_read_is_not_clobbered`); or call just
+/// `open_for_conversion`, grow the file behind its handle, then call
+/// `bounded_read` directly to exercise the metadata-check -> read race
+/// (issue #117, see
+/// `file_grown_past_the_limit_after_the_metadata_check_fails_the_bounded_read`).
+fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConvertResult> {
+    let (file, fingerprint) = open_for_conversion(path)?;
+    let bytes = bounded_read(file, path)?;
     Ok((bytes, fingerprint))
 }
 
@@ -1267,6 +1325,80 @@ mod tests {
         let decoded = encoding::decode_auto(&converted);
         assert_eq!(decoded.encoding, "UTF-8");
         assert_eq!(decoded.content, BIG5_TEXT_B);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #117 (failing-test-first): `read_for_conversion` used to trust
+    /// `file.metadata()`'s reported size as the size guard, then read the
+    /// whole file regardless of how large it had grown to by the time the
+    /// read actually ran — a TOCTOU between the metadata check and the
+    /// read itself, distinct from #114's read -> commit race. Exercised
+    /// deterministically by driving the same two steps
+    /// `read_for_conversion` composes — `open_for_conversion` then
+    /// `bounded_read`/`take_bounded` — with a *second*, independent handle
+    /// growing the file past `MAX_FILE_SIZE` in between, instead of timing
+    /// a real race (same style as `external_write_after_read_is_not_clobbered`).
+    #[test]
+    fn file_grown_past_the_limit_after_the_metadata_check_fails_the_bounded_read() {
+        let dir = fixture_dir("grows-after-metadata-check");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"small enough to pass the metadata check\n").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // Exactly what `read_for_conversion` does before the bounded read:
+        // open once, run the fast metadata check (passes — the file is
+        // small), capture the fingerprint.
+        let (handle, _fingerprint) =
+            open_for_conversion(&path).expect("small file must pass the metadata check");
+
+        // Simulate an external writer appending after that check but
+        // before the read: a *different* handle to the same path, growing
+        // the file well past MAX_FILE_SIZE. `handle` itself is untouched —
+        // still positioned at 0 — so the next read through it sees the
+        // file's current (grown) contents, exactly like a real concurrent
+        // append would.
+        {
+            use std::io::Write;
+            let mut writer = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            let filler = vec![b'x'; (MAX_FILE_SIZE + 1) as usize];
+            writer.write_all(&filler).unwrap();
+            writer.flush().unwrap();
+        }
+        let grown_size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            grown_size > MAX_FILE_SIZE + 1,
+            "fixture must actually grow past the take limit: {grown_size}"
+        );
+
+        // The raw bounded read itself must never materialize more than
+        // MAX_FILE_SIZE + 1 bytes — the take-limit sentinel — regardless
+        // of how much larger the file has actually grown (`grown_size`
+        // above). This is the real guard: it must hold *during* the read,
+        // not merely as a length check applied after an unbounded read
+        // already happened.
+        let bytes = take_bounded(handle).expect("take-bounded read itself never errors on I/O");
+        assert_eq!(
+            bytes.len() as u64,
+            MAX_FILE_SIZE + 1,
+            "the read must stop at the take limit's sentinel byte, never at the file's full \
+             grown size ({grown_size})"
+        );
+
+        // And the public-facing guard reports this file as failed rather
+        // than silently succeeding with a truncated (still oversized)
+        // buffer.
+        let handle2 = std::fs::File::open(&file).unwrap();
+        let err = bounded_read(handle2, &path).expect_err("grown file must fail the bounded read");
+        assert!(!err.ok);
+        assert!(
+            err.message.to_lowercase().contains("too large") || err.message.contains("grew"),
+            "message should explain the file grew past the limit: {}",
+            err.message
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
