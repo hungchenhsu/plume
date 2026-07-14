@@ -249,8 +249,27 @@ cases of "never misrepresent user text")
 - [ ] Per-tab read-only mode (View menu + status-bar indicator, reusing
   the existing readOnly compartment; large-file preview read-only state
   cannot be lifted)
-- [ ] Tab drag-to-reorder (pure reorder logic unit-tested in the tab
-  store)
+- [x] Tab drag-to-reorder (pure reorder logic unit-tested in the tab
+  store): `TabStore.moveTab(fromIndex, toIndex)` is a plain splice-out/
+  splice-in array move — `activeId` tracks a doc's id, not its array
+  position, so the active tab is untouched by any reorder whether or not
+  it's the tab being moved. Interaction is Pointer Events, not the HTML5
+  DnD API (WKWebView/WebView2 drag-image/drop-effect inconsistencies) —
+  pointerdown arms a potential drag on the tab (primary button only
+  graduates past the threshold; any button still selects, matching the
+  pre-drag mousedown behavior); pointerup resolves it as a select (no/
+  below-threshold movement, including every middle/right-click gesture)
+  or a reorder (moveTab + one render() + persistSession, mirroring every
+  other order-affecting tab op's persist timing). The close button's own
+  pointerdown stopPropagation keeps it immune to both. Selection resolves
+  on release rather than eagerly on press specifically to dodge a
+  reentrancy hazard: onSelect can cascade synchronously into main.ts's
+  activate() -> showActive() -> tabs.render(), which rebuilds every tab
+  element — resolving it only after this gesture's own teardown means
+  that cascade never finds in-flight drag state pointing at a
+  soon-to-be-detached node. Visual feedback is the dragged tab itself
+  (translateX + existing --shadow-1/--bg-base tokens), not a separate
+  placeholder element.
 - [ ] Indentation tools: detected indentation (tabs/spaces + width) in
   the status bar, indentUnit wired to the detection, Edit-menu convert
   leading tabs ⇄ spaces

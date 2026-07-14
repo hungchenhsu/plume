@@ -161,6 +161,19 @@ select:focus-visible {
   box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 
+/* Drag-to-reorder feedback: the grabbed tab itself lifts and follows the
+   pointer (see tabs.ts's per-pointermove translateX) rather than a separate
+   placeholder element. position: relative lets z-index take it above the
+   stationary siblings it's sliding over; the rest reuses existing tokens
+   (the same elevation as a small popup, not a new visual language). */
+.tab-dragging {
+  position: relative;
+  z-index: 10;
+  background: var(--bg-base);
+  box-shadow: var(--shadow-1);
+  cursor: grabbing;
+}
+
 .tab-title {
   overflow: hidden;
   text-overflow: ellipsis;
