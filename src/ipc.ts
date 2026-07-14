@@ -635,3 +635,38 @@ export interface EncodeCharResult {
 export function encodeChar(ch: string, encoding: string): Promise<EncodeCharResult> {
   return invoke<EncodeCharResult>("encode_char", { ch, encoding });
 }
+
+export interface RepresentabilityReport {
+  /** Total count of Unicode scalar values with no representation in the
+   *  target encoding — never capped, counted per occurrence. */
+  unmappableCount: number;
+  /** Up to 20 formatted samples of *distinct* unmappable characters, e.g.
+   *  "é (U+00E9)", in first-encountered order (src-tauri/src/normalize.rs's
+   *  `SAMPLE_CAP`); a repeated character contributes one entry. */
+  samples: string[];
+  /** True when there were more distinct unmappable characters than fit in
+   *  `samples` — the warning dialog appends an "and more" note so a capped
+   *  list is never mistaken for a complete one. */
+  samplesTruncated: boolean;
+}
+
+/**
+ * Representability dry-run for Edit > Normalize to NFC/NFD (ROADMAP.md v0.4
+ * Track A) [danger]: before the frontend applies a normalization to the
+ * live buffer, check whether `text` (the *result* of normalizing) can still
+ * be losslessly saved as `encoding` — mirroring `save_document`'s own
+ * two-phase lossy-encode gate, run one step earlier. See main.ts's
+ * `runNormalizeFlow` for the full confirm-then-check-then-apply flow, and
+ * src-tauri/src/normalize.rs's module doc for why this matters: NFD's
+ * decomposed combining sequences are frequently unrepresentable in legacy
+ * encodings even when the precomposed NFC form was fine. Callers should
+ * skip this call entirely for UTF-8/UTF-16 documents (every Unicode scalar
+ * value is representable in either, so the round trip can only ever come
+ * back clean) — see main.ts's `isUnicodeEncoding`.
+ */
+export function checkRepresentable(
+  text: string,
+  encoding: string,
+): Promise<RepresentabilityReport> {
+  return invoke<RepresentabilityReport>("check_representable", { text, encoding });
+}

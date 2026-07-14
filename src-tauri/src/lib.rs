@@ -15,6 +15,7 @@ mod linebreak;
 mod lineindex;
 mod menu;
 mod mojibake;
+mod normalize;
 mod prefs;
 mod recent;
 mod search;
@@ -624,6 +625,7 @@ pub fn run() {
             comparepreview::preview_two_encodings,
             streamreplace::stream_replace_in_file,
             charinspect::encode_char,
+            normalize::check_representable,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())

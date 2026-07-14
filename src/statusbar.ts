@@ -30,6 +30,7 @@ const charInspectorEl = document.querySelector<HTMLButtonElement>(
 )!;
 const textStatsEl = document.querySelector<HTMLElement>("#status-textstats")!;
 const suspiciousCharsEl = document.querySelector<HTMLElement>("#status-suspicious")!;
+const nonNfcEl = document.querySelector<HTMLElement>("#status-nonnfc")!;
 const indentEl = document.querySelector<HTMLElement>("#status-indent")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
@@ -146,6 +147,30 @@ export function updateSuspiciousChars(count: number | null): void {
  *  last known count (no recomputation needed). */
 export function refreshSuspiciousChars(): void {
   updateSuspiciousChars(lastSuspiciousCount);
+}
+
+let lastNonNfc: boolean | null = null;
+
+/** Update (or hide) the "non-NFC" status-bar marker (ROADMAP.md v0.4 Track A
+ *  Unicode normalization [danger]). Pass `null` to hide it — no active
+ *  document, or a large-file (truncated) window, same "would misrepresent
+ *  the whole file" reasoning as `updateSuspiciousChars` above (see main.ts's
+ *  `computeAndShowNormalizationStatus`). `false` (the common case — already
+ *  NFC) also hides it: this is deliberately not a new permanently-shown
+ *  segment, only a lightweight marker that appears for the rare document
+ *  that actually needs it, reusing this module's existing hide-until-
+ *  relevant mechanism rather than a modal or popup. */
+export function updateNormalizationStatus(isNonNfc: boolean | null): void {
+  lastNonNfc = isNonNfc;
+  const hidden = isNonNfc === null || isNonNfc === false;
+  nonNfcEl.hidden = hidden;
+  nonNfcEl.textContent = hidden ? "" : t("statusbar.nonNfc");
+}
+
+/** Re-render the non-NFC marker after a locale change, using the last known
+ *  value (no recomputation needed). */
+export function refreshNormalizationStatus(): void {
+  updateNormalizationStatus(lastNonNfc);
 }
 
 let lastIndentInfo: IndentInfo | null = null;

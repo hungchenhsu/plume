@@ -207,6 +207,20 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "转为半角",
     ),
     (
+        "normalize_nfc",
+        "Normalize to NFC",
+        "正規化為 NFC",
+        "NFC に正規化",
+        "规范化为 NFC",
+    ),
+    (
+        "normalize_nfd",
+        "Normalize to NFD",
+        "正規化為 NFD",
+        "NFD に正規化",
+        "规范化为 NFD",
+    ),
+    (
         "batch_convert",
         "Batch Encoding Conversion…",
         "批次轉換編碼…",
@@ -434,6 +448,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&MenuItemBuilder::with_id("lowercase", l("lowercase")).build(app)?)
         .item(&MenuItemBuilder::with_id("to_full_width", l("to_full_width")).build(app)?)
         .item(&MenuItemBuilder::with_id("to_half_width", l("to_half_width")).build(app)?)
+        .separator()
+        // ROADMAP.md v0.4 Track A [danger]. Whole-document transforms, like
+        // sort/unique/trim above (not a selection-verbatim transform like
+        // upper/lowercase or full/half-width) — see main.ts's
+        // `runNormalizeFlow`, which always normalizes the entire buffer via
+        // `editor.content()`/`editor.replaceContent`, never a selection.
+        // No accelerator: an uncommon-enough, confirm-gated action that no
+        // other editor convention already binds a key to.
+        .item(&MenuItemBuilder::with_id("normalize_nfc", l("normalize_nfc")).build(app)?)
+        .item(&MenuItemBuilder::with_id("normalize_nfd", l("normalize_nfd")).build(app)?)
         .build()?;
 
     // On macOS an Edit menu is required for clipboard and undo shortcuts to
@@ -777,6 +801,8 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 "lowercase",
                 "to_full_width",
                 "to_half_width",
+                "normalize_nfc",
+                "normalize_nfd",
             ] {
                 if let Some(item) = line_ops
                     .get(id)
@@ -996,6 +1022,26 @@ mod tests {
         assert_eq!(label("to_half_width", "zh-TW"), "轉為半形");
         assert_eq!(label("to_half_width", "ja"), "半角に変換");
         assert_eq!(label("to_half_width", "zh-CN"), "转为半角");
+    }
+
+    // ROADMAP.md v0.4 Track A Unicode normalization [danger]: the Edit >
+    // Line Operations submenu's two new ids, pinned across all four
+    // languages -- same rationale as to_full_width/to_half_width's own
+    // dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_normalize_nfc_text_for_every_language() {
+        assert_eq!(label("normalize_nfc", "en"), "Normalize to NFC");
+        assert_eq!(label("normalize_nfc", "zh-TW"), "正規化為 NFC");
+        assert_eq!(label("normalize_nfc", "ja"), "NFC に正規化");
+        assert_eq!(label("normalize_nfc", "zh-CN"), "规范化为 NFC");
+    }
+
+    #[test]
+    fn label_returns_the_correct_normalize_nfd_text_for_every_language() {
+        assert_eq!(label("normalize_nfd", "en"), "Normalize to NFD");
+        assert_eq!(label("normalize_nfd", "zh-TW"), "正規化為 NFD");
+        assert_eq!(label("normalize_nfd", "ja"), "NFD に正規化");
+        assert_eq!(label("normalize_nfd", "zh-CN"), "规范化为 NFD");
     }
 
     #[test]
