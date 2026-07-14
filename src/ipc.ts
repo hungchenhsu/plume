@@ -28,15 +28,28 @@ export interface DocumentChunk {
   malformed: boolean;
 }
 
+/**
+ * What a forward chunk read's `offset` is — the Rust core applies
+ * opposite alignment policies (src-tauri/src/chunk.rs `OffsetKind`,
+ * issue #118): a `"continuation"` offset (the previous chunk's
+ * `nextOffset`) is read exactly as given, mid-line when it continues a
+ * line longer than one chunk; a `"lineStart"` offset (from the
+ * possibly-stale line index behind goto/bookmarks) is defensively
+ * realigned to the next real line start when it turns out not to be one.
+ */
+export type ChunkOffsetKind = "lineStart" | "continuation";
+
 export function readDocumentChunk(
   path: string,
   offset: number,
   encoding: string,
+  kind: ChunkOffsetKind,
 ): Promise<DocumentChunk> {
   return invoke<DocumentChunk>("read_document_chunk", {
     path,
     offset,
     encoding,
+    kind,
   });
 }
 

@@ -369,7 +369,15 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
   doc.chunkGeneration += 1;
   const myGeneration = doc.chunkGeneration;
   try {
-    const chunkData = await readDocumentChunk(doc.path, target, doc.encoding);
+    // Next targets are the previous chunk's own nextOffset (Prev targets
+    // are earlier applied window starts) — continuation points, read
+    // exactly as given (#118): realigning could skip bytes mid-overlong-line.
+    const chunkData = await readDocumentChunk(
+      doc.path,
+      target,
+      doc.encoding,
+      "continuation",
+    );
     if (
       !shouldApplyChunkResponse({
         requestGeneration: myGeneration,
@@ -443,7 +451,12 @@ async function autoAppendChunk(): Promise<void> {
   const myGeneration = doc.chunkGeneration;
   try {
     const loadedAt = doc.nextChunkOffset!;
-    const chunkData = await readDocumentChunk(doc.path, loadedAt, doc.encoding);
+    const chunkData = await readDocumentChunk(
+      doc.path,
+      loadedAt,
+      doc.encoding,
+      "continuation",
+    );
     // The user may have switched tabs while the chunk was loading, or a
     // newer request/reload/reopen may have superseded this one (#120).
     if (
@@ -541,9 +554,12 @@ async function prependChunk(): Promise<void> {
  * disk without doing so — the `indexedSize` comparison below is a cheap
  * internal-consistency guard, not an independent external-change
  * detector. A same-size overwrite that the best-effort watcher misses
- * can therefore leave a stale index; the chunk read's line-start
- * alignment self-corrects the jump target to a real line boundary, but
- * the reported line number can be off until the watcher catches up.
+ * can therefore leave a stale index; gotoLargeFileLine requests its
+ * chunk with kind "lineStart", which makes the Rust core verify the
+ * index-derived offset and realign a stale one to the next real line
+ * boundary (see chunk.rs OffsetKind — paging's "continuation" reads
+ * deliberately never realign, #118), but the reported line number can
+ * be off until the watcher catches up.
  * Returns null on failure or for a doc with no path to index; the
  * caller treats that as a no-op.
  *
@@ -619,7 +635,15 @@ async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
       target0 === checkpoint.line
         ? checkpoint.offset
         : await locateLineOffset(doc.path, target0, checkpoint.offset, checkpoint.line);
-    const chunkData = await readDocumentChunk(doc.path, offset, doc.encoding);
+    // "lineStart": the offset rides on the line index, which can be
+    // stale (see ensureLineIndex above) — the Rust core verifies it and
+    // realigns to the next real line start if it isn't one (#118).
+    const chunkData = await readDocumentChunk(
+      doc.path,
+      offset,
+      doc.encoding,
+      "lineStart",
+    );
     if (
       !shouldApplyChunkResponse({
         requestGeneration: myGeneration,

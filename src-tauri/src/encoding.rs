@@ -286,6 +286,40 @@ pub fn trim_truncated_utf8_tail(bytes: &[u8]) -> &[u8] {
     }
 }
 
+/// Mirror of `trim_truncated_utf8_tail` for the *leading* edge of a
+/// buffer. This exists for large-file chunk paging (`chunk.rs`, issue
+/// #118): a single line longer than one chunk has no terminator to align
+/// a read to, so a later chunk simply continues from wherever the
+/// previous one's raw byte count left off, and that raw cut can land
+/// mid-character. The leading bytes of such a buffer are then a
+/// character's orphaned continuation bytes (0x80-0xBF) — its lead byte
+/// was already consumed (and, on the tail side, replaced by
+/// `trim_truncated_utf8_tail`) in the previous chunk. A valid UTF-8
+/// sequence has at most 3 continuation bytes (a 4-byte sequence's lead
+/// byte is followed by 3), so scanning at most 3 bytes in is always
+/// enough.
+///
+/// Unlike `trim_truncated_utf8_tail`, this does not re-verify the result
+/// against `str::from_utf8` on the whole buffer — a full validity check
+/// would immediately fail on the *rest* of an arbitrarily-cut 2 MiB
+/// buffer for unrelated reasons (a lone CR, or simply landing mid another
+/// multibyte encoding's sequence) and so cannot distinguish "orphaned
+/// leading continuation bytes" from "any other reason the buffer isn't
+/// valid UTF-8" the way `trim_truncated_utf8_tail`'s `error_len().is_none()`
+/// check does for a *trailing* truncation. Callers therefore only use
+/// this once they already know, from the document's own resolved
+/// encoding (not a guess), that the content is UTF-8 — a bare byte-range
+/// check would otherwise misfire on other multibyte encodings whose own
+/// trail bytes legitimately fall in 0x80-0xBF (e.g. Big5).
+pub fn trim_truncated_utf8_head(bytes: &[u8]) -> &[u8] {
+    let scan = bytes.len().min(3);
+    let orphaned = bytes[..scan]
+        .iter()
+        .take_while(|&&b| (0x80..0xC0).contains(&b))
+        .count();
+    &bytes[orphaned..]
+}
+
 /// Decide which UTF-16 byte order (if any) a large-file preview should
 /// align its cut point to, additionally folding in a per-extension
 /// encoding preference (`ext_encoding`) when auto-detecting. Closes the
@@ -1131,6 +1165,40 @@ mod tests {
             "fixture must have an interior invalid byte"
         );
         assert_eq!(trim_truncated_utf8_tail(&le_bytes), &le_bytes[..]);
+    }
+
+    // --- Issue #118: the leading-edge mirror, for large-file chunk paging
+    // continuing mid-character after a previous chunk's raw byte cut. ---
+
+    #[test]
+    fn trim_truncated_utf8_head_drops_only_orphaned_continuation_bytes() {
+        // "中" is E4 B8 AD; a chunk starting after the lead byte was
+        // consumed by the previous one begins with 1 or 2 orphaned
+        // continuation bytes (B8, or B8 AD), then resumes clean content.
+        let one_orphan = [&[0xB8][..], "ab".as_bytes()].concat();
+        assert_eq!(trim_truncated_utf8_head(&one_orphan), b"ab");
+        let two_orphans = [&[0xB8, 0xAD][..], "ab".as_bytes()].concat();
+        assert_eq!(trim_truncated_utf8_head(&two_orphans), b"ab");
+    }
+
+    #[test]
+    fn trim_truncated_utf8_head_keeps_ascii_and_empty_unchanged() {
+        assert_eq!(trim_truncated_utf8_head(b"plain ascii"), b"plain ascii");
+        assert_eq!(
+            trim_truncated_utf8_head("中文".as_bytes()),
+            "中文".as_bytes()
+        );
+        assert_eq!(trim_truncated_utf8_head(b""), b"");
+    }
+
+    #[test]
+    fn trim_truncated_utf8_head_stops_after_at_most_three_continuation_bytes() {
+        // A 4-byte sequence's lead byte is followed by 3 continuation
+        // bytes at most — a 4th 0x80-0xBF byte is never part of the same
+        // orphaned sequence and must be left for the caller/decoder to
+        // report on its own terms.
+        let four = [0x80, 0x81, 0x82, 0x83];
+        assert_eq!(trim_truncated_utf8_head(&four), &[0x83]);
     }
 
     #[test]
