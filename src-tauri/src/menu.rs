@@ -208,6 +208,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "インデントガイド",
         "缩进参考线",
     ),
+    (
+        "suspicious_chars",
+        "Suspicious Characters",
+        "可疑字元",
+        "疑わしい文字",
+        "可疑字符",
+    ),
     ("read_only", "Read-Only", "唯讀", "読み取り専用", "只读"),
     (
         "fold_all",
@@ -514,6 +521,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .build(app)?,
         )
         .item(
+            // ROADMAP.md v0.4 Track A. A standalone CheckMenuItem exactly
+            // like word_wrap/show_invisibles/indent_guides above: a global
+            // preference, native auto-toggle checkmark on click is enough,
+            // no dedicated sync_* command needed (contrast read_only below,
+            // which is per-tab and needs one).
+            &CheckMenuItemBuilder::with_id("suspicious_chars", l("suspicious_chars"))
+                .checked(current_prefs.suspicious_chars)
+                .build(app)?,
+        )
+        .item(
             // Unlike word_wrap/show_invisibles/indent_guides above, this is
             // per-tab, not a global preference — there is no prefs.rs value
             // to read at build time (session restore happens later, in the
@@ -725,7 +742,13 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
 
     if let Some(view) = menu.get("view").and_then(|item| item.as_submenu().cloned()) {
         view.set_text(l("view")).map_err(|e| e.to_string())?;
-        for id in ["word_wrap", "show_invisibles", "indent_guides", "read_only"] {
+        for id in [
+            "word_wrap",
+            "show_invisibles",
+            "indent_guides",
+            "suspicious_chars",
+            "read_only",
+        ] {
             if let Some(item) = view
                 .get(id)
                 .and_then(|item| item.as_check_menuitem().cloned())
@@ -850,6 +873,17 @@ mod tests {
         assert_eq!(label("read_only", "zh-TW"), "唯讀");
         assert_eq!(label("read_only", "ja"), "読み取り専用");
         assert_eq!(label("read_only", "zh-CN"), "只读");
+    }
+
+    // ROADMAP.md v0.4 Track A invisible/ambiguous character audit: the View
+    // menu's new "suspicious_chars" CheckMenuItem id, pinned across all four
+    // languages — same rationale as read_only's dedicated test above.
+    #[test]
+    fn label_returns_the_correct_suspicious_chars_text_for_every_language() {
+        assert_eq!(label("suspicious_chars", "en"), "Suspicious Characters");
+        assert_eq!(label("suspicious_chars", "zh-TW"), "可疑字元");
+        assert_eq!(label("suspicious_chars", "ja"), "疑わしい文字");
+        assert_eq!(label("suspicious_chars", "zh-CN"), "可疑字符");
     }
 
     #[test]

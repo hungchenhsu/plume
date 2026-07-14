@@ -22,6 +22,7 @@ import {
   type ViewUpdate,
   WidgetType,
   gutter,
+  highlightSpecialChars,
   highlightWhitespace,
 } from "@codemirror/view";
 import {
@@ -58,6 +59,7 @@ import {
   type TextStats,
   type TextStatsAccumulator,
 } from "./textstats";
+import { scanSuspiciousChars, SUSPICIOUS_CHARS_PATTERN, suspiciousCharFor } from "./suspiciouschars";
 
 /**
  * Traditional-Chinese phrases for CM6's own translatable UI strings, keyed
@@ -160,6 +162,23 @@ export interface EditorHandle {
    *  math and its blank-line/tab-space design notes). Purely visual, like
    *  `setShowInvisibles` above — never touches the document. */
   setIndentGuides(enabled: boolean): void;
+  /**
+   * Toggle inline highlighting of the curated invisible/ambiguous
+   * character audit (ROADMAP.md v0.4 Track A; see suspiciouschars.ts and
+   * `suspiciousCharsExtension` below) — bidi controls, zero-width
+   * characters, and whitespace variants each get a readable bracketed
+   * label (`[RLO]`, `[ZWSP]`, …) instead of rendering invisibly or as a
+   * bare dot. Coexists independently with `setShowInvisibles` (space/tab/
+   * EOL marks): a separate Compartment, a separate View-menu item, a
+   * separate preference. Purely visual, like `setShowInvisibles`/
+   * `setIndentGuides` — never touches the document. Only gates the inline
+   * *highlight*; the status-bar suspicious-character count
+   * (`suspiciousCharCountOf` below) is intentionally independent of this
+   * toggle, the same way the decode-error and read-only status badges
+   * never depend on a View-menu display preference — see main.ts's
+   * `computeAndShowSuspiciousChars` doc comment.
+   */
+  setSuspiciousChars(enabled: boolean): void;
   /**
    * Toggle the live buffer's user-driven read-only lock (ROADMAP.md v0.4
    * Track C per-tab read-only mode), reconfiguring the same
@@ -418,6 +437,35 @@ export function textStatsOf(buffer: EditorBuffer): DocumentTextStats {
   return { stats: total, selected: true };
 }
 
+/**
+ * Total count of curated invisible/ambiguous characters (ROADMAP.md v0.4
+ * Track A; see suspiciouschars.ts) across the whole document — always
+ * whole-document, unlike `textStatsOf` above, since the audit is about
+ * what the *file* contains, not what's currently selected.
+ *
+ * Never materializes the document as one string: walks `Text.iterRange`
+ * chunk by chunk (same technique as `statsForRange` above, issue #107's
+ * anti-pattern being the thing both avoid) and sums
+ * `scanSuspiciousChars(chunk).length` per chunk. This needs no cross-chunk
+ * carry state — see `scanSuspiciousChars`'s doc comment for why a curated
+ * character can never be split by a chunk boundary the way a surrogate
+ * pair or in-progress word can, so summing independent per-chunk results
+ * is always correct regardless of where CM6 happens to cut each chunk.
+ *
+ * Callers (main.ts) are expected to skip this for large-file (truncated)
+ * windows, exactly like `textStatsOf` — see main.ts's
+ * `computeAndShowSuspiciousChars` doc comment for why hiding (not a
+ * "window"-qualified partial count) is the chosen truncated-window
+ * semantics, matching the Track C text-stats precedent.
+ */
+export function suspiciousCharCountOf(buffer: EditorBuffer): number {
+  let count = 0;
+  for (const chunk of buffer.doc.iterRange(0, buffer.doc.length)) {
+    count += scanSuspiciousChars(chunk).length;
+  }
+  return count;
+}
+
 const FIND_DATALIST_ID = "plume-find-history";
 const REPLACE_DATALIST_ID = "plume-replace-history";
 
@@ -575,6 +623,68 @@ const eolMarks = ViewPlugin.fromClass(
  *  dots, tab arrows) plus the custom EOL-mark plugin above (CM6 has no
  *  built-in for end-of-line marks). */
 const invisiblesExtension: Extension = [highlightWhitespace(), eolMarks];
+
+// ---- Suspicious/invisible character audit (ROADMAP.md v0.4 Track A; see
+// suspiciouschars.ts for the curated table this overlays). `basicSetup`
+// (bundled into this file's own `extensions` below) already installs a
+// bare `highlightSpecialChars()` with no config — CM6's own default
+// special-character highlighter for ASCII control characters plus a
+// subset of the same bidi/zero-width characters this feature curates
+// (verified from node_modules/@codemirror/view/dist/index.js: the
+// `Specials` regexp already includes SHY/ALM/ZWSP/LRM/RLM/LRO/RLO/LRI/
+// RLI/PDI/in-body-BOM, rendered as a generic "•" placeholder with a
+// hover-only native tooltip).
+//
+// This extension *overlays* that default via `addSpecialChars` rather
+// than replacing it outright via `specialChars` — `addSpecialChars` is
+// literally the config field @codemirror/view defines for "highlight
+// these too, in addition to the defaults". Overlaying (not replacing)
+// keeps CM6's own baseline control-character highlighting (NUL, BS, ESC,
+// line/paragraph separators, etc. — none of which are in this project's
+// curated list) working unchanged; a full `specialChars` override would
+// have silently dropped that unrelated existing behavior for zero
+// benefit.
+//
+// Verified from source that this cannot hit @codemirror/state's
+// `combineConfig` "Config merge conflict" error: `specialCharConfig` is a
+// Facet whose `combine` runs every contributed config object through
+// `combineConfig`, which throws only when two configs set the *same* key
+// to different (non-`===`-equal) values. `basicSetup`'s own
+// `highlightSpecialChars()` call passes no arguments at all
+// (`config = {}`), so its contributed object has zero keys — there is
+// nothing for this module's own `addSpecialChars`/`render` keys to
+// conflict with, no matter what order the two extensions are combined in.
+//
+// The custom `render` callback is therefore invoked for BOTH the curated
+// set (this feature) and CM6's own baseline set: it returns a labeled
+// element for a curated code point and `null` for anything else, which
+// CM6's own `SpecialCharWidget.toDOM` falls back on to render its stock
+// "•" + tooltip unchanged (`let custom = this.options.render && ...; if
+// (custom) return custom;` — a falsy return is the documented, working
+// "use the default" signal, even though @codemirror/view's own .d.ts
+// imprecisely types `render`'s return as non-nullable `HTMLElement`; the
+// cast below bridges that gap deliberately, not to dodge an unrelated
+// type error).
+function suspiciousCharRender(code: number): HTMLElement | null {
+  const entry = suspiciousCharFor(code);
+  if (!entry) return null;
+  const span = document.createElement("span");
+  span.textContent = `[${entry.label}]`;
+  const description = `U+${code.toString(16).toUpperCase().padStart(4, "0")} ${entry.name}`;
+  span.title = description;
+  span.setAttribute("aria-label", description);
+  span.className = "cm-suspicious-char";
+  return span;
+}
+
+const suspiciousCharsExtension: Extension = highlightSpecialChars({
+  addSpecialChars: SUSPICIOUS_CHARS_PATTERN,
+  render: suspiciousCharRender as (
+    code: number,
+    description: string | null,
+    placeholder: string,
+  ) => HTMLElement,
+});
 
 // ---- Indent guides (ROADMAP.md Track C / issue #74): vertical lines at
 // each full tab-stop of a line's leading whitespace, so deeply nested code
@@ -813,6 +923,7 @@ export function createEditor(
   const wrapping = new Compartment();
   const invisibles = new Compartment();
   const indentGuides = new Compartment();
+  const suspiciousChars = new Compartment();
   const phrases = new Compartment();
   // Named distinctly from newBuffer's own `readOnly` parameter below (the
   // fixed, construction-time flag truncated large-file buffers use) to
@@ -827,6 +938,7 @@ export function createEditor(
   let currentWrapping: Extension = [];
   let currentInvisibles: Extension = [];
   let currentIndentGuides: Extension = [];
+  let currentSuspiciousChars: Extension = [];
   let currentPhrases: Extension = [];
   const extensions = [
     // `basicSetup` bundles CM6's fold gutter and fold keymap out of the box
@@ -852,6 +964,7 @@ export function createEditor(
     wrapping.of([]),
     invisibles.of([]),
     indentGuides.of([]),
+    suspiciousChars.of([]),
     phrases.of([]),
     readOnlyCompartment.of([]),
     EditorView.updateListener.of((update) => {
@@ -894,6 +1007,7 @@ export function createEditor(
           wrapping.reconfigure(currentWrapping),
           invisibles.reconfigure(currentInvisibles),
           indentGuides.reconfigure(currentIndentGuides),
+          suspiciousChars.reconfigure(currentSuspiciousChars),
           phrases.reconfigure(currentPhrases),
         ],
       });
@@ -969,6 +1083,10 @@ export function createEditor(
     setIndentGuides: (enabled) => {
       currentIndentGuides = enabled ? indentGuidesExtension : [];
       view.dispatch({ effects: indentGuides.reconfigure(currentIndentGuides) });
+    },
+    setSuspiciousChars: (enabled) => {
+      currentSuspiciousChars = enabled ? suspiciousCharsExtension : [];
+      view.dispatch({ effects: suspiciousChars.reconfigure(currentSuspiciousChars) });
     },
     setReadOnly: (enabled) => {
       view.dispatch({

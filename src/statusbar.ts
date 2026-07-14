@@ -28,6 +28,7 @@ const charInspectorEl = document.querySelector<HTMLButtonElement>(
   "#status-char-inspector",
 )!;
 const textStatsEl = document.querySelector<HTMLElement>("#status-textstats")!;
+const suspiciousCharsEl = document.querySelector<HTMLElement>("#status-suspicious")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
 
@@ -120,6 +121,29 @@ export function updateTextStats(result: DocumentTextStats | null): void {
  *  known result (no recomputation needed). */
 export function refreshTextStats(): void {
   updateTextStats(lastTextStats);
+}
+
+let lastSuspiciousCount: number | null = null;
+
+/** Update (or hide) the suspicious/invisible character audit count segment
+ *  (ROADMAP.md v0.4 Track A). Pass `null` to hide it — no active document,
+ *  a large-file (truncated) window (same "would misrepresent the whole
+ *  file" reasoning `updateTextStats` uses above, see main.ts
+ *  `computeAndShowSuspiciousChars`), or a count of exactly 0 (nothing
+ *  suspicious to report, so the segment stays out of the way). Unlike
+ *  `updateTextStats`, this is never gated by the View-menu highlight
+ *  toggle — see `setSuspiciousChars`'s doc comment in editor.ts. */
+export function updateSuspiciousChars(count: number | null): void {
+  lastSuspiciousCount = count;
+  const hidden = count === null || count === 0;
+  suspiciousCharsEl.hidden = hidden;
+  suspiciousCharsEl.textContent = hidden ? "" : t("statusbar.suspiciousChars", count);
+}
+
+/** Re-render the suspicious-char segment after a locale change, using the
+ *  last known count (no recomputation needed). */
+export function refreshSuspiciousChars(): void {
+  updateSuspiciousChars(lastSuspiciousCount);
 }
 
 /** Show/hide the "building line index…" status-bar hint (large-file

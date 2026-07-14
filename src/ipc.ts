@@ -248,6 +248,12 @@ export interface Preferences {
   /** Indent-guide vertical lines (View menu, default on — see
    *  src/editor.ts `indentGuideLevels`/`setIndentGuides`). */
   indentGuides: boolean;
+  /** Inline highlighting of the curated invisible/ambiguous character audit
+   *  (View menu, default on — it's a trust feature, see ROADMAP.md v0.4
+   *  Track A and src/editor.ts `setSuspiciousChars`). Only gates the inline
+   *  highlight; the status-bar suspicious-character count is independent
+   *  of this preference (see main.ts `computeAndShowSuspiciousChars`). */
+  suspiciousChars: boolean;
   /** Per-extension default encodings, e.g. [["txt", "Big5"]]. Extensions
    *  are lowercase without a leading dot (see extensionEncodings.ts);
    *  mirrors prefs.rs `extension_encodings: Vec<(String, String)>`. */

@@ -5,7 +5,7 @@
 // mark. See CLAUDE.md "Frontend logic that doesn't need the WebView".
 import { moveLineDown as cmMoveLineDown } from "@codemirror/commands";
 import { Compartment, EditorSelection, EditorState, Text } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, highlightSpecialChars } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -13,9 +13,11 @@ import {
   eolMarkPositions,
   indentGuideLevels,
   lineSpanForSelectionInDoc,
+  suspiciousCharCountOf,
   textStatsOf,
 } from "./editor";
 import { lineSpanForSelection } from "./lineops";
+import { scanSuspiciousChars, SUSPICIOUS_CHARS_PATTERN } from "./suspiciouschars";
 import { countTextStats } from "./textstats";
 
 describe("eolMarkPositions", () => {
@@ -451,6 +453,71 @@ describe("textStatsOf", () => {
     expect(result.stats.lines).toBe(
       state.doc.lineAt(to - 1).number - state.doc.lineAt(from).number + 1,
     );
+  });
+});
+
+// ROADMAP.md v0.4 Track A invisible/ambiguous character audit status-bar
+// count. Like textStatsOf above, EditorState.create needs no live view or
+// layout engine, so the Text.iterRange chunk-walk is fully reachable here.
+describe("suspiciousCharCountOf", () => {
+  it("is 0 for an empty document", () => {
+    const state = EditorState.create({ doc: "" });
+    expect(suspiciousCharCountOf(state)).toBe(0);
+  });
+
+  it("is 0 for ordinary text with no curated characters", () => {
+    const state = EditorState.create({ doc: "hello world\n你好，世界" });
+    expect(suspiciousCharCountOf(state)).toBe(0);
+  });
+
+  it("counts curated characters across categories in one small document", () => {
+    // "a" + RLO (bidi) + "\n" + "b" + ZWSP (zeroWidth) + NBSP (whitespace)
+    const text = `a${String.fromCharCode(0x202e)}\nb${String.fromCharCode(0x200b)}${String.fromCharCode(0x00a0)}`;
+    const state = EditorState.create({ doc: text });
+    expect(suspiciousCharCountOf(state)).toBe(3);
+  });
+
+  it("walks a document large enough to span many internal Text leaves/nodes", () => {
+    // Same technique as textStatsOf's own many-leaf test above (TextLeaf
+    // caps at 32 lines per node) — one curated character (alternating
+    // category) on every 10th line, forcing the Text.iterRange walk across
+    // multiple internal chunks and proving per-chunk counts sum correctly
+    // rather than dropping or double-counting anything at a chunk boundary.
+    const curated = [0x202e, 0x200b, 0x00a0]; // RLO, ZWSP, NBSP
+    const lines = Array.from({ length: 200 }, (_, i) =>
+      i % 10 === 0 ? `line ${i} ${String.fromCharCode(curated[i % curated.length])}` : `line ${i}`,
+    );
+    const text = lines.join("\n");
+    const state = EditorState.create({ doc: text });
+    // Oracle: scanSuspiciousChars's own whole-string scan (suspiciouschars.ts),
+    // independent of the Text.iterRange chunking being exercised here —
+    // mirrors textStatsOf's many-leaf test comparing against countTextStats.
+    expect(suspiciousCharCountOf(state)).toBe(scanSuspiciousChars(text).length);
+    expect(suspiciousCharCountOf(state)).toBe(20); // sanity: one per 10th line, 200/10
+  });
+});
+
+// Pins the CM6-level assumption editor.ts's `suspiciousCharsExtension`
+// leans on (see its doc comment in editor.ts): overlaying a curated
+// `addSpecialChars` pattern alongside basicSetup's own bare
+// `highlightSpecialChars()` must never hit @codemirror/state's
+// `combineConfig` "Config merge conflict" error. Reconstructs the same
+// overlay shape independently via publicly exported pieces (CM6's own
+// `highlightSpecialChars` plus suspiciouschars.ts's exported pattern)
+// rather than importing editor.ts's private `suspiciousCharsExtension`
+// constant — same "verify the real CM6 mechanism, don't just trust a
+// private implementation detail" approach as the read-only and
+// allowMultipleSelections suites above, which need a live EditorView to
+// go further than this (this file's header comment), so — like those —
+// this only proves the state-level assumption, not the rendered pixels.
+describe("suspicious-chars highlightSpecialChars overlay (ROADMAP.md v0.4 Track A)", () => {
+  it("does not throw a facet merge conflict when layered alongside basicSetup's own highlightSpecialChars", () => {
+    expect(() =>
+      EditorState.create({
+        doc: "hello",
+        extensions: [basicSetup, highlightSpecialChars({ addSpecialChars: SUSPICIOUS_CHARS_PATTERN })],
+      }),
+    ).not.toThrow();
   });
 });
 

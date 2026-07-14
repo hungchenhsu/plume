@@ -25,6 +25,13 @@ pub struct Preferences {
     /// Indent-guide vertical lines (View menu). Default `true`, unlike
     /// `show_invisibles`'s `false` — see `Default` impl below for why.
     pub indent_guides: bool,
+    /// Inline highlighting of the curated invisible/ambiguous character
+    /// audit (View menu; ROADMAP.md v0.4 Track A). Default `true` like
+    /// `indent_guides`, but for a different reason — see `Default` impl
+    /// below. Only gates the CM6 inline highlight; the status-bar
+    /// suspicious-character count is independent of this preference (see
+    /// `src/main.ts` `computeAndShowSuspiciousChars`).
+    pub suspicious_chars: bool,
     /// Per-extension default encoding, e.g. `[("txt", "Big5")]`. Extension
     /// is stored without a leading dot, lowercase (the frontend normalizes
     /// before persisting; see `src/extensionEncodings.ts`). Auto-detection
@@ -51,6 +58,11 @@ impl Default for Preferences {
             // show_invisibles' raw whitespace glyphs, which are visually
             // noisier and better opt-in.
             indent_guides: true,
+            // Also default on, but for a different reason than
+            // indent_guides: this is a trust/security signal (bidi-control/
+            // zero-width character highlighting), not a convenience aid, so
+            // it should be visible without the user having to know to opt in.
+            suspicious_chars: true,
             extension_encodings: Vec::new(),
         }
     }
@@ -88,6 +100,10 @@ mod tests {
         assert_eq!(prefs.default_encoding, "UTF-8");
         assert!(!prefs.default_bom);
         assert!(prefs.indent_guides, "indent guides default on");
+        assert!(
+            prefs.suspicious_chars,
+            "suspicious character audit default on"
+        );
     }
 
     #[test]
@@ -112,6 +128,7 @@ mod tests {
             word_wrap: false,
             show_invisibles: true,
             indent_guides: false,
+            suspicious_chars: false,
             extension_encodings: vec![("txt".into(), "Big5".into())],
         };
         let json = serde_json::to_vec(&prefs).unwrap();
@@ -123,6 +140,7 @@ mod tests {
         assert_eq!(back.default_encoding, "Big5");
         assert!(back.show_invisibles);
         assert!(!back.indent_guides);
+        assert!(!back.suspicious_chars);
         assert_eq!(
             back.extension_encodings,
             vec![("txt".to_string(), "Big5".to_string())]
@@ -198,6 +216,33 @@ mod tests {
         assert_eq!(prefs.font_family, "SF Mono");
         assert_eq!(prefs.language, "zh-TW");
         assert!(prefs.show_invisibles);
+    }
+
+    /// `suspicious_chars` was added after `indent_guides` (v0.4 Track A); an
+    /// old `preferences.json` written before it existed has no such key.
+    /// Like `indent_guides` above (and unlike `show_invisibles`), this
+    /// defaults to `true` — `serde(default)` falls back to the whole
+    /// struct's `Default::default()` for any missing field, so this only
+    /// holds because `Preferences::default()` sets `suspicious_chars: true`.
+    #[test]
+    fn old_preferences_json_without_suspicious_chars_loads_with_default_true() {
+        let json = r#"{
+            "fontFamily": "SF Mono",
+            "fontSize": 15,
+            "theme": "dark",
+            "language": "zh-TW",
+            "defaultEncoding": "Big5",
+            "defaultBom": false,
+            "wordWrap": false,
+            "showInvisibles": true,
+            "indentGuides": false
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert!(prefs.suspicious_chars, "missing key must default to true");
+        assert_eq!(prefs.font_family, "SF Mono");
+        assert_eq!(prefs.language, "zh-TW");
+        assert!(prefs.show_invisibles);
+        assert!(!prefs.indent_guides);
     }
 
     /// `language` accepts "en", "zh-TW", "ja", and "zh-CN" and round-trips

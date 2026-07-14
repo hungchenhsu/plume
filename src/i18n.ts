@@ -32,6 +32,7 @@ export interface Messages {
   "statusbar.textStats": (words: number, chars: number, lines: number) => string;
   "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
   "statusbar.charInspector": (char: string, codepoint: string) => string;
+  "statusbar.suspiciousChars": (count: number) => string;
 
   "confirm.unsavedChanges": (title: string) => string;
   "confirm.dontSave": string;
@@ -238,6 +239,7 @@ const en: Messages = {
     `Selected: ${words} word${words === 1 ? "" : "s"}, ${chars} char${chars === 1 ? "" : "s"}, ` +
     `${lines} line${lines === 1 ? "" : "s"}`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
+  "statusbar.suspiciousChars": (count) => `⚠ ${count} suspicious char${count === 1 ? "" : "s"}`,
 
   "confirm.unsavedChanges": (title) => `"${title}" has unsaved changes.`,
   "confirm.dontSave": "Don't Save",
@@ -471,6 +473,7 @@ const zhTW: Messages = {
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已選取：${words} 詞、${chars} 字元、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
+  "statusbar.suspiciousChars": (count) => `⚠ ${count} 可疑字元`,
 
   "confirm.unsavedChanges": (title) => `「${title}」有未儲存的變更。`,
   "confirm.dontSave": "不要儲存",
@@ -688,6 +691,7 @@ const ja: Messages = {
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
+  "statusbar.suspiciousChars": (count) => `⚠ 疑わしい文字 ${count} 件`,
 
   "confirm.unsavedChanges": (title) => `「${title}」には保存されていない変更があります。`,
   "confirm.dontSave": "保存しない",
@@ -918,6 +922,7 @@ const zhCN: Messages = {
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已选择：${words} 词、${chars} 字符、${lines} 行`,
   "statusbar.charInspector": (char, codepoint) => `${char}  ${codepoint}`,
+  "statusbar.suspiciousChars": (count) => `⚠ ${count} 可疑字符`,
 
   "confirm.unsavedChanges": (title) => `“${title}”有未保存的更改。`,
   "confirm.dontSave": "不保存",

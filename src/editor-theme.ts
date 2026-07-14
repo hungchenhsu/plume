@@ -152,6 +152,23 @@ const baseTheme = EditorView.theme({
     userSelect: "none",
     pointerEvents: "none",
   },
+  // Suspicious/invisible character audit (editor.ts's
+  // `suspiciousCharsExtension`; ROADMAP.md v0.4 Track A) — the bracketed
+  // "[RLO]"/"[ZWSP]"-style labels editor.ts's custom `highlightSpecialChars`
+  // render callback produces. Same warning tokens as the status-bar
+  // decode-error/read-only/indexing badges (styles.css `#status-warning,
+  // #status-readonly, #status-indexing`) and charinspect.ts's
+  // `.charinspect-lossy` — this lives here rather than in styles.css
+  // because it is a CM6-rendered element (`.cm-*` class), and this file is
+  // where every other CM6 decoration class's styling lives (`.cm-eol-marker`
+  // above, `.cm-indent-guide`/`.cm-bookmark-marker` below), keeping
+  // CodeMirror usage isolated per ARCHITECTURE.md.
+  ".cm-suspicious-char": {
+    color: "var(--warning)",
+    backgroundColor: "var(--warning-soft)",
+    borderRadius: "2px",
+    padding: "0 2px",
+  },
   // Indent guides (editor.ts's `indentGuidePlugin` ViewPlugin; ROADMAP.md
   // Track C / issue #74). Each qualifying line (non-blank, with at least
   // one full tabSize-wide run of leading whitespace) gets this class plus
