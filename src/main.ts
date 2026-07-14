@@ -109,6 +109,10 @@ const tabs = new TabStore(document.querySelector<HTMLElement>("#tabbar")!, {
   onSelect: (id) => activate(id),
   onClose: (id) => void closeTab(id),
   onNew: () => newTab(),
+  // Drag-to-reorder changes tab order, which is what session restore
+  // replays on next launch — persist immediately, same timing as every
+  // other order-affecting tab operation (activate/closeTab/openFile).
+  onReorder: () => persistSession(),
 });
 
 // ---- Word/char/line count status-bar segment (ROADMAP.md v0.4 Track C).
