@@ -16,6 +16,7 @@ mod lineindex;
 mod menu;
 mod mojibake;
 mod normalize;
+mod openfile_probe;
 mod prefs;
 mod recent;
 mod search;
@@ -646,6 +647,8 @@ pub fn run() {
             streamconvert::stream_convert_file,
             charinspect::encode_char,
             normalize::check_representable,
+            openfile_probe::openfile_probe_path,
+            openfile_probe::report_openfile_ready,
             startup_probe::report_startup_ready
         ])
         .build(tauri::generate_context!())
