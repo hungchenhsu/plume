@@ -249,6 +249,18 @@ cases of "never misrepresent user text")
   user had just explicitly discarded. `dropBackup` extracted out of
   main.ts (not unit-testable directly) into its own tested `backup.ts`
   module, mirroring the `savecompletion.ts` (#112) extraction [danger]
+- [x] #117: batch conversion's 10 MiB size guard was a TOCTOU — the
+  metadata size check and the full `read_to_end` were separate steps, so
+  a file that grew past the cap between them still got read in full.
+  `read_for_conversion` (`batch.rs`) is now split into
+  `open_for_conversion` (metadata fast-path check + fingerprint) and
+  `bounded_read`/`take_bounded` (the real guard: `Read::take(MAX_FILE_SIZE
+  + 1)`, same technique as the #59/#69 large-file preview read), so the
+  actual bytes pulled into memory are capped regardless of what the file
+  grows to after the metadata check. Regression test grows the file
+  through a second handle after the check passes and asserts the read
+  stops at the take-limit sentinel, not the file's real (larger) size
+  [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
