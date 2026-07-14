@@ -12,6 +12,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     lineEnding: "LF",
     malformed: false,
     dirty: false,
+    revision: 0,
     truncated: false,
     totalSize: 0,
     chunkOffset: 0,

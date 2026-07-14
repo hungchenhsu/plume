@@ -58,6 +58,7 @@ import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
+import { decideSaveCompletion } from "./savecompletion";
 import { showStreamReplace } from "./streamreplace";
 import {
   adjustFontSize,
@@ -86,6 +87,13 @@ const defaultLineEnding = navigator.userAgent.includes("Windows")
 
 let nextId = 1;
 let untitledCounter = 0;
+/** Single app-wide sequence for Doc.revision (issue #112) — shared across
+ *  all docs rather than a per-doc counter starting at 0, so that resetting
+ *  a doc's revision on open/reload/reopen always draws a value strictly
+ *  greater than anything assigned before, and can never spuriously match a
+ *  stale revisionAtStart snapshot a concurrent saveFlow captured earlier
+ *  (see tabs.ts Doc.revision and savecompletion.ts). */
+let nextRevision = 1;
 
 const tabs = new TabStore(document.querySelector<HTMLElement>("#tabbar")!, {
   onSelect: (id) => activate(id),
@@ -99,6 +107,10 @@ const editor = createEditor(
     const doc = tabs.active;
     // Programmatic chunk appends must not mark read-only previews dirty.
     if (doc && !doc.truncated) {
+      // Bumped unconditionally (not just on the clean->dirty transition
+      // below) so a saveFlow already in flight can tell a later edit
+      // happened even though the doc was already dirty (issue #112).
+      doc.revision = nextRevision++;
       if (!doc.dirty) {
         doc.dirty = true;
         tabs.render();
@@ -183,6 +195,7 @@ function makeUntitled(): Doc {
     lineEnding: defaultLineEnding,
     malformed: false,
     dirty: false,
+    revision: 0,
     truncated: false,
     totalSize: 0,
     chunkOffset: 0,
@@ -289,6 +302,7 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     lineEnding: opened.lineEnding,
     malformed: opened.malformed,
     dirty: false,
+    revision: 0,
     truncated: opened.truncated,
     totalSize: opened.totalSize,
     chunkOffset: 0,
@@ -659,6 +673,10 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
+    // A fresh baseline unrelated to whatever a still-in-flight saveFlow
+    // snapshotted before this reload — draws a new value from the shared
+    // sequence rather than resetting to a fixed 0 (issue #112).
+    doc.revision = nextRevision++;
     doc.fingerprint = opened.fingerprint;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
@@ -768,6 +786,11 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
   }
   try {
     const content = editor.content();
+    // Snapshotted alongside content (issue #112): if doc.revision no
+    // longer matches this once the save resolves, an edit landed while
+    // the IPC round trip (including the lossy/stale retries below, which
+    // reuse this same snapshot rather than re-reading it) was in flight.
+    const revisionAtStart = doc.revision;
     const saveParams = {
       path,
       content,
@@ -831,7 +854,18 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
     // run any of the success side effects below.
     if (!result.written) return false;
     recentSaves.set(path, Date.now());
-    dropBackup(doc);
+    // Checked before this flow's own Save As (below) reassigns doc.path —
+    // true only if some concurrent flow already moved this doc to a
+    // different path while this save's IPC round trip was in flight
+    // (issue #112; see savecompletion.ts's pathChanged doc comment).
+    const pathChanged = doc.path !== oldPath;
+    const completion = decideSaveCompletion({
+      written: result.written,
+      stale: result.stale,
+      revisionAtStart,
+      currentRevision: doc.revision,
+      pathChanged,
+    });
     if (oldPath !== path) {
       if (oldPath) void unwatchFile(oldPath).catch(() => {});
       void watchFile(path).catch(() => {});
@@ -840,8 +874,17 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
     const titleChanged = doc.title !== basename(path);
     doc.path = path;
     doc.title = basename(path);
-    doc.dirty = false;
-    doc.fingerprint = result.fingerprint;
+    // The disk now holds exactly what this call wrote, so the fingerprint
+    // baseline updates regardless of the revision/path guard below (issue
+    // #113's staleness check needs this or it would misfire next save).
+    if (completion.updateFingerprint) doc.fingerprint = result.fingerprint;
+    // Only when nothing new landed mid-flight is it safe to call this
+    // content saved: clear dirty and let the backup cycle stop covering
+    // it. Otherwise dirty and the backup must survive so hot exit keeps
+    // covering the newer, still-unsaved edits (issue #112) — no retry, no
+    // dialog; the next explicit Save naturally writes the newer content.
+    if (completion.clearDirty) doc.dirty = false;
+    if (completion.dropBackup) dropBackup(doc);
     // Mixed line endings are written out as LF by the core.
     if (doc.lineEnding === "Mixed") doc.lineEnding = "LF";
     tabs.render();
@@ -880,6 +923,8 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
+    // Same fresh-baseline reasoning as reloadFromDisk (issue #112).
+    doc.revision = nextRevision++;
     doc.fingerprint = opened.fingerprint;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
@@ -1383,6 +1428,7 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     lineEnding: file.lineEnding || defaultLineEnding,
     malformed: false,
     dirty: true,
+    revision: 0,
     truncated: false,
     totalSize: 0,
     chunkOffset: 0,
@@ -1447,6 +1493,7 @@ async function restoreSession(): Promise<void> {
       lineEnding: defaultLineEnding,
       malformed: false,
       dirty: true,
+      revision: 0,
       truncated: false,
       totalSize: 0,
       chunkOffset: 0,

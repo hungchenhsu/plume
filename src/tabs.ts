@@ -12,6 +12,16 @@ export interface Doc {
   lineEnding: string;
   malformed: boolean;
   dirty: boolean;
+  /** Monotonically increasing counter drawn from a single app-wide sequence
+   *  (never reset to a fixed 0), bumped on every editor doc-change and on
+   *  open/reload/reopen (main.ts). A saveFlow snapshots this right before
+   *  its IPC round trip; if it no longer matches once the save resolves,
+   *  an edit landed while the write was in flight, so dirty/backup must
+   *  survive the completion handler instead of being cleared (issue #112)
+   *  — see savecompletion.ts. Drawing resets from the shared sequence
+   *  rather than a fixed 0 means a stale snapshot can never spuriously
+   *  match a post-reset value. */
+  revision: number;
   /** Read-only preview of a large file; saving is disabled. */
   truncated: boolean;
   totalSize: number;

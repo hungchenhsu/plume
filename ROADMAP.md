@@ -229,6 +229,11 @@ cases of "never misrepresent user text")
   shared `fsguard.rs` module extracted from the streaming-replace guard
   (#94/#102), reused as-is. Frontend offers Reload/Overwrite/Cancel on
   conflict [danger]
+- [x] #112: save completion is gated on a per-document revision snapshot —
+  edits made while a save is in flight keep the tab dirty and keep the
+  hot-exit backup instead of being silently marked as saved (pure
+  decision table in `savecompletion.ts`, exhaustively unit-tested)
+  [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
