@@ -423,9 +423,22 @@ cases of "never misrepresent user text")
   classification (`batch.rs`'s scan report) is untouched -- out of scope;
   per-file lossy flags already exist there and this item only concerns the
   single-document save dialog.
-- [ ] UTF-8 BOM toggle gap check: verify whether add/remove BOM on an
-  existing UTF-8 file has a user-level path; close the gap only if it
-  is real [danger]
+- [x] UTF-8 BOM toggle gap check: verified no gap, no code change needed.
+  The status bar's encoding indicator already opens a "Save with
+  Encoding" submenu (`main.ts` `showEncodingMenu`, `menu.saveWithEncoding`)
+  listing "UTF-8" and "UTF-8 with BOM" as two distinct, independently
+  checkable entries (`encodings.ts` `encodingChoices` — `{value: "UTF-8",
+  withBom: false}` vs `{value: "UTF-8", withBom: true}`, localized in all
+  four locales); picking either sets `doc.withBom` and immediately saves
+  through it, so an existing UTF-8 file's BOM can be added or removed
+  today without reopening. This reaches `save_document`'s `with_bom`
+  param unchanged and `encoding::encode`, which prepends `EF BB BF` only
+  when `with_bom && encoding == UTF_8` — confirmed live via the existing
+  `cargo test --lib bom` (19 tests) and `npm test` (565 tests) suites,
+  both green with no changes. UTF-16 choices stay BOM-only (no `false`
+  variant offered, so the UI can't write a BOM-less UTF-16 file) and
+  single-byte/legacy encodings offer no BOM entry at all — both already
+  correct, not touched.
 
 **Track B — large files & performance**
 - [x] #107: transformLines computes line spans via lineAt instead of
