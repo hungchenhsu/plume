@@ -22,6 +22,8 @@ mod search;
 mod session;
 mod startup_probe;
 mod store;
+mod streamcodec;
+mod streamconvert;
 mod streamreplace;
 mod watcher;
 
@@ -641,6 +643,7 @@ pub fn run() {
             batch::execute_batch_conversion,
             comparepreview::preview_two_encodings,
             streamreplace::stream_replace_in_file,
+            streamconvert::stream_convert_file,
             charinspect::encode_char,
             normalize::check_representable,
             startup_probe::report_startup_ready

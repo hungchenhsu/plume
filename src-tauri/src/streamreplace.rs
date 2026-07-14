@@ -35,97 +35,27 @@
 //! this module's byte-offset bookkeeping; restricting folding to ASCII
 //! (where upper/lower always occupy exactly one byte each) sidesteps that
 //! trap entirely rather than working around it.
+//!
+//! The per-chunk decode/encode primitives (`decode_chunk`/`encode_chunk`/
+//! `read_chunk`/`CHUNK_BYTES`) now live in `streamcodec.rs`, shared with
+//! `streamconvert.rs`'s streaming encoding-conversion command (ROADMAP.md
+//! v0.4 Track B) — extracted the same way `fsguard.rs` was pulled out of
+//! this module for a second caller. Only the search/replace-specific
+//! looping and carry semantics (`run_replace_loop`, `replace_pass`) stay
+//! here.
 
 use crate::fsguard::Fingerprint;
-use encoding_rs::{CoderResult, Decoder, Encoder, Encoding, UTF_16BE, UTF_16LE};
+use crate::streamcodec::{decode_chunk, encode_chunk, read_chunk, CHUNK_BYTES};
+use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
 use serde::Serialize;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-
-/// Source-side read granularity: large enough that per-chunk overhead is
-/// negligible even for multi-GB files, small enough that memory use stays
-/// bounded and predictable regardless of file size.
-const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamReplaceReport {
     pub replacements: u64,
     pub bytes_written: u64,
-}
-
-/// Fill `buf` as full as possible from `file`, short-reading only at EOF.
-/// Mirrors `chunk.rs`'s private `read_up_to`; not reused directly since
-/// that helper isn't `pub(crate)` and duplicating a handful of lines here
-/// is cheaper than widening its visibility for one extra caller.
-fn read_chunk(file: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
-    let mut total = 0;
-    loop {
-        let n = file.read(&mut buf[total..])?;
-        if n == 0 || total + n == buf.len() {
-            return Ok(total + n);
-        }
-        total += n;
-    }
-}
-
-/// Decode `raw` with `decoder`, growing the output buffer as needed so the
-/// whole input is consumed in one logical call. `decode_to_string` only
-/// fills up to the destination's *current* capacity and reports
-/// `OutputFull` rather than growing it itself, so a plain single call
-/// without this loop could silently leave part of `raw` unconsumed.
-/// Returns the decoded text and whether any malformed byte sequence was
-/// replaced with U+FFFD along the way (the caller treats that as a fatal,
-/// abort-the-whole-run condition — see `run_replace_loop`).
-fn decode_chunk(decoder: &mut Decoder, mut raw: &[u8], is_last: bool) -> (String, bool) {
-    let mut out = String::with_capacity(
-        decoder
-            .max_utf8_buffer_length(raw.len())
-            .unwrap_or_else(|| raw.len().saturating_mul(3) + 32),
-    );
-    let mut had_errors = false;
-    loop {
-        let (result, read, errors) = decoder.decode_to_string(raw, &mut out, is_last);
-        had_errors |= errors;
-        raw = &raw[read..];
-        match result {
-            CoderResult::InputEmpty => return (out, had_errors),
-            CoderResult::OutputFull => {
-                let needed = decoder
-                    .max_utf8_buffer_length(raw.len())
-                    .unwrap_or_else(|| raw.len().saturating_mul(3) + 32);
-                out.reserve(needed);
-            }
-        }
-    }
-}
-
-/// Encode `text` with `encoder`, growing the output buffer as needed — the
-/// encode-side mirror of `decode_chunk`, same rationale. Returns the
-/// encoded bytes and whether any unmappable character was hit (the caller
-/// treats this as a defensive, should-never-happen abort condition; see
-/// `stream_replace_in_file`'s doc comment, point 5).
-fn encode_chunk(encoder: &mut Encoder, mut text: &str, is_last: bool) -> (Vec<u8>, bool) {
-    let mut out = Vec::with_capacity(
-        encoder
-            .max_buffer_length_from_utf8_if_no_unmappables(text.len())
-            .unwrap_or_else(|| text.len().saturating_mul(4) + 32),
-    );
-    let mut had_unmappable = false;
-    loop {
-        let (result, read, unmappable) = encoder.encode_from_utf8_to_vec(text, &mut out, is_last);
-        had_unmappable |= unmappable;
-        text = &text[read..];
-        match result {
-            CoderResult::InputEmpty => return (out, had_unmappable),
-            CoderResult::OutputFull => {
-                let needed = encoder
-                    .max_buffer_length_from_utf8_if_no_unmappables(text.len())
-                    .unwrap_or_else(|| text.len().saturating_mul(4) + 32);
-                out.reserve(needed);
-            }
-        }
-    }
 }
 
 /// Result of one [`replace_pass`] over a work buffer.

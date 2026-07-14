@@ -652,6 +652,56 @@ export function streamReplaceInFile(
   });
 }
 
+export interface StreamConvertReport {
+  /** False only on the lossy-rejection branch (`lossyReport` populated,
+   *  unmappable characters found and `allowLossy` was false) — nothing was
+   *  written and the file on disk is exactly as it was. */
+  written: boolean;
+  bytesWritten: number;
+  /** Populated only when `written` is false — same shape `saveDocument`'s
+   *  own lossy rejection uses (`LossyReport`), so `showLossySaveConfirm`
+   *  (src/lossysave.ts) drives this exactly like the regular save path's
+   *  lossy gate. `null` on every other result. */
+  lossyReport: LossyReport | null;
+}
+
+/**
+ * Convert an entire file on disk from `sourceEncoding` to
+ * `targetEncoding`/`targetWithBom`, streamed in bounded chunks on the Rust
+ * side (see src-tauri/src/streamconvert.rs) so memory use stays flat
+ * regardless of file size — the large-file preview window's equivalent of
+ * "Save with Encoding", since only a bounded slice of the file is ever
+ * loaded into the editor. `sourceEncoding` should be the document's own
+ * detected encoding (`doc.encoding`), used to decode; this never guesses.
+ *
+ * Call with `allowLossy: false` first. If `targetEncoding` can't represent
+ * some characters, the result comes back with `written: false` and a
+ * populated `lossyReport` (identical shape to `saveDocument`'s own — see
+ * `showLossySaveConfirm`), and the file on disk is left untouched.
+ * Re-invoke with `allowLossy: true` (only after explicit user confirmation)
+ * to write the lossy bytes — this re-streams the whole file again, since
+ * the first call's work was discarded rather than committed.
+ *
+ * Rejects for a UTF-16LE/BE *target* encoding (no streaming UTF-16 encoder
+ * — see the Rust module doc comment); a UTF-16 *source* is fully
+ * supported, decoded through the ordinary streaming decoder.
+ */
+export function streamConvertFile(
+  path: string,
+  sourceEncoding: string,
+  targetEncoding: string,
+  targetWithBom: boolean,
+  allowLossy: boolean,
+): Promise<StreamConvertReport> {
+  return invoke<StreamConvertReport>("stream_convert_file", {
+    path,
+    sourceEncoding,
+    targetEncoding,
+    targetWithBom,
+    allowLossy,
+  });
+}
+
 export interface EncodeCharResult {
   /** Uppercase, space-separated hex byte pairs, e.g. "E4 B8 AD". Empty
    *  when `lossy` is true — never encoding_rs's own HTML numeric-character-

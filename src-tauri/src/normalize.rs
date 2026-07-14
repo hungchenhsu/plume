@@ -78,7 +78,10 @@ pub struct RepresentabilityReport {
     pub samples_truncated: bool,
 }
 
-fn format_sample(ch: char) -> String {
+/// `pub(crate)` so `streamconvert.rs`'s streaming lossy report (ROADMAP.md
+/// v0.4 Track B) can format its own samples with the exact same "char
+/// (U+XXXX)" convention rather than re-deriving it.
+pub(crate) fn format_sample(ch: char) -> String {
     format!("{ch} (U+{:04X})", ch as u32)
 }
 
@@ -128,63 +131,138 @@ pub struct LossySaveReport {
 /// character itself. Shared internal representation for both public report
 /// types below -- `check_representability` discards the position,
 /// `lossy_save_report` keeps it (see the module doc for why they differ).
-struct UnmappableHit {
-    ch: char,
-    line: usize,
-    column: usize,
+#[derive(Debug)]
+pub(crate) struct UnmappableHit {
+    pub(crate) ch: char,
+    pub(crate) line: usize,
+    pub(crate) column: usize,
 }
 
-/// The actual character-by-character scan both `check_representability` and
-/// `lossy_save_report` are built from: walks `text` once, probing each
-/// Unicode scalar value's representability in `encoding` exactly like
-/// `encoding::encode` does at real save/normalize time, and returns the
-/// total per-occurrence unmappable count, up to `SAMPLE_CAP`
-/// first-encountered distinct-character hits (each carrying its own 1-based
-/// line/column), and whether distinct characters overflowed the cap.
-///
-/// Line/column increment on every `\n` -- callers must pass an
-/// LF-normalized `text` (never a CRLF/CR-converted save buffer) for these
-/// positions to correspond to anything the editor itself shows (see
-/// `lossy_save_report`'s doc comment). Column counts UTF-16 code units, not
-/// Unicode scalar values: this deliberately matches the frontend's own
-/// position convention (CM6's `Text` offsets are UTF-16 code units --
-/// `editor.ts`'s `onCursorMoved` computes the status bar's "Ln/Col" the
-/// same way, `head - line.from`), so a supplementary-plane character (e.g.
-/// an astral emoji) earlier on the same line advances the column by 2, not
-/// 1 -- otherwise a sample reported as "Col 14" here could disagree with
-/// what the user sees by placing the cursor at that exact character.
-fn scan_unmappable(text: &str, encoding: &'static Encoding) -> (usize, Vec<UnmappableHit>, bool) {
-    let mut unmappable_count = 0usize;
+/// Incremental version of the character-by-character scan both
+/// `check_representability` and `lossy_save_report` are built from --
+/// `scan_unmappable` below is now a thin wrapper that feeds its whole input
+/// as a single chunk. Split out (ROADMAP.md v0.4 Track B) so
+/// `streamconvert.rs`'s streaming encoding conversion can feed it one
+/// already-decoded chunk of a multi-GB file at a time -- never
+/// materializing more than one streaming chunk of text at once -- while
+/// still producing exactly the same aggregated report (count, up to
+/// `SAMPLE_CAP` first-encountered distinct-character samples with position,
+/// and a truncated flag) a single whole-string scan would. `feed` may be
+/// called any number of times before `finish`; line/column tracking and the
+/// sample cap/dedup state carry across calls exactly as if the whole
+/// concatenated input had been fed in one call (locked by
+/// `chunked_feed_matches_whole_string_scan`).
+pub(crate) struct UnmappableScanner {
+    encoding: &'static Encoding,
+    unmappable_count: usize,
     // Distinct characters already sampled, in first-encountered order. A
     // plain Vec + linear search beats a HashSet here: it caps at SAMPLE_CAP
     // (20) entries, keeps insertion order for free, and the linear scan
     // only runs for characters already known unmappable.
-    let mut hits: Vec<UnmappableHit> = Vec::new();
-    let mut samples_truncated = false;
-    let mut line = 1usize;
-    let mut column = 1usize;
-    let mut buf = [0u8; 4];
-    for ch in text.chars() {
-        let s: &str = ch.encode_utf8(&mut buf);
-        let (_, _, had_unmappable) = encoding.encode(s);
-        if had_unmappable {
-            unmappable_count += 1;
-            if !hits.iter().any(|hit| hit.ch == ch) {
-                if hits.len() < SAMPLE_CAP {
-                    hits.push(UnmappableHit { ch, line, column });
-                } else {
-                    samples_truncated = true;
-                }
-            }
-        }
-        if ch == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += ch.len_utf16();
+    hits: Vec<UnmappableHit>,
+    samples_truncated: bool,
+    line: usize,
+    column: usize,
+}
+
+impl UnmappableScanner {
+    pub(crate) fn new(encoding: &'static Encoding) -> Self {
+        Self {
+            encoding,
+            unmappable_count: 0,
+            hits: Vec::new(),
+            samples_truncated: false,
+            line: 1,
+            column: 1,
         }
     }
-    (unmappable_count, hits, samples_truncated)
+
+    /// Probe every Unicode scalar value in `text` for representability in
+    /// this scanner's encoding exactly like `encoding::encode` does at real
+    /// save/normalize time, updating the running count/samples/position
+    /// state. `text` need not start or end on any particular boundary
+    /// beyond being valid UTF-8 (guaranteed for any `&str`) -- it is simply
+    /// the next piece of a larger logical document, decoded text or
+    /// otherwise.
+    ///
+    /// Line/column increment on every `\n` -- callers must feed
+    /// LF-normalized text (never a CRLF/CR-converted save buffer) for these
+    /// positions to correspond to anything the editor itself shows (see
+    /// `lossy_save_report`'s doc comment). Column counts UTF-16 code units,
+    /// not Unicode scalar values: this deliberately matches the frontend's
+    /// own position convention (CM6's `Text` offsets are UTF-16 code units
+    /// -- `editor.ts`'s `onCursorMoved` computes the status bar's "Ln/Col"
+    /// the same way, `head - line.from`), so a supplementary-plane
+    /// character (e.g. an astral emoji) earlier on the same line advances
+    /// the column by 2, not 1 -- otherwise a sample reported as "Col 14"
+    /// here could disagree with what the user sees by placing the cursor at
+    /// that exact character.
+    pub(crate) fn feed(&mut self, text: &str) {
+        let mut buf = [0u8; 4];
+        for ch in text.chars() {
+            let s: &str = ch.encode_utf8(&mut buf);
+            let (_, _, had_unmappable) = self.encoding.encode(s);
+            if had_unmappable {
+                self.unmappable_count += 1;
+                if !self.hits.iter().any(|hit| hit.ch == ch) {
+                    if self.hits.len() < SAMPLE_CAP {
+                        self.hits.push(UnmappableHit {
+                            ch,
+                            line: self.line,
+                            column: self.column,
+                        });
+                    } else {
+                        self.samples_truncated = true;
+                    }
+                }
+            }
+            self.advance_position(ch);
+        }
+    }
+
+    /// Cheaper sibling of [`Self::feed`] for a chunk the caller has already
+    /// established (via some cheaper bulk check -- see
+    /// `streamconvert.rs::run_convert_loop`) contains *no* unmappable
+    /// characters at all: advances line/column tracking the same way `feed`
+    /// does, without the per-character `encoding.encode()` representability
+    /// probe. Mixing `feed` and `advance_position_only` calls across a
+    /// document's chunks in any pattern must produce exactly the same
+    /// aggregate result `feed` alone would over the concatenated text, since
+    /// position tracking is identical either way and a chunk this is called
+    /// on is (by the caller's own precondition) never going to contribute a
+    /// hit regardless of which method walks it (locked by
+    /// `advance_position_only_then_feed_matches_whole_feed`). Calling this
+    /// on a chunk that *does* contain an unmappable character silently
+    /// undercounts it -- correctness depends entirely on the caller's
+    /// precondition holding.
+    pub(crate) fn advance_position_only(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.advance_position(ch);
+        }
+    }
+
+    fn advance_position(&mut self, ch: char) {
+        if ch == '\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += ch.len_utf16();
+        }
+    }
+
+    pub(crate) fn finish(self) -> (usize, Vec<UnmappableHit>, bool) {
+        (self.unmappable_count, self.hits, self.samples_truncated)
+    }
+}
+
+/// Whole-string convenience wrapper over [`UnmappableScanner`] for the two
+/// callers below, which already have their entire candidate text in memory
+/// at once (a not-yet-applied normalization plan, or the actual save
+/// buffer) and have no need to feed it in pieces.
+fn scan_unmappable(text: &str, encoding: &'static Encoding) -> (usize, Vec<UnmappableHit>, bool) {
+    let mut scanner = UnmappableScanner::new(encoding);
+    scanner.feed(text);
+    scanner.finish()
 }
 
 /// Every Unicode scalar value round-trips through UTF-8 and UTF-16 by
@@ -194,7 +272,9 @@ fn scan_unmappable(text: &str, encoding: &'static Encoding) -> (usize, Vec<Unmap
 /// `str::chars()`) can never produce in the first place. Shared fast path
 /// for both public entry points below: skipping the per-character scan for
 /// these targets is correctness-preserving, not just an optimization.
-fn is_always_representable(encoding: &Encoding) -> bool {
+/// `pub(crate)` so `streamconvert.rs` can apply the exact same fast path
+/// before ever opening the source file.
+pub(crate) fn is_always_representable(encoding: &Encoding) -> bool {
     encoding == UTF_8 || encoding == UTF_16LE || encoding == UTF_16BE
 }
 
@@ -609,5 +689,98 @@ mod tests {
         assert_eq!(report.unmappable_count, 0);
         assert!(report.samples.is_empty());
         assert!(!report.samples_truncated);
+    }
+
+    /// Locks the actual chunking contract `streamconvert.rs` depends on
+    /// (ROADMAP.md v0.4 Track B): feeding the same text through
+    /// `UnmappableScanner` in arbitrary pieces must produce exactly the
+    /// result a single whole-string `scan_unmappable` call would --
+    /// including deduping a repeated character whose first occurrence was
+    /// in an earlier chunk, and keeping `samples_truncated` sticky once the
+    /// cap is reached partway through a later chunk. Split points are
+    /// chosen by *character* index (never a raw byte offset, which could
+    /// land mid-character for these 2-byte-in-UTF-8 combining marks and
+    /// panic the slice) to isolate this test to the chunking contract
+    /// itself, not char-boundary bookkeeping.
+    #[test]
+    fn chunked_feed_matches_whole_string_scan() {
+        let mut text = String::new();
+        text.push_str("prefix e\u{0301} middle\n"); // line 1: one distinct hit (U+0301)
+                                                    // 25 more distinct combining marks, past SAMPLE_CAP (20), on line 2.
+        for cp in 0x0310u32..0x0310 + 25 {
+            text.push(char::from_u32(cp).unwrap());
+        }
+        text.push('\u{0301}'); // repeat of line 1's hit -- must not re-sample
+        text.push('\n');
+        text.push_str("tail"); // representable, must never appear in any sample
+
+        let (whole_count, whole_hits, whole_truncated) = scan_unmappable(&text, encoding_rs::BIG5);
+        assert_eq!(whole_count, 27, "{whole_hits:?}");
+        assert!(whole_truncated);
+        let whole_hits: Vec<_> = whole_hits
+            .into_iter()
+            .map(|h| (h.ch, h.line, h.column))
+            .collect();
+
+        let boundaries: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        let n = boundaries.len();
+        let split_char_counts: [Vec<usize>; 4] = [
+            vec![],
+            vec![n / 2],
+            vec![n / 4, n / 2],
+            vec![1, n / 3, n * 2 / 3, n - 2],
+        ];
+
+        for splits in split_char_counts {
+            let mut scanner = UnmappableScanner::new(encoding_rs::BIG5);
+            let mut last = 0usize;
+            for &at in &splits {
+                let point = boundaries[at];
+                scanner.feed(&text[last..point]);
+                last = point;
+            }
+            scanner.feed(&text[last..]);
+            let (count, hits, truncated) = scanner.finish();
+            let hits: Vec<_> = hits.into_iter().map(|h| (h.ch, h.line, h.column)).collect();
+            assert_eq!(count, whole_count, "splits {splits:?}");
+            assert_eq!(hits, whole_hits, "splits {splits:?}");
+            assert_eq!(truncated, whole_truncated, "splits {splits:?}");
+        }
+    }
+
+    /// Locks the exact mixed-call pattern `streamconvert.rs::run_convert_loop`
+    /// uses (ROADMAP.md v0.4 Track B): a chunk with no unmappable characters
+    /// takes the cheap `advance_position_only` path (skipping the
+    /// per-character representability probe), while a chunk that does have
+    /// one still goes through the full `feed`. Position tracking must stay
+    /// correct across the switch -- an unmappable character in a later
+    /// chunk must still report the right line/column even though an
+    /// earlier, larger "clean" chunk only ever advanced position, never
+    /// probed representability.
+    #[test]
+    fn advance_position_only_then_feed_matches_whole_feed() {
+        let clean_prefix = "plain ASCII line one\nplain ASCII line two\n";
+        let dirty_middle = "e\u{0301} has a combining mark\n";
+        let clean_suffix = "trailing plain text, no marks here";
+        let text = format!("{clean_prefix}{dirty_middle}{clean_suffix}");
+
+        let (whole_count, whole_hits, whole_truncated) = scan_unmappable(&text, encoding_rs::BIG5);
+        let whole_hits: Vec<_> = whole_hits
+            .into_iter()
+            .map(|h| (h.ch, h.line, h.column))
+            .collect();
+
+        let mut scanner = UnmappableScanner::new(encoding_rs::BIG5);
+        scanner.advance_position_only(clean_prefix);
+        scanner.feed(dirty_middle);
+        scanner.advance_position_only(clean_suffix);
+        let (count, hits, truncated) = scanner.finish();
+        let hits: Vec<_> = hits.into_iter().map(|h| (h.ch, h.line, h.column)).collect();
+
+        assert_eq!(count, whole_count);
+        assert_eq!(hits, whole_hits);
+        assert_eq!(truncated, whole_truncated);
+        assert_eq!(count, 1, "exactly the one combining mark in dirty_middle");
+        assert_eq!(hits[0].1, 3, "dirty_middle starts on line 3");
     }
 }

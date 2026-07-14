@@ -31,3 +31,16 @@ export function encodingChoices(): EncodingChoice[] {
 export function reopenEncodingChoices(): EncodingChoice[] {
   return encodingChoices().filter((e) => !(e.value === "UTF-8" && e.withBom));
 }
+
+/** Choices for the truncated large-file "Convert File to Encoding" flow
+ *  (ROADMAP.md v0.4 Track B, streamconvert.ts): UTF-16 targets excluded,
+ *  since streamconvert.rs's `stream_convert_file` rejects them outright (no
+ *  real `encoding_rs` UTF-16 encoder — see that module's doc comment). A
+ *  UTF-16 *source* is unaffected by this list; it's only ever passed as
+ *  `sourceEncoding`, never chosen from here. Each remaining choice already
+ *  carries its own correct `withBom` (e.g. plain "UTF-8" is `withBom:
+ *  false`), so picking one *is* how the BOM decision is made — there is no
+ *  separate default to compute here. */
+export function streamConvertEncodingChoices(): EncodingChoice[] {
+  return encodingChoices().filter((e) => e.value !== "UTF-16LE" && e.value !== "UTF-16BE");
+}

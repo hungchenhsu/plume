@@ -20,7 +20,7 @@ import {
   textStatsOf,
 } from "./editor";
 import { showCharInspector } from "./charinspect";
-import { encodingChoices, reopenEncodingChoices } from "./encodings";
+import { encodingChoices, reopenEncodingChoices, streamConvertEncodingChoices } from "./encodings";
 import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
@@ -86,6 +86,7 @@ import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
+import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
 import {
   adjustFontSize,
@@ -1529,6 +1530,36 @@ function showEncodingMenu(anchor: HTMLElement): void {
                   doc.withBom = prevWithBom;
                   updateStatusBar(doc);
                 }
+              });
+            },
+          })),
+        ),
+    },
+    {
+      label: t("menu.convertFileToEncoding"),
+      // Only meaningful for a truncated large-file preview: a regular,
+      // fully-loaded document already re-encodes its whole content via
+      // "Save with Encoding" above. UTF-16 as the document's own *current*
+      // encoding is not excluded here (only UTF-16 *targets* are, via
+      // streamConvertEncodingChoices) — the streaming decode side has no
+      // dead end, only the encode side does (streamconvert.rs doc comment).
+      disabled: !doc.truncated,
+      action: () =>
+        showMenu(
+          anchor,
+          streamConvertEncodingChoices().map((e) => ({
+            label: e.label,
+            checked: e.value === doc.encoding && e.withBom === doc.withBom,
+            action: () => {
+              if (!doc.path) return;
+              void runStreamConvert(doc.path, doc.encoding, e, () => {
+                // Set *before* reloadFromDisk (inside runStreamConvert's
+                // onConverted callback), since reloadFromDisk reopens with
+                // whatever doc.encoding already holds — it must already be
+                // the new encoding, not the file's old one.
+                doc.encoding = e.value;
+                doc.withBom = e.withBom;
+                void reloadFromDisk(doc);
               });
             },
           })),

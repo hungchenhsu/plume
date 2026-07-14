@@ -443,11 +443,103 @@ cases of "never misrepresent user text")
 **Track B — large files & performance**
 - [x] #107: transformLines computes line spans via lineAt instead of
   materializing the document
-- [ ] Streaming encoding conversion for large files: >10 MB files
+- [x] Streaming encoding conversion for large files: >10 MB files
   converted via streaming decode→re-encode with atomic temp+rename and
   the same lossy two-stage gate as streaming replace; UTF-16 targets
   excluded (encoder dead end); fail-closed on external modification
-  [danger]
+  [danger]. New `stream_convert_file` (src-tauri/src/streamconvert.rs)
+  mirrors `streamreplace.rs`'s architecture exactly (same atomic
+  temp+rename commit, same `fsguard.rs`-backed fail-closed external-
+  modification guard captured right after opening the source and
+  re-checked immediately before rename) but is a genuinely different loop:
+  source and target encodings are independent parameters rather than one
+  encoding reused for both directions, so there is no cross-chunk *search*
+  carry to track — each decoded chunk is scanned and encoded independently,
+  with the streaming `Decoder` alone responsible for resolving a multi-byte
+  or surrogate-pair sequence split across the raw 8 MiB read boundary. The
+  per-chunk decode/encode primitives (`decode_chunk`/`encode_chunk`/
+  `read_chunk`/`CHUNK_BYTES`) were extracted out of `streamreplace.rs` into
+  a new shared `streamcodec.rs` (a pure, test-verified refactor — all 18
+  pre-existing `streamreplace.rs` tests still pass unchanged) rather than
+  forking that buffer-growth-loop logic a second time, the same
+  "extract for a second caller" precedent `fsguard.rs` itself set. UTF-16 is
+  asymmetric here, unlike streaming replace: only a UTF-16 *target* is
+  rejected (`new_encoder()`'s dead end is encode-side only); a UTF-16
+  *source* decodes through the ordinary streaming `Decoder` with no dead end
+  at all and is fully supported, pinned by a dedicated fixture with a
+  surrogate pair's two code units landing on opposite sides of the exact
+  8 MiB chunk boundary. Two-stage lossy gate mirrors `save_document`'s
+  own two-phase gate (call once with `allowLossy: false`, get a report; call
+  again with `true` to commit) rather than a separate up-front dry-run
+  command: a single streaming pass always fully encodes to a temp file
+  while aggregating an unmappable-character report via
+  `normalize::UnmappableScanner`, fed one already-decoded chunk at a time;
+  a `written: false` result (unmappable found, not yet allowed) discards
+  the temp file without any fingerprint check (nothing was written). The
+  scanner's own sample-cap/dedup/position machinery (previously private to
+  `scan_unmappable`, now a `pub(crate)` incremental struct so it can be fed
+  in pieces) is unchanged in its whole-string callers, `check_representability`
+  and `lossy_save_report` — a pure refactor, both callers' full existing test
+  suites pass unmodified, plus a new chunked-vs-whole-string equivalence
+  test. Performance: the naive version (always running the O(n)
+  per-character representability probe alongside the bulk encode) measured
+  over two minutes for a single ~13 MiB fixture with only 3 unmappable
+  characters; `encode_chunk`'s own bulk `had_unmappable` flag (needed
+  regardless, to produce output bytes) now gates the expensive per-character
+  scan per chunk — a chunk the bulk encode already reports clean only pays
+  for cheap line/column bookkeeping (`UnmappableScanner::advance_position_only`),
+  cutting that same test to under 80s and, more importantly, keeping a
+  realistic large file with only scattered unmappable characters cheap
+  rather than paying the full per-character cost across its entirety.
+  Frontend: truncated tabs get a new "Convert File to Encoding" entry in the
+  status-bar encoding menu (`main.ts`'s `showEncodingMenu`), alongside the
+  existing "Save with Encoding" (left untouched — it already is a dead
+  end for a truncated tab, blocked by the read-only-preview dialog, since
+  the buffer is only a preview slice; this adds the real capability rather
+  than retrofitting that entry), listing `encodings.ts`'s new
+  `streamConvertEncodingChoices()` (the existing `encodingChoices()`, minus
+  the two UTF-16 target entries — each remaining choice already carries its
+  own correct `withBom`, e.g. plain "UTF-8" is `withBom: false`, so picking
+  one *is* the BOM decision, matching how batch conversion's own
+  `target_with_bom` is a caller-supplied flag with no separate default
+  computed on the Rust side). New `src/streamconvert.ts` orchestrates the
+  flow with no persistent input panel (the target is already chosen from
+  the menu) — a minimal non-dismissable busy overlay reusing the existing
+  `.confirm-overlay`/`.confirm-dialog` classes (mirroring streaming
+  replace's "cannot be cancelled mid-run" precedent) during each IPC call,
+  and the *same* `showLossySaveConfirm` dialog (`lossysave.ts`) the regular
+  save path's lossy gate uses for the two-stage confirm, since the Rust
+  report reuses `normalize::LossySaveReport` verbatim. On success,
+  `doc.encoding`/`doc.withBom` are set to the new target *before*
+  `reloadFromDisk` (which reopens with whatever `doc.encoding` already holds) and a
+  confirmation dialog names the result before reloading, mirroring streaming
+  replace's "the result must actually be seen" precedent. i18n across en/
+  zh-TW/ja/zh-CN (`menu.convertFileToEncoding`, `streamConvert.*`). Rust
+  tests (failing-test-first): a >12 MiB Big5→UTF-8 round trip with a filler
+  unit deliberately sized so a CJK character straddles the exact chunk
+  boundary; a small fast test for the dry-run rejection report (count/dedup/
+  position) plus a separate >12 MiB UTF-8→Big5 test committing exactly an
+  independently-built byte oracle under `allowLossy: true` (split from the
+  rejection test so the expensive large-scale encode only runs once, not
+  twice); the UTF-16LE cross-boundary surrogate-pair fixture; UTF-16 target
+  rejection (both LE and BE); external-modification fail-closed (real
+  `rename`-based race plus fingerprint-mismatch unit tests); malformed-source
+  abort; BOM semantics (no BOM by default even when the source had one, an
+  explicit BOM request honored for a UTF-8 target, a source BOM stripped
+  when converting to an encoding with no BOM concept, a legacy target
+  ignoring a BOM request); unknown-encoding-label errors; an empty-file edge
+  case; two more added directly against an opus `critic` adversarial review
+  of this diff (which otherwise agreed the design and the riskiest
+  assumption — encoding_rs's bulk per-chunk `had_unmappable` flag matching
+  the scanner's own per-character probe exactly, since every supported
+  target encoding is a stateless per-character mapping — both hold):
+  a >8 MiB fixture with the *first* chunk entirely clean and only the
+  *second* containing the one unmappable character, proving the aggregated
+  count and position survive a real per-chunk fast-path switch (not just a
+  direct unit-level scanner call), and a second fixture with an unmappable
+  character's own 4 UTF-8 bytes split exactly 2/2 across the raw chunk
+  boundary. 331 Rust tests total (up from 299), 572 frontend tests (up from
+  565).
 - [ ] File-open latency budget script (local-only, like startup-bench;
   never CI — known runner dead end) *(optional)*
 
