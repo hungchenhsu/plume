@@ -58,7 +58,10 @@ use serde::Serialize;
 /// under another CJK encoding, then re-saved) is also vanishingly rare:
 /// the result is full-screen garbage nobody keeps working in. Narrow and
 /// right beats broad and wrong for a repair tool.
-const REPAIR_PAIRS: [(&Encoding, &Encoding); 8] = [
+///
+/// `pub(crate)` so `fuzz_roundtrip.rs`'s reversibility fuzz can iterate
+/// this exact list instead of maintaining a separately-drifting copy.
+pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 8] = [
     (WINDOWS_1252, UTF_8),
     (WINDOWS_1252, BIG5),
     (WINDOWS_1252, GB18030),

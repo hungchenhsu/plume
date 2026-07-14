@@ -599,10 +599,26 @@ cases of "never misrepresent user text")
   an overlong line falling back raw, and an all-continuation-bytes
   backward window staying an honest U+FFFD chunk instead of collapsing
   empty [danger]
-- [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
+- [x] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
-  before the Track A content transforms land)
+  before the Track A content transforms land). New `fuzz_roundtrip.rs`
+  (test-only, `#[cfg(test)]`-gated): a hand-rolled xorshift64 PRNG (no
+  prior fuzz/PRNG precedent existed in the crate to reuse, despite this
+  item's premise — `streamreplace.rs`'s large tests are fixed-size, not
+  randomized), one representable-text pool per encoding (full-Unicode
+  sampling plus a curated control/astral/surrogate-pair edge set for
+  UTF-8/UTF-16LE/UTF-16BE; encode-filtered common-script ranges for
+  Big5/GBK/gb18030/Shift_JIS/EUC-JP/EUC-KR/windows-1252, each pool proven
+  independently representable by its own sanity test before being trusted
+  as a fuzz source), and fuzz tests asserting the #109-documented
+  contract (text/encoding-label/BOM/line-ending survive a decode<->encode
+  cycle — not byte-for-byte identity, which #109 already excludes for
+  legacy non-injective mappings) across all ten encodings x 3 line
+  endings x BOM states, plus `mojibake::REPAIR_PAIRS` reversibility for
+  all 8 wizard hypotheses. 22 new tests at CI scale (~2s), plus two
+  `#[ignore]`d 50x-larger variants for manual runs (verified to pass in
+  release mode). No round-trip failures found.
 - [ ] Cycle close-out: version bump to 0.4.0, tag v0.4.0-alpha.1, draft
   release (publish remains user-gated)
 
