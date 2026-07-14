@@ -53,8 +53,10 @@
 //! `target_encoding == "keep"`.
 
 use crate::encoding;
+use crate::fsguard::Fingerprint;
 use encoding_rs::Encoding;
 use serde::Serialize;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Directory names never descended into — matches `search.rs::SKIP_DIRS`.
@@ -355,8 +357,60 @@ pub fn scan_batch_conversion(
     )
 }
 
-/// Convert one file: re-detect and re-decode fresh from disk (never trust
-/// the scan's snapshot — the file may have changed since the dry run),
+/// Read `path`'s current bytes together with a [`Fingerprint`] tied to the
+/// exact handle they were read through: `path` is opened once, and the
+/// size check, fingerprint capture, and read all go through that same
+/// `File`, so the fingerprint is guaranteed to describe precisely the
+/// bytes this call returns — not merely whatever the path happened to
+/// resolve to at a separate, independent `stat` (mirroring
+/// `streamreplace.rs`'s `capture_fingerprint`, both via `fsguard.rs`).
+/// Tighter than re-`stat`ing the path is worth it here even though this
+/// call is a single one-shot read rather than a long streaming run: it
+/// also collapses the size-check-then-read into one held-open file
+/// descriptor instead of two independent path resolutions.
+///
+/// Split out from `convert_one` so [`commit_conversion`] below has an
+/// injectable seam: a test can call this, replace the file out from under
+/// the returned fingerprint, then call `commit_conversion` directly to
+/// exercise the read -> commit race deterministically instead of trying to
+/// literally win a timing race against a background writer (see
+/// `external_write_after_read_is_not_clobbered`).
+fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConvertResult> {
+    let mut file = std::fs::File::open(path).map_err(|e| BatchConvertResult {
+        path: path.to_string(),
+        ok: false,
+        message: format!("Failed to read: {e}"),
+    })?;
+    let meta = file.metadata().map_err(|e| BatchConvertResult {
+        path: path.to_string(),
+        ok: false,
+        message: format!("Failed to read: {e}"),
+    })?;
+    // Same guard as the scan side: a file that grew past the size cap
+    // between scan and execute must not be slurped into memory.
+    if meta.len() > MAX_FILE_SIZE {
+        return Err(BatchConvertResult {
+            path: path.to_string(),
+            ok: false,
+            message: "File is now too large; skipped.".to_string(),
+        });
+    }
+    let fingerprint = Fingerprint::from_metadata(&meta).map_err(|e| BatchConvertResult {
+        path: path.to_string(),
+        ok: false,
+        message: format!("Failed to read: {e}"),
+    })?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| BatchConvertResult {
+            path: path.to_string(),
+            ok: false,
+            message: format!("Failed to read: {e}"),
+        })?;
+    Ok((bytes, fingerprint))
+}
+
+/// Decode `bytes` (already read from `path` — see [`read_for_conversion`]),
 /// re-encode to `target`/`with_bom` (`target: None` keeps the file's own
 /// detected encoding and BOM state), optionally unifying line endings to
 /// `line_ending` first (`"keep"` leaves them exactly as decoded), then
@@ -366,42 +420,26 @@ pub fn scan_batch_conversion(
 /// bytes even when the conversion request should change nothing — see the
 /// module doc's `"keep"` + `"keep"` caveat and `encoding::encode`'s
 /// round-trip contract note.
-fn convert_one(
+///
+/// Issue #114: immediately before the commit (`atomic_write`), `path` is
+/// re-fingerprinted and compared against `fingerprint` — the snapshot
+/// [`read_for_conversion`] captured when it read `bytes`. A mismatch
+/// (including the file no longer existing at all) means some other
+/// process atomically replaced the file after this conversion read it but
+/// before it wrote back; this fails closed, reporting the file `ok: false`
+/// without ever touching its now-external content — the same discipline
+/// `streamreplace.rs`'s `verify_unchanged` and `save_document`'s
+/// `expected_fingerprint` check already apply (both share `fsguard.rs`).
+/// One file failing this check never stops the rest of the batch: see
+/// `execute_batch_conversion`.
+fn commit_conversion(
     path: &str,
+    bytes: &[u8],
+    fingerprint: &Fingerprint,
     target: Option<&'static Encoding>,
     with_bom: bool,
     line_ending: &str,
 ) -> BatchConvertResult {
-    // Same guard as the scan side: a file that grew past the size cap
-    // between scan and execute must not be slurped into memory.
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.len() > MAX_FILE_SIZE => {
-            return BatchConvertResult {
-                path: path.to_string(),
-                ok: false,
-                message: "File is now too large; skipped.".to_string(),
-            }
-        }
-        Err(e) => {
-            return BatchConvertResult {
-                path: path.to_string(),
-                ok: false,
-                message: format!("Failed to read: {e}"),
-            }
-        }
-        Ok(_) => {}
-    }
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) => {
-            return BatchConvertResult {
-                path: path.to_string(),
-                ok: false,
-                message: format!("Failed to read: {e}"),
-            }
-        }
-    };
-
     // `decoded.content` here is the *raw* decode of the file's own bytes
     // (CR/CRLF/LF exactly as they are on disk) — deliberately not passed
     // through `encoding::normalize_to_lf` the way `lib.rs::open_document`
@@ -409,7 +447,7 @@ fn convert_one(
     // line-ending change below. With `line_ending: "keep"`, re-encoding it
     // straight back changes only the byte-level encoding; every line
     // ending is preserved.
-    let decoded = encoding::decode_auto(&bytes);
+    let decoded = encoding::decode_auto(bytes);
     if decoded.malformed {
         return BatchConvertResult {
             path: path.to_string(),
@@ -470,6 +508,18 @@ fn convert_one(
         };
     }
 
+    // Re-verify right before the write: fail closed if `path` no longer
+    // matches the fingerprint `read_for_conversion` captured when it read
+    // `bytes` — some other process atomically replaced the file in between
+    // (issue #114). Never write over content this call never actually saw.
+    if !fingerprint.matches_path(Path::new(path)) {
+        return BatchConvertResult {
+            path: path.to_string(),
+            ok: false,
+            message: "File changed on disk during conversion; skipped, not written.".to_string(),
+        };
+    }
+
     match crate::atomic_write(Path::new(path), &out_bytes) {
         Ok(()) => BatchConvertResult {
             path: path.to_string(),
@@ -482,6 +532,24 @@ fn convert_one(
             message: format!("Failed to write: {e}"),
         },
     }
+}
+
+/// Convert one file end to end: read + fingerprint (never trust the scan's
+/// snapshot — the file may have changed since the dry run), then decode,
+/// re-encode, and commit — see [`read_for_conversion`] and
+/// [`commit_conversion`] for the two halves and issue #114's read -> commit
+/// guard.
+fn convert_one(
+    path: &str,
+    target: Option<&'static Encoding>,
+    with_bom: bool,
+    line_ending: &str,
+) -> BatchConvertResult {
+    let (bytes, fingerprint) = match read_for_conversion(path) {
+        Ok(pair) => pair,
+        Err(failure) => return failure,
+    };
+    commit_conversion(path, &bytes, &fingerprint, target, with_bom, line_ending)
 }
 
 /// Convert every path in `paths` to `target_encoding`/`with_bom` (or leave
@@ -1073,6 +1141,132 @@ mod tests {
             entry_for(&report.entries, "crlf.txt").status,
             STATUS_CONVERTIBLE
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #114 (failing-test-first): `convert_one` used to read a file,
+    /// decode/encode it, then commit via `atomic_write` with no check that
+    /// the file on disk was still the version it read. An external atomic
+    /// replace landing between the read and the commit — another process,
+    /// another Plume window, a sync tool — got silently clobbered by the
+    /// batch tool's stale conversion, which then reported success. Exercises
+    /// the race deterministically, rather than trying to literally win a
+    /// timing race against a background writer, by calling the same two
+    /// halves `convert_one` composes — `read_for_conversion` then
+    /// `commit_conversion` — with an external atomic replace injected in
+    /// between: same style as `save_document`'s stale-fingerprint
+    /// regression test in `lib.rs` (issue #113) and `fsguard.rs`'s own
+    /// `from_file_detects_external_rename_over_same_path` test. A real
+    /// rename (not an in-place overwrite) matches the issue's own
+    /// reproduction ("另一個 process 以 atomic replace 寫入新版本") and also
+    /// exercises the Unix inode-identity discriminator, not just size.
+    #[test]
+    fn external_write_after_read_is_not_clobbered() {
+        let dir = fixture_dir("external-write-race");
+        let file = dir.join("a.txt");
+        let (original_bytes, u) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!u);
+        std::fs::write(&file, &original_bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // Read exactly as `convert_one` would at the top of its run.
+        let (bytes, fingerprint) =
+            read_for_conversion(&path).expect("fixture file must read cleanly");
+
+        // Simulate an external process atomically replacing the file after
+        // the read but before this conversion commits — the exact race
+        // issue #114 describes.
+        let external_content = b"completely different content written by another process\n";
+        let replacement = dir.join("replacement.txt");
+        std::fs::write(&replacement, external_content).unwrap();
+        std::fs::rename(&replacement, &file).unwrap();
+
+        // Target UTF-8 explicitly (not `None`/"keep"): re-encoding the
+        // already-canonical Big5 `bytes` back to Big5 under "keep" would
+        // reproduce the same bytes and take the byte-identical no-op path
+        // before ever reaching `atomic_write`, which would pass this test
+        // for the wrong reason regardless of the guard. Converting to a
+        // different encoding guarantees `out_bytes != bytes`, so the only
+        // thing standing between this call and a real write is the
+        // fingerprint check under test.
+        let utf8 = Encoding::for_label(b"UTF-8").unwrap();
+        let result = commit_conversion(&path, &bytes, &fingerprint, Some(utf8), false, "keep");
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.message.contains("changed on disk during conversion"),
+            "message should explain why the file was skipped: {}",
+            result.message
+        );
+
+        let on_disk = std::fs::read(&file).unwrap();
+        assert_eq!(
+            on_disk, external_content,
+            "external content must survive byte-for-byte; the stale conversion must never write"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The stale-fingerprint guard is per-file: one raced file must fail on
+    /// its own without corrupting anything, and without preventing a
+    /// separate, un-raced file from converting normally.
+    #[test]
+    fn one_stale_file_does_not_block_the_rest_of_the_batch() {
+        let dir = fixture_dir("external-write-race-batch");
+
+        let stale_file = dir.join("stale.txt");
+        let (stale_bytes, u) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!u);
+        std::fs::write(&stale_file, &stale_bytes).unwrap();
+        let stale_path = stale_file.to_string_lossy().into_owned();
+
+        let ok_file = dir.join("ok.txt");
+        let (ok_bytes, u) = encoding::encode(BIG5_TEXT_B, "Big5", false).unwrap();
+        assert!(!u);
+        std::fs::write(&ok_file, &ok_bytes).unwrap();
+        let ok_path = ok_file.to_string_lossy().into_owned();
+
+        // Race only the first file: read it, then replace it externally
+        // before committing directly (bypassing `execute_batch_conversion`
+        // so the race can be injected deterministically instead of relying
+        // on timing).
+        let (bytes, fingerprint) = read_for_conversion(&stale_path).unwrap();
+        let external_content = b"raced externally\n";
+        let replacement = dir.join("replacement.txt");
+        std::fs::write(&replacement, external_content).unwrap();
+        std::fs::rename(&replacement, &stale_file).unwrap();
+
+        // Target UTF-8 explicitly — see the comment in
+        // `external_write_after_read_is_not_clobbered` for why `None`/"keep"
+        // would take the byte-identical shortcut before ever reaching
+        // `atomic_write`, making the guard irrelevant to the outcome.
+        let utf8 = Encoding::for_label(b"UTF-8").unwrap();
+        let stale_result =
+            commit_conversion(&stale_path, &bytes, &fingerprint, Some(utf8), false, "keep");
+        assert!(!stale_result.ok, "{stale_result:?}");
+        assert_eq!(
+            std::fs::read(&stale_file).unwrap(),
+            external_content,
+            "raced file's external content must survive"
+        );
+
+        // The un-raced file must still convert normally through the public
+        // entry point, in the same kind of call the frontend would make.
+        let results = execute_batch_conversion(
+            vec![ok_path.clone()],
+            "UTF-8".to_string(),
+            false,
+            "keep".to_string(),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].ok, "{:?}", results[0]);
+
+        let converted = std::fs::read(&ok_file).unwrap();
+        let decoded = encoding::decode_auto(&converted);
+        assert_eq!(decoded.encoding, "UTF-8");
+        assert_eq!(decoded.content, BIG5_TEXT_B);
 
         std::fs::remove_dir_all(&dir).ok();
     }
