@@ -24,6 +24,9 @@ const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
 const indexingEl = document.querySelector<HTMLElement>("#status-indexing")!;
 const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
+const charInspectorEl = document.querySelector<HTMLButtonElement>(
+  "#status-char-inspector",
+)!;
 const textStatsEl = document.querySelector<HTMLElement>("#status-textstats")!;
 const chunkPrevEl = document.querySelector<HTMLButtonElement>("#chunk-prev")!;
 const chunkNextEl = document.querySelector<HTMLButtonElement>("#chunk-next")!;
@@ -54,6 +57,44 @@ export function refreshCursor(): void {
  *  reaching into CodeMirror internals directly. */
 export function currentCursorLine(): number {
   return lastCursor.line;
+}
+
+/** "U+XXXX" for a single Unicode code point: uppercase hex, zero-padded to
+ *  at least 4 digits (a supplementary character like U+1F600 naturally
+ *  takes 5). Shared by the status-bar segment below and charinspect.ts's
+ *  popup, mirroring `formatSize` below being reused by detectcard.ts. */
+export function formatCodePoint(char: string): string {
+  const codePoint = char.codePointAt(0)!;
+  return `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+let lastChar: string | null = null;
+
+/** Update (or hide) the character-inspector status-bar segment (ROADMAP.md
+ *  v0.4 Track A). Pass `null` to hide it — no active document, an empty
+ *  document, or the cursor at a line start (see editor.ts's
+ *  `characterBeforeCursor` for the exact semantics main.ts's
+ *  `onCursorMoved` computes this from). Works the same in a large-file
+ *  (truncated) window: the character at the cursor is meaningful within
+ *  whatever window is loaded, unlike whole-document text stats. */
+export function updateCharInspector(char: string | null): void {
+  lastChar = char;
+  charInspectorEl.hidden = char === null;
+  charInspectorEl.textContent =
+    char === null ? "" : t("statusbar.charInspector", char, formatCodePoint(char));
+}
+
+/** Re-render the character-inspector segment after a locale change, using
+ *  the last known character (no recomputation needed). */
+export function refreshCharInspector(): void {
+  updateCharInspector(lastChar);
+}
+
+/** The character currently shown in the inspector segment, if any — used
+ *  by main.ts's click handler to open the byte-sequence popup without
+ *  recomputing from the editor (see charinspect.ts `showCharInspector`). */
+export function currentInspectedChar(): string | null {
+  return lastChar;
 }
 
 let lastTextStats: DocumentTextStats | null = null;

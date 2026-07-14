@@ -427,7 +427,13 @@ pub fn encode(text: &str, label: &str, with_bom: bool) -> Result<(Vec<u8>, bool)
     Ok((out, unmappable))
 }
 
-fn encode_utf16(text: &str, big_endian: bool, with_bom: bool) -> Vec<u8> {
+/// `pub(crate)` (not just a private helper of `encode` above) so
+/// `charinspect.rs`'s `encode_char` can reuse this exact hand-rolled
+/// code-unit encoder for its own UTF-16LE/BE branch instead of
+/// re-deriving the same bit-twiddling — see that module's doc comment for
+/// why it must not call `encoding_rs`'s `new_encoder()`/`encode()` for
+/// UTF-16 at all.
+pub(crate) fn encode_utf16(text: &str, big_endian: bool, with_bom: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() * 2 + 2);
     let units = with_bom
         .then_some(0xFEFFu16)

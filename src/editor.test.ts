@@ -9,6 +9,7 @@ import { EditorView } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { describe, expect, it, vi } from "vitest";
 import {
+  characterBeforeCursor,
   eolMarkPositions,
   indentGuideLevels,
   lineSpanForSelectionInDoc,
@@ -450,5 +451,71 @@ describe("textStatsOf", () => {
     expect(result.stats.lines).toBe(
       state.doc.lineAt(to - 1).number - state.doc.lineAt(from).number + 1,
     );
+  });
+});
+
+// ROADMAP.md v0.4 Track A character inspector: the Unicode code point
+// immediately before the cursor (Backspace-would-delete semantics — see
+// characterBeforeCursor's doc comment in editor.ts for why a line start
+// returns null instead of reaching across the previous line's newline).
+// Like textStatsOf above, EditorState.create needs no live view.
+describe("characterBeforeCursor", () => {
+  it("returns null for an empty document (cursor at the only, empty line)", () => {
+    const state = EditorState.create({ doc: "" });
+    expect(characterBeforeCursor(state)).toBeNull();
+  });
+
+  it("returns null when the cursor sits at the very start of the document", () => {
+    const state = EditorState.create({ doc: "abc" }); // default cursor is 0
+    expect(characterBeforeCursor(state)).toBeNull();
+  });
+
+  it("returns null at the start of a later line, not the previous line's newline", () => {
+    const state = EditorState.create({ doc: "abc\ndef" });
+    const pos = state.doc.line(2).from; // start of "def"
+    const withCursor = state.update({ selection: EditorSelection.cursor(pos) }).state;
+    expect(characterBeforeCursor(withCursor)).toBeNull();
+  });
+
+  it("returns the single character immediately before the cursor, not the one after it", () => {
+    const state = EditorState.create({ doc: "AB" });
+    const withCursor = state.update({ selection: EditorSelection.cursor(1) }).state; // between A and B
+    expect(characterBeforeCursor(withCursor)).toBe("A");
+  });
+
+  it("returns the last character before the cursor at the end of the document", () => {
+    const state = EditorState.create({ doc: "AB" });
+    const withCursor = state.update({ selection: EditorSelection.cursor(2) }).state;
+    expect(characterBeforeCursor(withCursor)).toBe("B");
+  });
+
+  it("returns a CJK character (multi-byte in UTF-8, one UTF-16 unit) whole", () => {
+    const state = EditorState.create({ doc: "中" });
+    const withCursor = state.update({ selection: EditorSelection.cursor(1) }).state;
+    expect(characterBeforeCursor(withCursor)).toBe("中");
+  });
+
+  it("assembles a surrogate pair into the one code point it represents, not half of it", () => {
+    // U+1F600 GRINNING FACE is 2 UTF-16 code units in a JS string.
+    const emoji = "\u{1F600}";
+    const state = EditorState.create({ doc: `x${emoji}` });
+    expect(state.doc.length).toBe(3); // "x" + 2 surrogate code units
+    const withCursor = state.update({ selection: EditorSelection.cursor(3) }).state;
+    const result = characterBeforeCursor(withCursor);
+    expect(result).toBe(emoji);
+    expect(result?.codePointAt(0)).toBe(0x1f600);
+  });
+
+  it("does not pull a surrogate pair's high half across a line start", () => {
+    // A supplementary character can never actually straddle a line break,
+    // but this pins that the line-start short-circuit still fires even
+    // when the immediately preceding line ends in one, rather than the
+    // 2-code-unit lookback window accidentally reaching across the
+    // boundary into the previous line's content.
+    const emoji = "\u{1F600}";
+    const state = EditorState.create({ doc: `${emoji}\ny` });
+    const pos = state.doc.line(2).from;
+    const withCursor = state.update({ selection: EditorSelection.cursor(pos) }).state;
+    expect(characterBeforeCursor(withCursor)).toBeNull();
   });
 });

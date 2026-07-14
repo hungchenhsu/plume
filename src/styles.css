@@ -1266,7 +1266,14 @@ select:focus-visible {
   border-color: var(--border);
 }
 
-.detectcard-panel {
+/* .charinspect-panel (src/charinspect.ts, ROADMAP.md v0.4 Track A) shares
+   this rule for visual consistency with the encoding-detection diagnostics
+   popup it mirrors, but deliberately never carries the .detectcard-panel
+   class itself on its own element — each module's "already open" guard
+   (`document.querySelector(".detectcard-panel" | ".charinspect-panel")`)
+   must only ever see its own popup, never the other one's. */
+.detectcard-panel,
+.charinspect-panel {
   position: fixed;
   z-index: 100;
   width: 320px;
@@ -1309,6 +1316,12 @@ select:focus-visible {
   border-top: 1px solid var(--border);
   font-size: var(--font-ui-xs);
   color: var(--fg-faint);
+}
+
+/* charinspect.ts's "cannot be represented in {encoding}" row value —
+   same warning tokens as #status-warning/#status-readonly/#status-indexing. */
+.charinspect-lossy {
+  color: var(--warning);
 }
 
 .confirm-overlay {

@@ -8,6 +8,7 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import {
+  characterBeforeCursor,
   contentOf,
   createEditor,
   cursorOf,
@@ -15,6 +16,7 @@ import {
   lineCountOf,
   textStatsOf,
 } from "./editor";
+import { showCharInspector } from "./charinspect";
 import { encodingChoices, reopenEncodingChoices } from "./encodings";
 import { onLocaleChange, t } from "./i18n";
 import {
@@ -81,10 +83,13 @@ import {
 } from "./preferences";
 import {
   currentCursorLine,
+  currentInspectedChar,
+  refreshCharInspector,
   refreshCursor,
   refreshStatusBar,
   refreshTextStats,
   setIndexing,
+  updateCharInspector,
   updateCursor,
   updatePager,
   updateStatusBar,
@@ -161,9 +166,18 @@ function scheduleTextStatsUpdate(): void {
 /** Cursor-position callback CM6 fires on every doc/selection change (see
  *  editor.ts's updateListener) — also schedules the debounced text-stats
  *  recompute above, since the same two triggers (content or selection
- *  changed) are exactly what should invalidate it. */
+ *  changed) are exactly what should invalidate it, and updates the
+ *  character-inspector status-bar segment (ROADMAP.md v0.4 Track A).
+ *  Unlike text stats, the character-inspector recompute runs synchronously
+ *  here with no debounce: `characterBeforeCursor` is O(log n) (a
+ *  `Text.lineAt` plus an at-most-2-code-unit slice), the same cost class as
+ *  `updateCursor`'s own line/column math just above, not the whole-document
+ *  O(document length) `textStatsOf` walk that needs one. Runs the same in a
+ *  large-file (truncated) window: unlike text stats it is not gated on
+ *  `doc.truncated` at all (see statusbar.ts's `updateCharInspector`). */
 function onCursorMoved(line: number, column: number): void {
   updateCursor(line, column);
+  updateCharInspector(characterBeforeCursor(editor.snapshot()));
   scheduleTextStatsUpdate();
 }
 
@@ -1422,6 +1436,19 @@ function showLineEndingMenu(anchor: HTMLElement): void {
   ]);
 }
 
+/** Open the character-inspector popup (ROADMAP.md v0.4 Track A) for the
+ *  status-bar segment's last-shown character. A no-op with no active
+ *  document or no character currently shown — the segment is hidden
+ *  whenever `currentInspectedChar()` is null, so a click can't normally
+ *  reach here then, but this stays defensive like the other status-bar
+ *  popup openers above. */
+function showCharInspectorPopup(anchor: HTMLElement): void {
+  const doc = tabs.active;
+  const char = currentInspectedChar();
+  if (!doc || char === null) return;
+  showCharInspector(anchor, char, doc.encoding);
+}
+
 async function closeTab(id: number): Promise<void> {
   const doc = tabs.get(id);
   if (!doc) return;
@@ -1696,6 +1723,11 @@ document
   .addEventListener("click", (event) =>
     showDecodeWarningMenu(event.currentTarget as HTMLElement),
   );
+document
+  .querySelector<HTMLElement>("#status-char-inspector")!
+  .addEventListener("click", (event) =>
+    showCharInspectorPopup(event.currentTarget as HTMLElement),
+  );
 
 /** Keep new untitled numbering clear of titles restored from backups.
  *  Matches both untitled roots ("Untitled", "未命名") since a session or
@@ -1867,6 +1899,7 @@ onLocaleChange(() => {
   tabs.render();
   refreshStatusBar();
   refreshCursor();
+  refreshCharInspector();
   refreshTextStats();
   updateWindowTitle();
 });
@@ -1877,6 +1910,7 @@ void (async () => {
   await initPreferences(editor);
   refreshStatusBar();
   refreshCursor();
+  refreshCharInspector();
   refreshTextStats();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
