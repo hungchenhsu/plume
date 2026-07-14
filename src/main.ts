@@ -47,6 +47,7 @@ import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
 import { showCloseConfirm } from "./confirm";
+import { showStaleFileConfirm } from "./stalefile";
 import { showDetectionCard } from "./detectcard";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
@@ -192,6 +193,7 @@ function makeUntitled(): Doc {
     windowStartLine: null,
     bookmarks: [],
     backupName: null,
+    fingerprint: null,
     buffer: editor.newBuffer(""),
   };
 }
@@ -305,6 +307,7 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     windowStartLine: opened.truncated ? 1 : null,
     bookmarks: [],
     backupName: null,
+    fingerprint: opened.fingerprint,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
   };
 }
@@ -656,6 +659,7 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
+    doc.fingerprint = opened.fingerprint;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
     doc.chunkOffset = 0;
@@ -771,7 +775,17 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
       withBom: doc.withBom,
       lineEnding: doc.lineEnding,
     };
-    let result = await saveDocument({ ...saveParams, allowLossy: false });
+    // A fingerprint captured for the *old* path describes an unrelated
+    // file once Save As — or an untitled document's first save — targets a
+    // different path; only a same-path resave has a baseline worth
+    // checking against (issue #113).
+    const expectedFingerprint = path === oldPath ? doc.fingerprint : null;
+    let result = await saveDocument({
+      ...saveParams,
+      allowLossy: false,
+      expectedFingerprint,
+      force: false,
+    });
     if (result.unmappable && !result.written) {
       const proceed = await confirmDialog(
         t("dialog.lossyEncodingMessage", doc.encoding),
@@ -784,7 +798,34 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
       // Cancelled: the doc stays exactly as it was before Save was
       // invoked — dirty, on its old path, no watcher/session changes.
       if (!proceed) return false;
-      result = await saveDocument({ ...saveParams, allowLossy: true });
+      result = await saveDocument({
+        ...saveParams,
+        allowLossy: true,
+        expectedFingerprint,
+        force: false,
+      });
+    }
+    if (result.stale && !result.written) {
+      const choice = await showStaleFileConfirm(doc.title);
+      if (choice === "cancel") return false;
+      if (choice === "reload") {
+        // Replaces the tab's buffer with the newer on-disk version,
+        // exactly like the passive watcher-triggered reload — the user's
+        // unsaved edits in this tab are discarded along with the save
+        // attempt (the dialog message warns about this explicitly), and
+        // nothing is written to disk.
+        await reloadFromDisk(doc);
+        return false;
+      }
+      // "overwrite": the user explicitly chose to clobber the external
+      // change. Keep whatever allowLossy decision was already resolved
+      // above so this retry can't re-trigger the lossy-encoding dialog.
+      result = await saveDocument({
+        ...saveParams,
+        allowLossy: result.unmappable,
+        expectedFingerprint,
+        force: true,
+      });
     }
     // Only once the bytes are actually on disk do we touch doc state or
     // run any of the success side effects below.
@@ -800,6 +841,7 @@ async function saveFlow(saveAs: boolean): Promise<boolean> {
     doc.path = path;
     doc.title = basename(path);
     doc.dirty = false;
+    doc.fingerprint = result.fingerprint;
     // Mixed line endings are written out as LF by the core.
     if (doc.lineEnding === "Mixed") doc.lineEnding = "LF";
     tabs.render();
@@ -838,6 +880,7 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     doc.lineEnding = opened.lineEnding;
     doc.malformed = opened.malformed;
     doc.dirty = false;
+    doc.fingerprint = opened.fingerprint;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
     doc.chunkOffset = 0;
@@ -1350,6 +1393,11 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     windowStartLine: null,
     bookmarks: [],
     backupName: file.backup,
+    // Restored from the hot-exit backup blob, not from a fresh disk read —
+    // there is no verified on-disk baseline for this tab's content this
+    // session, so the next save must skip the staleness check (issue #113)
+    // exactly like an untitled document's first save.
+    fingerprint: null,
     buffer: editor.newBuffer(content, false, file.cursor ?? 0),
   });
   if (file.path) void watchFile(file.path).catch(() => {});
@@ -1409,6 +1457,10 @@ async function restoreSession(): Promise<void> {
       windowStartLine: null,
       bookmarks: [],
       backupName: name,
+      // Orphaned backup with no session entry at all — path is always
+      // null here, so this is the same "no on-disk baseline yet" case as
+      // makeUntitled (issue #113).
+      fingerprint: null,
       buffer: editor.newBuffer(content, false, 0),
     });
   }

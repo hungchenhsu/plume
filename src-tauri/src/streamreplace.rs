@@ -36,11 +36,11 @@
 //! (where upper/lower always occupy exactly one byte each) sidesteps that
 //! trap entirely rather than working around it.
 
+use crate::fsguard::Fingerprint;
 use encoding_rs::{CoderResult, Decoder, Encoder, Encoding, UTF_16BE, UTF_16LE};
 use serde::Serialize;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Source-side read granularity: large enough that per-chunk overhead is
 /// negligible even for multi-GB files, small enough that memory use stays
@@ -350,92 +350,37 @@ fn run_replace_loop(
     Ok((replacements, bytes_written))
 }
 
-/// Snapshot of a file's on-disk identity, captured once at the start of a
-/// long streaming operation and re-checked immediately before the final
-/// commit (`rename`), so an external replacement of the file mid-run (log
-/// rotation, a formatter, a sync tool doing an atomic rename over the same
-/// path — see issue #94) is detected and aborted instead of being silently
-/// overwritten by this command finishing its read of the now-stale open
-/// handle. See [`capture_fingerprint`] and [`verify_unchanged`].
+/// Captured once at the start of a long streaming operation and re-checked
+/// immediately before the final commit (`rename`), so an external
+/// replacement of the file mid-run (log rotation, a formatter, a sync tool
+/// doing an atomic rename over the same path — see issue #94) is detected
+/// and aborted instead of being silently overwritten by this command
+/// finishing its read of the now-stale open handle. See
+/// [`capture_fingerprint`] and [`verify_unchanged`]; the fingerprint type
+/// itself and its cross-platform identity discussion now live in
+/// `fsguard.rs`, shared with the regular save path (issue #113).
 ///
-/// Cross-platform identity: on Unix, `(dev, ino)` — from
-/// `std::os::unix::fs::MetadataExt` — uniquely identifies the underlying
-/// inode no matter what path currently names it, and is captured from the
-/// already-open source `File` handle, so it always describes the
-/// *original* file even after the path is renamed out from under it. On
-/// Windows, the equivalent identity (`nFileIndex` / `dwVolumeSerialNumber`,
-/// exposed by `std::os::windows::fs::MetadataExt::file_index` /
-/// `volume_serial_number`) is still gated behind the unstable
-/// `windows_by_handle` feature (rust-lang/rust#63010 — the tracking issue
-/// is still open, and `file_index`/`volume_serial_number` are marked
-/// `#[unstable]` in the standard library source as of this writing), so it
-/// is not available on stable Rust and this struct carries no Windows
-/// identity field at all. Windows therefore relies on `len` + `modified`
-/// alone. That is a weaker signal than inode identity — a replacement
-/// could in principle land with the same size and the same
-/// filesystem-timestamp-resolution mtime — but it is sufficient for the
-/// actual threat model: a rename that replaces a file after this command
-/// has already been streaming it for any non-trivial time is exceedingly
-/// unlikely to reproduce both the exact original byte length and the exact
-/// original mtime.
-struct FileFingerprint {
-    len: u64,
-    modified: SystemTime,
-    #[cfg(unix)]
-    identity: (u64, u64), // (dev, ino)
-}
-
-/// Capture `file`'s fingerprint from its already-open handle rather than
+/// Captures `file`'s fingerprint from its already-open handle rather than
 /// re-`stat`ing the path, so the snapshot is tied to the exact file this
 /// command opened and can never be confused with whatever the path
-/// happens to resolve to later.
-fn capture_fingerprint(file: &std::fs::File) -> std::io::Result<FileFingerprint> {
-    let meta = file.metadata()?;
-    Ok(FileFingerprint {
-        len: meta.len(),
-        modified: meta.modified()?,
-        #[cfg(unix)]
-        identity: unix_identity(&meta),
-    })
-}
-
-#[cfg(unix)]
-fn unix_identity(meta: &std::fs::Metadata) -> (u64, u64) {
-    use std::os::unix::fs::MetadataExt;
-    (meta.dev(), meta.ino())
-}
-
-#[cfg(unix)]
-fn identity_unchanged(meta: &std::fs::Metadata, original: &FileFingerprint) -> bool {
-    unix_identity(meta) == original.identity
-}
-
-/// No inode-equivalent identity is available on stable Rust for this
-/// platform (see [`FileFingerprint`]'s doc comment) — `len` and `modified`
-/// alone decide the outcome, so identity never contributes a mismatch.
-#[cfg(not(unix))]
-fn identity_unchanged(_meta: &std::fs::Metadata, _original: &FileFingerprint) -> bool {
-    true
+/// happens to resolve to later (see [`Fingerprint::from_file`]).
+fn capture_fingerprint(file: &std::fs::File) -> std::io::Result<Fingerprint> {
+    Fingerprint::from_file(file)
 }
 
 /// Fail closed if the file at `path` is no longer the file described by
-/// `original`: re-`stat`s `path` and compares size, mtime, and (Unix only)
-/// inode identity (see [`FileFingerprint`]). Any mismatch — including
+/// `original` (see [`Fingerprint::matches_path`]). Any mismatch — including
 /// `path` no longer existing at all — is treated as "changed": there is no
 /// case where proceeding anyway is the safe choice once the on-disk
 /// contents can no longer be shown to be the ones this run started with.
-fn verify_unchanged(path: &Path, original: &FileFingerprint) -> Result<(), String> {
-    const CHANGED_MSG: &str =
-        "file changed on disk during replace; aborted, your file was not modified";
-    let meta = std::fs::metadata(path).map_err(|_| CHANGED_MSG.to_string())?;
-    let modified = meta.modified().map_err(|_| CHANGED_MSG.to_string())?;
-    let unchanged = meta.len() == original.len
-        && modified == original.modified
-        && identity_unchanged(&meta, original);
-    if unchanged {
+/// An `Ok` here still leaves the irreducible stat-to-rename TOCTOU window
+/// open — this guard narrows the race, it cannot close it (see point 6 of
+/// [`stream_replace_in_file`]'s doc comment and issue #102).
+fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
+    if original.matches_path(path) {
         Ok(())
     } else {
-        Err(CHANGED_MSG.to_string())
+        Err("file changed on disk during replace; aborted, your file was not modified".to_string())
     }
 }
 
@@ -480,7 +425,7 @@ fn verify_unchanged(path: &Path, original: &FileFingerprint) -> Result<(), Strin
 ///    -> re-encode was never scoped to leave non-matching bytes
 ///    untouched — see the module doc.
 /// 6. Before that commit, the file at `path` is re-stat'd and compared
-///    against the [`FileFingerprint`] captured right after the source was
+///    against the [`Fingerprint`] captured right after the source was
 ///    opened: if its size, mtime, or (Unix) inode identity no longer
 ///    match — including the file having been deleted outright — the temp
 ///    file is discarded and this returns `Err` without ever touching
@@ -1268,7 +1213,7 @@ mod tests {
         let source = std::fs::File::open(&file).unwrap();
         let mut fingerprint = capture_fingerprint(&source).unwrap();
 
-        fingerprint.modified -= std::time::Duration::from_secs(3600);
+        fingerprint.modified.secs -= 3600;
 
         assert!(verify_unchanged(&file, &fingerprint).is_err());
         std::fs::remove_dir_all(&dir).ok();

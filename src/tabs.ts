@@ -41,6 +41,15 @@ export interface Doc {
   bookmarks: number[];
   /** Hot-exit backup file name once unsaved content has been flushed. */
   backupName: string | null;
+  /** Opaque metadata snapshot of the on-disk file as of the last open,
+   *  reload, or successful save (see src-tauri/src/fsguard.rs) — passed
+   *  back unexamined as `save_document`'s `expectedFingerprint` so a
+   *  commit-time mismatch (someone else wrote to this path since) fails
+   *  closed instead of silently overwriting the newer content (issue
+   *  #113). `null` when there is no verified on-disk baseline yet: an
+   *  untitled document, or one restored from a hot-exit backup without
+   *  having been re-read from disk this session. */
+  fingerprint: unknown;
   buffer: EditorBuffer;
 }
 

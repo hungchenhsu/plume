@@ -223,6 +223,12 @@ cases of "never misrepresent user text")
   leading tabs ⇄ spaces
 
 **Track D — robustness**
+- [x] #113: save_document validates a commit-time file fingerprint before
+  writing (size/mtime/Unix inode identity), fail-closing a stale-file
+  overwrite instead of silently clobbering an externally-changed file;
+  shared `fsguard.rs` module extracted from the streaming-replace guard
+  (#94/#102), reused as-is. Frontend offers Reload/Overwrite/Cancel on
+  conflict [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
