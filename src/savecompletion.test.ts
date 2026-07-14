@@ -1,0 +1,227 @@
+import { describe, expect, it } from "vitest";
+import { decideSaveCompletion, type SaveCompletionInput } from "./savecompletion";
+
+/** A promise plus its resolve/reject, exposed for manual settlement — lets
+ *  a test hold a save IPC call open across a synchronous "user kept
+ *  typing" mutation before deciding when it "arrives". Same shape as
+ *  batchconvert.test.ts / streamreplace.test.ts's helper. */
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Minimal stand-in for the parts of tabs.ts's Doc that saveFlow's
+ *  completion block touches, plus a fake backup registry so "dropBackup"
+ *  is observable without pulling in ipc.ts. */
+function makeDocState() {
+  return {
+    revision: 0,
+    dirty: true,
+    backupName: "bk-1.txt" as string | null,
+    fingerprint: "fp-0" as unknown,
+  };
+}
+
+function applyDecision(
+  doc: ReturnType<typeof makeDocState>,
+  decision: ReturnType<typeof decideSaveCompletion>,
+  newFingerprint: unknown,
+): void {
+  if (decision.updateFingerprint) doc.fingerprint = newFingerprint;
+  if (decision.clearDirty) doc.dirty = false;
+  if (decision.dropBackup) doc.backupName = null;
+}
+
+const base: SaveCompletionInput = {
+  written: true,
+  stale: false,
+  revisionAtStart: 5,
+  currentRevision: 5,
+  pathChanged: false,
+};
+
+describe("decideSaveCompletion — full branch table", () => {
+  it("not written: never touches dirty/backup/fingerprint, regardless of other fields", () => {
+    expect(
+      decideSaveCompletion({ ...base, written: false, stale: false }),
+    ).toEqual({ clearDirty: false, dropBackup: false, updateFingerprint: false });
+    expect(
+      decideSaveCompletion({
+        ...base,
+        written: false,
+        stale: true,
+        revisionAtStart: 1,
+        currentRevision: 99,
+      }),
+    ).toEqual({ clearDirty: false, dropBackup: false, updateFingerprint: false });
+  });
+
+  it("written but reported stale (contract-violating combination): fails closed", () => {
+    // ipc.ts's SaveResult contract says written:true always implies
+    // stale:false — this input combination should never occur in
+    // practice, but the guard must not clear dirty/drop the backup on the
+    // strength of a self-contradictory result.
+    expect(decideSaveCompletion({ ...base, written: true, stale: true })).toEqual({
+      clearDirty: false,
+      dropBackup: false,
+      updateFingerprint: false,
+    });
+  });
+
+  it("written, same revision, same path: clears dirty and drops the backup", () => {
+    expect(decideSaveCompletion(base)).toEqual({
+      clearDirty: true,
+      dropBackup: true,
+      updateFingerprint: true,
+    });
+  });
+
+  it("written, revision advanced (edit landed mid-flight): keeps dirty and the backup, still updates fingerprint", () => {
+    expect(
+      decideSaveCompletion({ ...base, revisionAtStart: 5, currentRevision: 6 }),
+    ).toEqual({ clearDirty: false, dropBackup: false, updateFingerprint: true });
+  });
+
+  it("written, path changed (concurrent flow moved the doc): keeps dirty and the backup, still updates fingerprint", () => {
+    expect(decideSaveCompletion({ ...base, pathChanged: true })).toEqual({
+      clearDirty: false,
+      dropBackup: false,
+      updateFingerprint: true,
+    });
+  });
+
+  it("written, both revision and path diverged: keeps dirty and the backup, still updates fingerprint", () => {
+    expect(
+      decideSaveCompletion({
+        ...base,
+        revisionAtStart: 5,
+        currentRevision: 6,
+        pathChanged: true,
+      }),
+    ).toEqual({ clearDirty: false, dropBackup: false, updateFingerprint: true });
+  });
+});
+
+// Issue #112: saveFlow snapshots doc.revision before the IPC round trip and
+// compares it again once the promise resolves. These scenarios mirror that
+// shape with a deferred save IPC call so a "the user kept typing" mutation
+// can land in the gap, exactly like main.ts's async saveFlow would see it.
+describe("save completion race — deferred IPC scenarios", () => {
+  it("(a) an edit lands while save is in flight: dirty and backup survive, fingerprint still updates", async () => {
+    const doc = makeDocState();
+    const revisionAtStart = doc.revision;
+    const call = deferred<{ written: boolean; stale: boolean; fingerprint: unknown }>();
+
+    const completion = call.promise.then((result) => {
+      const decision = decideSaveCompletion({
+        written: result.written,
+        stale: result.stale,
+        revisionAtStart,
+        currentRevision: doc.revision,
+        pathChanged: false,
+      });
+      applyDecision(doc, decision, result.fingerprint);
+      return decision;
+    });
+
+    // The user keeps typing while saveDocument's IPC call is still in
+    // flight — the editor's onDocChanged hook bumps doc.revision.
+    doc.revision += 1;
+    call.resolve({ written: true, stale: false, fingerprint: "fp-1" });
+    const decision = await completion;
+
+    expect(decision).toEqual({
+      clearDirty: false,
+      dropBackup: false,
+      updateFingerprint: true,
+    });
+    expect(doc.dirty).toBe(true);
+    expect(doc.backupName).toBe("bk-1.txt");
+    expect(doc.fingerprint).toBe("fp-1");
+  });
+
+  it("(b) control — no edit during the save: dirty clears and the backup drops", async () => {
+    const doc = makeDocState();
+    const revisionAtStart = doc.revision;
+    const call = deferred<{ written: boolean; stale: boolean; fingerprint: unknown }>();
+
+    const completion = call.promise.then((result) => {
+      const decision = decideSaveCompletion({
+        written: result.written,
+        stale: result.stale,
+        revisionAtStart,
+        currentRevision: doc.revision,
+        pathChanged: false,
+      });
+      applyDecision(doc, decision, result.fingerprint);
+      return decision;
+    });
+
+    call.resolve({ written: true, stale: false, fingerprint: "fp-1" });
+    const decision = await completion;
+
+    expect(decision).toEqual({
+      clearDirty: true,
+      dropBackup: true,
+      updateFingerprint: true,
+    });
+    expect(doc.dirty).toBe(false);
+    expect(doc.backupName).toBeNull();
+    expect(doc.fingerprint).toBe("fp-1");
+  });
+
+  it("(c) lossy two-phase save: an edit during the confirm wait still survives the retry that reuses the original snapshot", async () => {
+    const doc = makeDocState();
+    const revisionAtStart = doc.revision;
+
+    // Phase 1: allowLossy:false comes back unmappable/not written — the UI
+    // would show the lossy-encoding confirm dialog here.
+    const firstCall = deferred<{ written: boolean; stale: boolean; fingerprint: unknown }>();
+    const firstResult = firstCall.promise;
+    firstCall.resolve({ written: false, stale: false, fingerprint: null });
+    await firstResult;
+
+    // While the (simulated) confirm dialog is up, the user keeps editing —
+    // still the same doc, same content snapshot pending as far as saveFlow
+    // is concerned (it never re-reads editor.content() for the retry).
+    doc.revision += 1;
+
+    // Phase 2: allowLossy:true retry, reusing the *original* content
+    // snapshot and therefore the same revisionAtStart captured before
+    // phase 1 — never re-snapshotted for a retry.
+    const secondCall = deferred<{ written: boolean; stale: boolean; fingerprint: unknown }>();
+    const completion = secondCall.promise.then((result) => {
+      const decision = decideSaveCompletion({
+        written: result.written,
+        stale: result.stale,
+        revisionAtStart,
+        currentRevision: doc.revision,
+        pathChanged: false,
+      });
+      applyDecision(doc, decision, result.fingerprint);
+      return decision;
+    });
+    secondCall.resolve({ written: true, stale: false, fingerprint: "fp-lossy-1" });
+    const decision = await completion;
+
+    expect(decision).toEqual({
+      clearDirty: false,
+      dropBackup: false,
+      updateFingerprint: true,
+    });
+    expect(doc.dirty).toBe(true);
+    expect(doc.backupName).toBe("bk-1.txt");
+    expect(doc.fingerprint).toBe("fp-lossy-1");
+  });
+});
