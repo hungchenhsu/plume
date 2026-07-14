@@ -193,6 +193,20 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "转为小写",
     ),
     (
+        "to_full_width",
+        "Convert to Full-width",
+        "轉為全形",
+        "全角に変換",
+        "转为全角",
+    ),
+    (
+        "to_half_width",
+        "Convert to Half-width",
+        "轉為半形",
+        "半角に変換",
+        "转为半角",
+    ),
+    (
         "batch_convert",
         "Batch Encoding Conversion…",
         "批次轉換編碼…",
@@ -418,6 +432,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(&MenuItemBuilder::with_id("uppercase", l("uppercase")).build(app)?)
         .item(&MenuItemBuilder::with_id("lowercase", l("lowercase")).build(app)?)
+        .item(&MenuItemBuilder::with_id("to_full_width", l("to_full_width")).build(app)?)
+        .item(&MenuItemBuilder::with_id("to_half_width", l("to_half_width")).build(app)?)
         .build()?;
 
     // On macOS an Edit menu is required for clipboard and undo shortcuts to
@@ -759,6 +775,8 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 "delete_line",
                 "uppercase",
                 "lowercase",
+                "to_full_width",
+                "to_half_width",
             ] {
                 if let Some(item) = line_ops
                     .get(id)
@@ -958,6 +976,26 @@ mod tests {
             label("convert_leading_spaces_to_tabs", "zh-CN"),
             "转换前导空格为 Tab"
         );
+    }
+
+    // ROADMAP.md v0.4 Track A full-width/half-width conversion: the Edit >
+    // Line Operations submenu's two new ids, pinned across all four
+    // languages -- same rationale as convert_leading_tabs_to_spaces/
+    // convert_leading_spaces_to_tabs's dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_to_full_width_text_for_every_language() {
+        assert_eq!(label("to_full_width", "en"), "Convert to Full-width");
+        assert_eq!(label("to_full_width", "zh-TW"), "轉為全形");
+        assert_eq!(label("to_full_width", "ja"), "全角に変換");
+        assert_eq!(label("to_full_width", "zh-CN"), "转为全角");
+    }
+
+    #[test]
+    fn label_returns_the_correct_to_half_width_text_for_every_language() {
+        assert_eq!(label("to_half_width", "en"), "Convert to Half-width");
+        assert_eq!(label("to_half_width", "zh-TW"), "轉為半形");
+        assert_eq!(label("to_half_width", "ja"), "半角に変換");
+        assert_eq!(label("to_half_width", "zh-CN"), "转为半角");
     }
 
     #[test]

@@ -71,6 +71,8 @@ import {
   convertLeadingTabsToSpaces,
   lowerCase,
   sortLines,
+  toFullWidth,
+  toHalfWidth,
   trimTrailingWhitespace,
   uniqueLines,
   upperCase,
@@ -1734,6 +1736,18 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "lowercase":
       runLineOperation(() => editor.transformSelection(lowerCase));
+      break;
+    // ROADMAP.md v0.4 Track A: FF01-FF5E <-> ASCII plus ideographic space
+    // <-> plain space (see lineops.ts toFullWidth/toHalfWidth docs). A
+    // transformSelection like uppercase/lowercase above, not
+    // transformLines: this is a character-level substitution with no
+    // per-line meaning, so a partial-line selection must stay verbatim
+    // rather than being expanded to full lines.
+    case "to_full_width":
+      runLineOperation(() => editor.transformSelection(toFullWidth));
+      break;
+    case "to_half_width":
+      runLineOperation(() => editor.transformSelection(toHalfWidth));
       break;
     case "batch_convert":
       showBatchConvert();

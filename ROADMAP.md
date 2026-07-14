@@ -275,8 +275,29 @@ cases of "never misrepresent user text")
   window is loaded, unaffected, same as indent guides/EOL marks. i18n
   across en/zh-TW/ja/zh-CN (`statusbar.suspiciousChars`, menu.rs `LABELS`
   with a dedicated pinned-translation test mirroring `read_only`'s).
-- [ ] Full-width ⇄ half-width conversion (selection-scoped, Edit menu):
-  FF01–FF5E ⇄ ASCII plus ideographic space [danger]
+- [x] Full-width ⇄ half-width conversion (selection-scoped, Edit menu):
+  FF01–FF5E ⇄ ASCII plus ideographic space [danger]. `toHalfWidth`/
+  `toFullWidth` (lineops.ts) are a straight +/-0xFEE0 offset over
+  U+FF01–FF5E ⇄ U+0021–007E plus a dedicated U+3000 ⇄ U+0020 case;
+  everything else (halfwidth katakana U+FF61–FF9F, CJK ideographs, tabs,
+  newlines) passes through untouched, which is what makes the two exact
+  inverses of each other. Iterates by code point (the same technique
+  `compareCodePoints` uses), so an adjacent surrogate pair is never split.
+  Wired as `editor.transformSelection` (like uppercase/lowercase, not
+  `transformLines`: this is a character substitution with no per-line
+  meaning, so a partial-line selection must stay verbatim) — no selection
+  means whole-document, same precedent. Two new Edit > Line Operations
+  items beside the case-conversion pair, `to_full_width`/`to_half_width`,
+  i18n across en/zh-TW/ja/zh-CN with a pinned-translation test mirroring
+  `convert_leading_tabs_to_spaces`'s. vitest: full ASCII 0x21–0x7E table
+  round-tripped bidirectionally in a for loop, boundary characters (U+FF01/
+  U+FF5E inclusive, U+FF5F just outside), ideographic-space pair, mixed CJK/
+  halfwidth-kana/ASCII text, empty string, adjacent-surrogate-pair safety,
+  and idempotence, both directions (101 lineops.test.ts cases total).
+  Representability note: both directions only ever produce characters
+  representable in Big5/legacy CJK encodings (fullwidth forms sit in
+  Big5's mapped range, ASCII is universal), so no new lossy-save risk —
+  the existing save-time lossy gate is untouched and sufficient.
 - [ ] Unicode normalization: non-NFC detection plus Edit-menu Normalize
   to NFC / NFD with a previewed change count — validating
   representability under the file's save encoding first (NFD output can
