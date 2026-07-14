@@ -159,6 +159,77 @@ domain: failing-test-first, round-trip tests mandatory)
 - [ ] D3 going-public sweep — includes purging `.claude/archive/`
   naming evidence before the repo turns public
 
+## v0.4 — feature cycle (planned 2026-07-14, delegated)
+
+Scope planned autonomously under the user's 2026-07-14 delegation (user
+away; plan the cycle, merge on green CI, post-merge review). The plan
+passed an adversarial review against the mission and non-goals before
+work started. Same track model as v0.3; one coherent item per PR. Items
+marked **[danger]** touch encoding/save-path danger domains:
+failing-test-first, round-trip tests, and adversarial review before
+commit (judgment overlay §1).
+
+**Track A — character-level trust** (the moat, extended to the sneakiest
+cases of "never misrepresent user text")
+- [ ] Character inspector: status-bar codepoint readout (U+XXXX) for the
+  character at the cursor, with a popup showing its byte sequence under
+  the file's save encoding (bytes rendered in Rust; UTF-16 hand-encoded
+  around the encoder dead end) [danger]
+- [ ] Invisible/ambiguous character audit: curated highlighting of
+  zero-width characters, bidi controls (U+202A–202E, U+2066–2069), NBSP
+  variants, soft hyphens, and in-body BOMs, with a status-bar count and
+  a View toggle
+- [ ] Full-width ⇄ half-width conversion (selection-scoped, Edit menu):
+  FF01–FF5E ⇄ ASCII plus ideographic space [danger]
+- [ ] Unicode normalization: non-NFC detection plus Edit-menu Normalize
+  to NFC / NFD with a previewed change count — validating
+  representability under the file's save encoding first (NFD output can
+  be unrepresentable in legacy encodings; normalize must never set up a
+  lossy save) [danger]
+- [ ] Lossy-save character preview: when a save is rejected as lossy,
+  list *which* characters can't be encoded (char + position, capped),
+  not just a count, before offering the lossy path [danger]
+- [ ] UTF-8 BOM toggle gap check: verify whether add/remove BOM on an
+  existing UTF-8 file has a user-level path; close the gap only if it
+  is real [danger]
+
+**Track B — large files & performance**
+- [ ] #107: transformLines computes line spans via lineAt instead of
+  materializing the document
+- [ ] Streaming encoding conversion for large files: >10 MB files
+  converted via streaming decode→re-encode with atomic temp+rename and
+  the same lossy two-stage gate as streaming replace; UTF-16 targets
+  excluded (encoder dead end); fail-closed on external modification
+  [danger]
+- [ ] File-open latency budget script (local-only, like startup-bench;
+  never CI — known runner dead end) *(optional)*
+
+**Track C — everyday editing comfort**
+- [ ] Multi-cursor: allowMultipleSelections plus select-next/all
+  occurrence commands, Edit-menu entries, platform shortcuts
+- [ ] Line shuffle ops in the Edit menu: move line up/down, duplicate,
+  delete (bindings may already exist via the default keymap — expose
+  and complete them)
+- [ ] Word/char/line count status-bar segment: selection-aware,
+  CJK-aware word counting; computed without materializing the document;
+  hidden in large-file windows
+- [ ] Per-tab read-only mode (View menu + status-bar indicator, reusing
+  the existing readOnly compartment; large-file preview read-only state
+  cannot be lifted)
+- [ ] Tab drag-to-reorder (pure reorder logic unit-tested in the tab
+  store)
+- [ ] Indentation tools: detected indentation (tabs/spaces + width) in
+  the status bar, indentUnit wired to the detection, Edit-menu convert
+  leading tabs ⇄ spaces
+
+**Track D — robustness**
+- [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
+  representable-text round-trips across all supported encodings plus
+  mojibake-wizard reversibility fuzz (no new dependencies; scheduled
+  before the Track A content transforms land)
+- [ ] Cycle close-out: version bump to 0.4.0, tag v0.4.0-alpha.1, draft
+  release (publish remains user-gated)
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
