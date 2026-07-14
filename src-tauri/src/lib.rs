@@ -5,6 +5,11 @@ mod chunk;
 mod comparepreview;
 mod encoding;
 mod fsguard;
+// Fuzz-only content (PRNG, representable-text generators, and the fuzz
+// tests themselves) -- nothing in this module is used outside `cargo
+// test`, so the whole file is gated here rather than per-item.
+#[cfg(test)]
+mod fuzz_roundtrip;
 mod hexdump;
 mod linebreak;
 mod lineindex;
