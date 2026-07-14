@@ -124,6 +124,25 @@ describe("t", () => {
     expect(t("statusbar.noFile")).toBe("无文件");
     expect(t("statusbar.cursor", 3, 7)).toBe("第 3 行，第 7 列");
   });
+
+  it("pluralizes each noun in statusbar.textStats independently (English only)", () => {
+    expect(t("statusbar.textStats", 1, 1, 1)).toBe("1 word, 1 char, 1 line");
+    expect(t("statusbar.textStats", 2, 1, 1)).toBe("2 words, 1 char, 1 line");
+    expect(t("statusbar.textStats", 120, 800, 12)).toBe("120 words, 800 chars, 12 lines");
+  });
+
+  it("prefixes statusbar.textStatsSelection distinctly from the whole-document phrasing", () => {
+    expect(t("statusbar.textStatsSelection", 1, 1, 1)).toBe("Selected: 1 word, 1 char, 1 line");
+  });
+
+  it("does not inflect statusbar.textStats for count in zh-TW/ja/zh-CN", () => {
+    setLocale("zh-TW");
+    expect(t("statusbar.textStats", 1, 1, 1)).toBe("1 詞、1 字元、1 行");
+    setLocale("ja");
+    expect(t("statusbar.textStats", 1, 1, 1)).toBe("1 語、1 文字、1 行");
+    setLocale("zh-CN");
+    expect(t("statusbar.textStats", 1, 1, 1)).toBe("1 词、1 字符、1 行");
+  });
 });
 
 describe("getLocale / setLocale / onLocaleChange", () => {

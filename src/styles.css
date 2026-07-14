@@ -250,7 +250,8 @@ select:focus-visible {
   flex-shrink: 0;
 }
 
-#status-cursor {
+#status-cursor,
+#status-textstats {
   font-variant-numeric: tabular-nums;
 }
 

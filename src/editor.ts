@@ -50,6 +50,14 @@ import {
   pushReplaceTerm,
   replaceHistory,
 } from "./searchhistory";
+import {
+  accumulateChunk,
+  createTextStatsAccumulator,
+  finishRangeTextStats,
+  finishTextStats,
+  type TextStats,
+  type TextStatsAccumulator,
+} from "./textstats";
 
 /**
  * Traditional-Chinese phrases for CM6's own translatable UI strings, keyed
@@ -273,6 +281,72 @@ export function contentOf(buffer: EditorBuffer): string {
 /** Line count of a detached buffer (1-based line numbers go up to this). */
 export function lineCountOf(buffer: EditorBuffer): number {
   return buffer.doc.lines;
+}
+
+/** Result of `textStatsOf`: the counted stats, plus whether they reflect a
+ *  selection rather than the whole document (see that function's doc
+ *  comment for when each applies). */
+export interface DocumentTextStats {
+  stats: TextStats;
+  selected: boolean;
+}
+
+/** Accumulate chars/words/lines over `[from, to)` by walking `Text.iterRange`
+ *  chunk by chunk — never materializes the range as one string (issue
+ *  #107's anti-pattern; see textstats.ts's accumulator doc comment for why
+ *  this is safe across CM6's own internal chunk boundaries). `finish`
+ *  picks the whole-document vs. selection-range line-counting convention
+ *  (see textstats.ts's `finishTextStats`/`finishRangeTextStats`). */
+function statsForRange(
+  doc: Text,
+  from: number,
+  to: number,
+  finish: (acc: TextStatsAccumulator) => TextStats,
+): TextStats {
+  const acc = createTextStatsAccumulator();
+  for (const chunk of doc.iterRange(from, to)) {
+    accumulateChunk(acc, chunk);
+  }
+  return finish(acc);
+}
+
+/**
+ * Char/word/line statistics for `buffer` (ROADMAP.md v0.4 Track C): the
+ * whole document when nothing is selected, or summed across every
+ * non-empty selection range when one or more exist (multi-cursor
+ * selections sum every range, matching the spec). Never calls
+ * `doc.toString()`/`sliceDoc` over the whole document — see
+ * `statsForRange` above and textstats.ts for the counting logic itself.
+ * Callers (main.ts) are expected to skip this entirely for large-file
+ * (truncated) windows, where stats over just the loaded slice would
+ * misrepresent the whole file.
+ *
+ * "lines" sums per-range exactly like chars/words: two single-line
+ * selections on the very same physical line (e.g. two separate words
+ * selected via Mod-d/multi-cursor) report 2 lines, not the 1 distinct line
+ * actually touched — the spec calls for summing every range uniformly,
+ * and deduplicating "lines" specifically would need tracking which line
+ * *numbers* each range touches instead of just how many each spans, which
+ * is real extra surface for a rare-ish multi-selection-on-one-line case.
+ */
+export function textStatsOf(buffer: EditorBuffer): DocumentTextStats {
+  const ranges = buffer.selection.ranges.filter((range) => !range.empty);
+  if (ranges.length === 0) {
+    return {
+      stats: statsForRange(buffer.doc, 0, buffer.doc.length, finishTextStats),
+      selected: false,
+    };
+  }
+  let total: TextStats = { chars: 0, words: 0, lines: 0 };
+  for (const range of ranges) {
+    const rangeStats = statsForRange(buffer.doc, range.from, range.to, finishRangeTextStats);
+    total = {
+      chars: total.chars + rangeStats.chars,
+      words: total.words + rangeStats.words,
+      lines: total.lines + rangeStats.lines,
+    };
+  }
+  return { stats: total, selected: true };
 }
 
 const FIND_DATALIST_ID = "plume-find-history";

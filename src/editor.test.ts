@@ -6,8 +6,14 @@
 import { EditorSelection, EditorState, Text } from "@codemirror/state";
 import { basicSetup } from "codemirror";
 import { describe, expect, it } from "vitest";
-import { eolMarkPositions, indentGuideLevels, lineSpanForSelectionInDoc } from "./editor";
+import {
+  eolMarkPositions,
+  indentGuideLevels,
+  lineSpanForSelectionInDoc,
+  textStatsOf,
+} from "./editor";
 import { lineSpanForSelection } from "./lineops";
+import { countTextStats } from "./textstats";
 
 describe("eolMarkPositions", () => {
   it("returns no positions for an empty document", () => {
@@ -263,5 +269,131 @@ describe("allowMultipleSelections (ROADMAP.md Track C multi-cursor)", () => {
     const state = EditorState.create({ doc: "abc abc abc", extensions: [basicSetup] });
     const tr = state.update({ selection: twoRanges });
     expect(tr.state.selection.ranges.length).toBe(2);
+  });
+});
+
+// ROADMAP.md v0.4 Track C word/char/line count status-bar segment. Unlike
+// eolMarkPositions/indentGuideLevels above (pure functions over a Text or
+// plain string), textStatsOf reads a full EditorBuffer (EditorState),
+// including its selection — but EditorState.create needs no live view or
+// layout engine either, so this is fully reachable here without a WebView.
+describe("textStatsOf", () => {
+  it("reports whole-document stats when the selection is a single empty cursor", () => {
+    const state = EditorState.create({ doc: "hello world\nsecond line" });
+    const result = textStatsOf(state);
+    expect(result.selected).toBe(false);
+    expect(result.stats).toEqual(countTextStats("hello world\nsecond line"));
+  });
+
+  it("agrees with countTextStats for CJK-mixed whole-document content", () => {
+    const text = "Hello 你好世界\nこんにちは안녕\nlast line";
+    const state = EditorState.create({ doc: text });
+    expect(textStatsOf(state).stats).toEqual(countTextStats(text));
+  });
+
+  it("reports selection stats (not whole-document) for a single non-empty range", () => {
+    const state = EditorState.create({ doc: "hello world" });
+    const withSelection = state.update({
+      selection: EditorSelection.single(0, 5), // "hello"
+    }).state;
+    const result = textStatsOf(withSelection);
+    expect(result.selected).toBe(true);
+    expect(result.stats).toEqual({ chars: 5, words: 1, lines: 1 });
+  });
+
+  it("sums stats across every non-empty range for a multi-cursor selection", () => {
+    const state = EditorState.create({
+      doc: "abc abc abc",
+      extensions: [EditorState.allowMultipleSelections.of(true)],
+    });
+    // Select the first and third "abc" (3 chars, 1 word each).
+    const withSelection = state.update({
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 3),
+        EditorSelection.range(8, 11),
+      ]),
+    }).state;
+    const result = textStatsOf(withSelection);
+    expect(result.selected).toBe(true);
+    // "lines" sums per-range too, per spec ("多選取時加總所有 ranges") — each
+    // range independently spans 1 line here, even though both ranges sit
+    // on the *same* physical line of a single-line document, so the total
+    // is 2, not the 1 distinct line actually touched. Deliberate: see
+    // textStatsOf's doc comment in editor.ts.
+    expect(result.stats).toEqual({ chars: 6, words: 2, lines: 2 });
+  });
+
+  it("ignores empty ranges mixed in with a non-empty one (multi-cursor, only one range has a selection)", () => {
+    const state = EditorState.create({
+      doc: "abc abc abc",
+      extensions: [EditorState.allowMultipleSelections.of(true)],
+    });
+    const withSelection = state.update({
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 3), // "abc" selected
+        EditorSelection.cursor(8), // bare cursor, no selection
+      ]),
+    }).state;
+    const result = textStatsOf(withSelection);
+    expect(result.selected).toBe(true);
+    expect(result.stats).toEqual({ chars: 3, words: 1, lines: 1 });
+  });
+
+  it("treats every range being empty (multiple bare cursors) as no selection", () => {
+    const state = EditorState.create({
+      doc: "abc abc abc",
+      extensions: [EditorState.allowMultipleSelections.of(true)],
+    });
+    const withSelection = state.update({
+      selection: EditorSelection.create([EditorSelection.cursor(0), EditorSelection.cursor(8)]),
+    }).state;
+    const result = textStatsOf(withSelection);
+    expect(result.selected).toBe(false);
+    expect(result.stats).toEqual(countTextStats("abc abc abc"));
+  });
+
+  it("does not count a selection's own trailing newline as spanning a further line", () => {
+    // "AAA\nBBB": selecting through "AAA\n" only (issue #99-style boundary).
+    const state = EditorState.create({ doc: "AAA\nBBB" });
+    const withSelection = state.update({ selection: EditorSelection.single(0, 4) }).state;
+    const result = textStatsOf(withSelection);
+    expect(result.stats).toEqual({ chars: 4, words: 1, lines: 1 });
+  });
+
+  it("handles an empty document (0 chars, 0 words, 1 line)", () => {
+    const state = EditorState.create({ doc: "" });
+    const result = textStatsOf(state);
+    expect(result.selected).toBe(false);
+    expect(result.stats).toEqual({ chars: 0, words: 0, lines: 1 });
+  });
+
+  it("walks a document large enough to span many internal Text leaves/nodes", () => {
+    // TextLeaf caps at 32 lines per node (@codemirror/state's own
+    // Tree.Branch) before TextNode.from/TextLeaf.split kicks in — a
+    // 200-line document forces textStatsOf's Text.iterRange walk across
+    // multiple internal chunks, not just one small leaf.
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i} 你好`);
+    const text = lines.join("\n");
+    const state = EditorState.create({ doc: text });
+    expect(textStatsOf(state).stats).toEqual(countTextStats(text));
+  });
+
+  it("computes selection stats correctly across a many-leaf document (mid-tree range)", () => {
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i} 你好`);
+    const text = lines.join("\n");
+    const state = EditorState.create({ doc: text });
+    // Select from partway into line 50 through partway into line 150.
+    const from = state.doc.line(50).from + 2;
+    const to = state.doc.line(150).from + 2;
+    const withSelection = state.update({ selection: EditorSelection.single(from, to) }).state;
+    const result = textStatsOf(withSelection);
+    expect(result.selected).toBe(true);
+    // Oracle: the number of lines a selection touches is lineAt(to-1) minus
+    // lineAt(from) inclusive — the same to-1 convention
+    // lineSpanForSelectionInDoc uses to resolve a selection's end line
+    // (issue #99), which finishRangeTextStats is designed to match.
+    expect(result.stats.lines).toBe(
+      state.doc.lineAt(to - 1).number - state.doc.lineAt(from).number + 1,
+    );
   });
 });

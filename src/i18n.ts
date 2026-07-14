@@ -28,6 +28,8 @@ export interface Messages {
   "statusbar.readonlyPreview": (size: string) => string;
   "statusbar.decodeWarning": string;
   "statusbar.buildingIndex": string;
+  "statusbar.textStats": (words: number, chars: number, lines: number) => string;
+  "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
 
   "confirm.unsavedChanges": (title: string) => string;
   "confirm.dontSave": string;
@@ -217,6 +219,12 @@ const en: Messages = {
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.decodeWarning": "⚠ decoded with errors",
   "statusbar.buildingIndex": "Building line index…",
+  "statusbar.textStats": (words, chars, lines) =>
+    `${words} word${words === 1 ? "" : "s"}, ${chars} char${chars === 1 ? "" : "s"}, ` +
+    `${lines} line${lines === 1 ? "" : "s"}`,
+  "statusbar.textStatsSelection": (words, chars, lines) =>
+    `Selected: ${words} word${words === 1 ? "" : "s"}, ${chars} char${chars === 1 ? "" : "s"}, ` +
+    `${lines} line${lines === 1 ? "" : "s"}`,
 
   "confirm.unsavedChanges": (title) => `"${title}" has unsaved changes.`,
   "confirm.dontSave": "Don't Save",
@@ -435,6 +443,9 @@ const zhTW: Messages = {
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
   "statusbar.buildingIndex": "正在建立行號索引…",
+  "statusbar.textStats": (words, chars, lines) => `${words} 詞、${chars} 字元、${lines} 行`,
+  "statusbar.textStatsSelection": (words, chars, lines) =>
+    `已選取：${words} 詞、${chars} 字元、${lines} 行`,
 
   "confirm.unsavedChanges": (title) => `「${title}」有未儲存的變更。`,
   "confirm.dontSave": "不要儲存",
@@ -637,6 +648,9 @@ const ja: Messages = {
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
   "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
   "statusbar.buildingIndex": "行番号インデックスを構築中…",
+  "statusbar.textStats": (words, chars, lines) => `${words} 語、${chars} 文字、${lines} 行`,
+  "statusbar.textStatsSelection": (words, chars, lines) =>
+    `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
 
   "confirm.unsavedChanges": (title) => `「${title}」には保存されていない変更があります。`,
   "confirm.dontSave": "保存しない",
@@ -852,6 +866,9 @@ const zhCN: Messages = {
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
   "statusbar.decodeWarning": "⚠ 解码时发生错误",
   "statusbar.buildingIndex": "正在构建行号索引…",
+  "statusbar.textStats": (words, chars, lines) => `${words} 词、${chars} 字符、${lines} 行`,
+  "statusbar.textStatsSelection": (words, chars, lines) =>
+    `已选择：${words} 词、${chars} 字符、${lines} 行`,
 
   "confirm.unsavedChanges": (title) => `“${title}”有未保存的更改。`,
   "confirm.dontSave": "不保存",
