@@ -5,6 +5,7 @@ mod comparepreview;
 mod encoding;
 mod fsguard;
 mod hexdump;
+mod linebreak;
 mod lineindex;
 mod menu;
 mod mojibake;

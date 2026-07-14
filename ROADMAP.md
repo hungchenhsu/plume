@@ -282,6 +282,33 @@ cases of "never misrepresent user text")
   reproduce the two previously-silent failure modes deterministically and
   assert they land in `scan_errors` while the readable sibling still
   scans normally [danger]
+- [x] #119 + #132: large-file line handling previously only recognized
+  `0x0A` (LF) as a line terminator — the same blind spot #92 fixed in
+  `encoding::detect_line_ending` — in two coupled places: the line index
+  (`lineindex.rs`) counted a CR-only (Classic Mac) file as a single line,
+  breaking Go to Line and bookmarks beyond the loaded chunk window
+  (#119), and `chunk.rs`'s page alignment (`align_start`,
+  `cut_tail_at_newline`, the prev-byte `at_line_start` check) shifted a
+  correct lone-CR line-start offset to the next LF-line, so fixing the
+  index alone would have made goto/bookmarks silently land on the wrong
+  line in mixed-endings files (#132). Both now share one byte-level
+  semantics module, `linebreak.rs`: LF, CRLF (counted once, never split),
+  and lone CR all terminate a line, matching #92's three-way split. The
+  streaming scanner's `pending_cr` flag carries across reads so a `\r\n`
+  pair split across a chunk boundary stays one boundary; alignment treats
+  an unresolved trailing CR as "not a complete terminator" (cut before
+  it, or keep the whole chunk when it is the only candidate), so a page
+  cut can never strand half a CRLF. Line-start checks now consult the
+  neighbor pair (prev byte + first byte) because a CR directly followed
+  by LF is a CRLF's interior, not a boundary. Regression tests: CR-only
+  multi-line index and paging (every page starts and ends on a real line
+  boundary, lossless), CRLF not double-counted, mixed LF/CRLF/CR file,
+  trailing lone CR at EOF (no phantom line), both directions of the
+  read-boundary split (CR|LF and CR|other-byte) for the index and the
+  pager, end-to-end locate-then-read-chunk alignment for goto and
+  backward paging, and helper-vs-scanner agreement locks in
+  `linebreak.rs`; pure-LF and CRLF paging behavior is unchanged
+  byte-for-byte [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
