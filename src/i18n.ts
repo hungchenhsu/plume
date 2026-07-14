@@ -111,6 +111,7 @@ export interface Messages {
   "menu.whyEncoding": (encoding: string) => string;
   "menu.reopenWithEncoding": string;
   "menu.saveWithEncoding": string;
+  "menu.convertFileToEncoding": string;
   "menu.compareEncodings": string;
   "menu.viewRawBytes": string;
   "menu.repairMojibake": string;
@@ -177,6 +178,11 @@ export interface Messages {
   "streamReplace.executeButton": string;
   "streamReplace.replacing": string;
   "streamReplace.resultMessage": (count: number) => string;
+
+  "streamConvert.title": (file: string) => string;
+  "streamConvert.converting": (encoding: string) => string;
+  "streamConvert.resultMessage": (encoding: string) => string;
+  "streamConvert.failedMessage": string;
 
   "dialog.pagingTitle": string;
   "dialog.fileChangedTitle": string;
@@ -344,6 +350,7 @@ const en: Messages = {
   "menu.whyEncoding": (encoding) => `Why ${encoding}?`,
   "menu.reopenWithEncoding": "Reopen with Encoding",
   "menu.saveWithEncoding": "Save with Encoding",
+  "menu.convertFileToEncoding": "Convert File to Encoding",
   "menu.compareEncodings": "Compare encodings…",
   "menu.viewRawBytes": "View raw bytes…",
   "menu.repairMojibake": "Repair mojibake…",
@@ -424,6 +431,11 @@ const en: Messages = {
   "streamReplace.replacing": "Replacing…",
   "streamReplace.resultMessage": (count) =>
     `${count} replacement${count === 1 ? "" : "s"} made.`,
+
+  "streamConvert.title": (file) => `Convert Encoding — ${file}`,
+  "streamConvert.converting": (encoding) => `Converting to ${encoding}…`,
+  "streamConvert.resultMessage": (encoding) => `File converted to ${encoding}.`,
+  "streamConvert.failedMessage": "Conversion failed unexpectedly.",
 
   "dialog.pagingTitle": "Paging",
   "dialog.fileChangedTitle": "File changed on disk",
@@ -597,6 +609,7 @@ const zhTW: Messages = {
   "menu.whyEncoding": (encoding) => `為何是 ${encoding}？`,
   "menu.reopenWithEncoding": "以指定編碼重新開啟",
   "menu.saveWithEncoding": "以指定編碼儲存",
+  "menu.convertFileToEncoding": "轉換檔案編碼",
   "menu.compareEncodings": "比較編碼…",
   "menu.viewRawBytes": "檢視原始位元組…",
   "menu.repairMojibake": "修復亂碼…",
@@ -667,6 +680,11 @@ const zhTW: Messages = {
   "streamReplace.executeButton": "全部取代",
   "streamReplace.replacing": "取代中…",
   "streamReplace.resultMessage": (count) => `已取代 ${count} 處。`,
+
+  "streamConvert.title": (file) => `轉換編碼 — ${file}`,
+  "streamConvert.converting": (encoding) => `正在轉換為 ${encoding}…`,
+  "streamConvert.resultMessage": (encoding) => `檔案已轉換為 ${encoding}。`,
+  "streamConvert.failedMessage": "轉換發生非預期的失敗。",
 
   "dialog.pagingTitle": "翻頁",
   "dialog.fileChangedTitle": "檔案已在磁碟上異動",
@@ -830,6 +848,7 @@ const ja: Messages = {
   "menu.whyEncoding": (encoding) => `なぜ ${encoding} なのか？`,
   "menu.reopenWithEncoding": "エンコーディングを指定して再度開く",
   "menu.saveWithEncoding": "エンコーディングを指定して保存",
+  "menu.convertFileToEncoding": "ファイルのエンコーディングを変換",
   "menu.compareEncodings": "エンコーディングを比較…",
   "menu.viewRawBytes": "生バイトを表示…",
   "menu.repairMojibake": "文字化けを修復…",
@@ -908,6 +927,11 @@ const ja: Messages = {
   "streamReplace.executeButton": "すべて置換",
   "streamReplace.replacing": "置換中…",
   "streamReplace.resultMessage": (count) => `${count} 件を置換しました。`,
+
+  "streamConvert.title": (file) => `エンコード変換 — ${file}`,
+  "streamConvert.converting": (encoding) => `${encoding} に変換中…`,
+  "streamConvert.resultMessage": (encoding) => `ファイルを ${encoding} に変換しました。`,
+  "streamConvert.failedMessage": "変換が予期せず失敗しました。",
 
   "dialog.pagingTitle": "ページング",
   "dialog.fileChangedTitle": "ファイルがディスク上で変更されました",
@@ -1077,6 +1101,7 @@ const zhCN: Messages = {
   "menu.whyEncoding": (encoding) => `为什么是 ${encoding}？`,
   "menu.reopenWithEncoding": "以指定编码重新打开",
   "menu.saveWithEncoding": "以指定编码保存",
+  "menu.convertFileToEncoding": "转换文件编码",
   "menu.compareEncodings": "比较编码…",
   "menu.viewRawBytes": "查看原始字节…",
   "menu.repairMojibake": "修复乱码…",
@@ -1147,6 +1172,11 @@ const zhCN: Messages = {
   "streamReplace.executeButton": "全部替换",
   "streamReplace.replacing": "替换中…",
   "streamReplace.resultMessage": (count) => `已替换 ${count} 处。`,
+
+  "streamConvert.title": (file) => `转换编码 — ${file}`,
+  "streamConvert.converting": (encoding) => `正在转换为 ${encoding}…`,
+  "streamConvert.resultMessage": (encoding) => `文件已转换为 ${encoding}。`,
+  "streamConvert.failedMessage": "转换发生意外失败。",
 
   "dialog.pagingTitle": "翻页",
   "dialog.fileChangedTitle": "文件已在磁盘上更改",
