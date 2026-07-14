@@ -22,6 +22,8 @@ function makeDoc(id: number, path: string | null = null): Doc {
     lineIndex: null,
     windowStartLine: null,
     bookmarks: [],
+    chunkGeneration: 0,
+    chunkLoadInFlight: false,
     backupName: null,
     fingerprint: null,
     buffer: {} as EditorBuffer,

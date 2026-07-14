@@ -309,6 +309,34 @@ cases of "never misrepresent user text")
   backward paging, and helper-vs-scanner agreement locks in
   `linebreak.rs`; pure-LF and CRLF paging behavior is unchanged
   byte-for-byte [danger]
+- [x] #120: large-file chunk IPC responses had no generation guard — a
+  slow pageChunk/autoAppendChunk/prependChunk/gotoLargeFileLine response
+  could land after a newer request (rapid Next/Next, a goto/bookmark jump
+  racing a pager click) or a reload-from-disk/reopen-with-encoding had
+  already moved the doc on, silently clobbering the buffer with stale
+  content or a byte offset that no longer matched what was on screen.
+  Every one of those five call sites now bumps a per-doc monotonic
+  `chunkGeneration` counter (`tabs.ts` `Doc.chunkGeneration`, mirroring
+  `scanGeneration` from #103) before firing its IPC call(s) and applies
+  the response only if the generation still matches *and* the doc is
+  still the active tab, via a shared, unit-tested `shouldApplyChunkResponse`
+  (`chunkguard.ts`) — otherwise the response, success or error, is
+  discarded outright with no mutation and no dialog. `ensureLineIndex`
+  (goto's line-index build) is generation-checked too, so a reload can't
+  resurrect a stale index after clearing it. The four request kinds also
+  now share one per-doc `chunkLoadInFlight` guard (previously a single
+  module-level flag that covered only auto append/prepend and could
+  cross-block unrelated tabs), so none of them can overlap for the same
+  doc; reload/reopen bump the generation and clear the flag unconditionally
+  instead, since they preempt whatever's in flight rather than waiting on
+  it. pageChunk's Prev no longer pops its offset history until the
+  response is confirmed current, fixing a lost-history-entry bug on a
+  failed or superseded Prev. Streaming replace's post-convert reload goes
+  through the same `reloadFromDisk`, so it's covered without a separate
+  path. Regression tests in `chunkguard.test.ts` simulate the exact
+  call-site pattern (bump, await, guarded apply) for a rapid-Next/Next
+  race, a tab-switch-during-load race, and a reload-during-load race, plus
+  full branch coverage of the pure guard [danger]
 - [ ] Encoding round-trip fuzz expansion: deterministic-PRNG
   representable-text round-trips across all supported encodings plus
   mojibake-wizard reversibility fuzz (no new dependencies; scheduled
