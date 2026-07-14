@@ -29,17 +29,28 @@
 //! `encode()` calls is an acceptable trade for reusing exactly the encoding
 //! logic `save_document` itself trusts, rather than hand-rolling a second,
 //! independent per-encoding unmappable-character table.
+//!
+//! ROADMAP.md v0.4 Track A "Lossy-save character preview" [danger] reuses
+//! this exact scan (the shared `scan_unmappable` below) for
+//! `lib.rs::save_document`'s own lossy-rejection path: when a save is
+//! rejected because `encoding::encode` reports `unmappable`, `save_document`
+//! calls this module's `lossy_save_report` to tell the user *which*
+//! characters and *where*, not just that some exist. The two callers differ
+//! in exactly one respect -- position: `check_representability`'s dry-run
+//! runs against a *plan* that hasn't been applied to the editor buffer yet,
+//! so a line/column there wouldn't correspond to anything on screen, while
+//! `lossy_save_report` runs against the actual current buffer content, where
+//! a position is meaningful and actionable. `scan_unmappable` always tracks
+//! position; each public wrapper keeps or discards it.
 
 use encoding_rs::{Encoding, UTF_16BE, UTF_16LE, UTF_8};
 use serde::Serialize;
 
 /// Cap on how many *distinct* unmappable characters are actually listed in
-/// `RepresentabilityReport::samples`. `unmappable_count` itself is never
-/// capped — only the sample list — mirroring the capped-sample spirit of
-/// ROADMAP.md's forthcoming "Lossy-save character preview" item (listing
-/// *which* characters can't be encoded, not just a count, but bounded so a
-/// document with thousands of unmappable characters doesn't dump them all
-/// into a dialog).
+/// `RepresentabilityReport::samples` (and, shared via `scan_unmappable`,
+/// `LossySaveReport::samples` below). `unmappable_count` itself is never
+/// capped — only the sample list — so a document with thousands of
+/// unmappable characters doesn't dump them all into a dialog.
 const SAMPLE_CAP: usize = 20;
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -71,6 +82,122 @@ fn format_sample(ch: char) -> String {
     format!("{ch} (U+{:04X})", ch as u32)
 }
 
+/// One *distinct* unmappable character sample carrying its first-occurrence
+/// position in the scanned text (ROADMAP.md v0.4 Track A "Lossy-save
+/// character preview") -- the richer sibling of
+/// `RepresentabilityReport::samples`'s plain `String` entries. `line` and
+/// `column` are 1-based; `column` counts UTF-16 code units (see
+/// `scan_unmappable`'s doc comment), matching the frontend's own CM6-offset-
+/// based cursor position that feeds `statusbar.cursor` -- not Unicode
+/// scalar values.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmappableSample {
+    /// Formatted display text, identical convention to `format_sample`
+    /// (e.g. `"é (U+00E9)"`).
+    pub display: String,
+    /// 1-based line number of this sample's first occurrence.
+    pub line: usize,
+    /// 1-based column number of this sample's first occurrence on its line.
+    pub column: usize,
+}
+
+/// Report attached to `lib.rs::SaveResult` on a lossy-save rejection: same
+/// shape as `RepresentabilityReport`, but `samples` carries position
+/// (`UnmappableSample`) instead of a plain formatted string, since this
+/// scan runs against the buffer actually being saved rather than a
+/// not-yet-applied normalization plan.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LossySaveReport {
+    /// Total count of Unicode scalar values with no representation in the
+    /// target encoding -- never capped, counted per occurrence. Same
+    /// semantics as `RepresentabilityReport::unmappable_count`.
+    pub unmappable_count: usize,
+    /// Up to `SAMPLE_CAP` distinct unmappable characters, in
+    /// first-encountered order, each with its own position.
+    pub samples: Vec<UnmappableSample>,
+    /// True when there were more distinct unmappable characters than fit in
+    /// `samples`. Same semantics as
+    /// `RepresentabilityReport::samples_truncated`.
+    pub samples_truncated: bool,
+}
+
+/// One first-encountered unmappable character found by `scan_unmappable`,
+/// carrying its 1-based line/column in the scanned text alongside the
+/// character itself. Shared internal representation for both public report
+/// types below -- `check_representability` discards the position,
+/// `lossy_save_report` keeps it (see the module doc for why they differ).
+struct UnmappableHit {
+    ch: char,
+    line: usize,
+    column: usize,
+}
+
+/// The actual character-by-character scan both `check_representability` and
+/// `lossy_save_report` are built from: walks `text` once, probing each
+/// Unicode scalar value's representability in `encoding` exactly like
+/// `encoding::encode` does at real save/normalize time, and returns the
+/// total per-occurrence unmappable count, up to `SAMPLE_CAP`
+/// first-encountered distinct-character hits (each carrying its own 1-based
+/// line/column), and whether distinct characters overflowed the cap.
+///
+/// Line/column increment on every `\n` -- callers must pass an
+/// LF-normalized `text` (never a CRLF/CR-converted save buffer) for these
+/// positions to correspond to anything the editor itself shows (see
+/// `lossy_save_report`'s doc comment). Column counts UTF-16 code units, not
+/// Unicode scalar values: this deliberately matches the frontend's own
+/// position convention (CM6's `Text` offsets are UTF-16 code units --
+/// `editor.ts`'s `onCursorMoved` computes the status bar's "Ln/Col" the
+/// same way, `head - line.from`), so a supplementary-plane character (e.g.
+/// an astral emoji) earlier on the same line advances the column by 2, not
+/// 1 -- otherwise a sample reported as "Col 14" here could disagree with
+/// what the user sees by placing the cursor at that exact character.
+fn scan_unmappable(text: &str, encoding: &'static Encoding) -> (usize, Vec<UnmappableHit>, bool) {
+    let mut unmappable_count = 0usize;
+    // Distinct characters already sampled, in first-encountered order. A
+    // plain Vec + linear search beats a HashSet here: it caps at SAMPLE_CAP
+    // (20) entries, keeps insertion order for free, and the linear scan
+    // only runs for characters already known unmappable.
+    let mut hits: Vec<UnmappableHit> = Vec::new();
+    let mut samples_truncated = false;
+    let mut line = 1usize;
+    let mut column = 1usize;
+    let mut buf = [0u8; 4];
+    for ch in text.chars() {
+        let s: &str = ch.encode_utf8(&mut buf);
+        let (_, _, had_unmappable) = encoding.encode(s);
+        if had_unmappable {
+            unmappable_count += 1;
+            if !hits.iter().any(|hit| hit.ch == ch) {
+                if hits.len() < SAMPLE_CAP {
+                    hits.push(UnmappableHit { ch, line, column });
+                } else {
+                    samples_truncated = true;
+                }
+            }
+        }
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += ch.len_utf16();
+        }
+    }
+    (unmappable_count, hits, samples_truncated)
+}
+
+/// Every Unicode scalar value round-trips through UTF-8 and UTF-16 by
+/// construction: UTF-8 can encode any scalar value, and UTF-16 can too (as
+/// a BMP code unit or a surrogate pair) -- the only code points UTF-16
+/// cannot represent are lone surrogates, which Rust's `char` (and therefore
+/// `str::chars()`) can never produce in the first place. Shared fast path
+/// for both public entry points below: skipping the per-character scan for
+/// these targets is correctness-preserving, not just an optimization.
+fn is_always_representable(encoding: &Encoding) -> bool {
+    encoding == UTF_8 || encoding == UTF_16LE || encoding == UTF_16BE
+}
+
 /// Core, Tauri-free implementation (unit-testable without the command
 /// harness — see the `tests` module below). `label` unknown -> `Err`,
 /// matching `encoding::encode`'s own contract.
@@ -78,19 +205,11 @@ pub fn check_representability(text: &str, label: &str) -> Result<Representabilit
     let encoding = Encoding::for_label(label.as_bytes())
         .ok_or_else(|| format!("Unknown encoding label: {label}"))?;
 
-    // Every Unicode scalar value round-trips through UTF-8 and UTF-16 by
-    // construction: UTF-8 can encode any scalar value, and UTF-16 can too
-    // (as a BMP code unit or a surrogate pair) -- the only code points
-    // UTF-16 cannot represent are lone surrogates, which Rust's `char`
-    // (and therefore `str::chars()` below) can never produce in the first
-    // place. Skipping the per-character scan for these targets is a
-    // correctness-preserving fast path, not just an optimization -- it
-    // also means a UTF-8/UTF-16 document's Normalize flow never pays this
-    // function's O(n) cost at all. The frontend applies the same
-    // short-circuit before ever calling the IPC command at all (see
-    // main.ts's `runNormalizeFlow` / `isUnicodeEncoding`), but this
-    // function agrees independently in case it is ever exercised directly.
-    if encoding == UTF_8 || encoding == UTF_16LE || encoding == UTF_16BE {
+    // The frontend applies the same short-circuit before ever calling the
+    // IPC command at all (see main.ts's `runNormalizeFlow` /
+    // `isUnicodeEncoding`), but this function agrees independently in case
+    // it is ever exercised directly.
+    if is_always_representable(encoding) {
         return Ok(RepresentabilityReport {
             unmappable_count: 0,
             samples: Vec::new(),
@@ -98,31 +217,10 @@ pub fn check_representability(text: &str, label: &str) -> Result<Representabilit
         });
     }
 
-    let mut unmappable_count = 0usize;
-    // Distinct characters already sampled, in first-encountered order. A
-    // plain Vec + linear `contains` beats a HashSet here: it caps at
-    // SAMPLE_CAP (20) entries, keeps insertion order for free, and the
-    // linear scan only runs for characters already known unmappable.
-    let mut sampled: Vec<char> = Vec::new();
-    let mut samples_truncated = false;
-    let mut buf = [0u8; 4];
-    for ch in text.chars() {
-        let s: &str = ch.encode_utf8(&mut buf);
-        let (_, _, had_unmappable) = encoding.encode(s);
-        if had_unmappable {
-            unmappable_count += 1;
-            if !sampled.contains(&ch) {
-                if sampled.len() < SAMPLE_CAP {
-                    sampled.push(ch);
-                } else {
-                    samples_truncated = true;
-                }
-            }
-        }
-    }
+    let (unmappable_count, hits, samples_truncated) = scan_unmappable(text, encoding);
     Ok(RepresentabilityReport {
         unmappable_count,
-        samples: sampled.into_iter().map(format_sample).collect(),
+        samples: hits.into_iter().map(|hit| format_sample(hit.ch)).collect(),
         samples_truncated,
     })
 }
@@ -137,6 +235,42 @@ pub fn check_representable(
     encoding: String,
 ) -> Result<RepresentabilityReport, String> {
     check_representability(&text, &encoding)
+}
+
+/// Called from `lib.rs::save_document`'s lossy-rejection branch (`unmappable
+/// && !allow_lossy`) with the same LF-normalized `content` the frontend
+/// passed in -- never the line-ending-converted buffer `encoding::encode`
+/// actually encodes. This is deliberate, not an oversight: CR/CRLF/LF
+/// terminators are always representable in every supported encoding, so the
+/// *set* of unmappable characters is identical either way, but a CR-only
+/// (classic Mac) converted buffer has no `\n` at all -- scanning it would
+/// silently collapse every line into "line 1". Scanning the LF-normalized
+/// content keeps positions meaningful against what the editor itself shows.
+pub fn lossy_save_report(text: &str, label: &str) -> Result<LossySaveReport, String> {
+    let encoding = Encoding::for_label(label.as_bytes())
+        .ok_or_else(|| format!("Unknown encoding label: {label}"))?;
+
+    if is_always_representable(encoding) {
+        return Ok(LossySaveReport {
+            unmappable_count: 0,
+            samples: Vec::new(),
+            samples_truncated: false,
+        });
+    }
+
+    let (unmappable_count, hits, samples_truncated) = scan_unmappable(text, encoding);
+    Ok(LossySaveReport {
+        unmappable_count,
+        samples: hits
+            .into_iter()
+            .map(|hit| UnmappableSample {
+                display: format_sample(hit.ch),
+                line: hit.line,
+                column: hit.column,
+            })
+            .collect(),
+        samples_truncated,
+    })
 }
 
 #[cfg(test)]
@@ -292,5 +426,188 @@ mod tests {
         let report = check_representability("", "Big5").unwrap();
         assert_eq!(report.unmappable_count, 0);
         assert!(report.samples.is_empty());
+    }
+
+    // -- lossy_save_report (ROADMAP.md v0.4 Track A "Lossy-save character
+    // preview") -- failing-test-first target: the stub above always reports
+    // clean, so every test in this section must fail until the real scan
+    // (reusing the same technique as `check_representability`, but keeping
+    // position) replaces it.
+
+    #[test]
+    fn lossy_save_report_unknown_encoding_is_an_error() {
+        assert!(lossy_save_report("hello", "not-an-encoding").is_err());
+    }
+
+    #[test]
+    fn lossy_save_report_utf8_is_always_fully_representable() {
+        let report = lossy_save_report("e\u{0301} 🚀 中文", "UTF-8").unwrap();
+        assert_eq!(report.unmappable_count, 0);
+        assert!(report.samples.is_empty());
+        assert!(!report.samples_truncated);
+    }
+
+    #[test]
+    fn lossy_save_report_utf16_is_always_fully_representable() {
+        for label in ["UTF-16LE", "UTF-16BE"] {
+            let report = lossy_save_report("e\u{0301} 🚀 中文", label).unwrap();
+            assert_eq!(report.unmappable_count, 0, "{label}");
+            assert!(report.samples.is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn plain_chinese_text_is_fully_representable_in_big5_for_save() {
+        let text = "中文編碼偵測測試，這是繁體中文範例文字。";
+        let report = lossy_save_report(text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 0);
+        assert!(report.samples.is_empty());
+    }
+
+    /// The core scenario this feature exists for: a single unmappable
+    /// character embedded in an otherwise-plain-ASCII line must report the
+    /// exact 1-based column of its first occurrence, counting UTF-16 code
+    /// units to match the status bar's cursor column (this all-BMP fixture
+    /// makes the two counts coincide; the UTF-16 semantics themselves are
+    /// pinned by `lossy_save_report_counts_columns_in_utf16_units` below)
+    /// -- "prefix e◌́ suffix" has the combining acute accent (U+0301) as
+    /// its 9th column.
+    #[test]
+    fn lossy_save_report_reports_first_occurrence_column() {
+        let text = "prefix e\u{0301} suffix";
+        let report = lossy_save_report(text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 1, "{report:?}");
+        assert_eq!(
+            report.samples,
+            vec![UnmappableSample {
+                display: "\u{0301} (U+0301)".to_string(),
+                line: 1,
+                column: 9,
+            }],
+        );
+        assert!(!report.samples_truncated);
+    }
+
+    /// Multi-line position correctness: the unmappable character sits on
+    /// the second of three lines, so `line` must be 2 (1-based), and
+    /// `column` must count from the start of *that* line, not the whole
+    /// text -- "line two é" has "é" as its 10th character.
+    #[test]
+    fn lossy_save_report_multiline_position_is_correct() {
+        let text = "line one\nline two é\nline three";
+        let report = lossy_save_report(text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 1, "{report:?}");
+        assert_eq!(
+            report.samples,
+            vec![UnmappableSample {
+                display: "é (U+00E9)".to_string(),
+                line: 2,
+                column: 10,
+            }],
+        );
+    }
+
+    /// Emoji (an astral, supplementary-plane character) is a single `char`
+    /// in Rust's iteration, so its *own* reported column is unaffected by
+    /// how many UTF-16 code units it occupies -- "rocket: 🚀 go" has the
+    /// rocket starting at column 9 either way (the column is captured
+    /// *before* advancing for the current character).
+    #[test]
+    fn lossy_save_report_reports_emoji_sample_with_correct_column() {
+        let text = "rocket: 🚀 go";
+        let report = lossy_save_report(text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 1, "{report:?}");
+        assert_eq!(
+            report.samples,
+            vec![UnmappableSample {
+                display: "🚀 (U+1F680)".to_string(),
+                line: 1,
+                column: 9,
+            }],
+        );
+    }
+
+    /// The distinguishing case: an astral emoji (UTF-16 length 2) precedes a
+    /// second, distinct unmappable character on the same line. If columns
+    /// counted Unicode scalar values (`char`s) instead, "é" would land at
+    /// column 2; counting UTF-16 code units (matching the frontend's own
+    /// CM6-offset-based cursor position -- see `scan_unmappable`'s doc
+    /// comment) puts it at column 3, since the rocket alone advances the
+    /// column by 2.
+    #[test]
+    fn lossy_save_report_column_counts_utf16_code_units_not_scalar_values() {
+        let text = "\u{1F680}é";
+        let report = lossy_save_report(text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 2, "{report:?}");
+        assert_eq!(
+            report.samples,
+            vec![
+                UnmappableSample {
+                    display: "🚀 (U+1F680)".to_string(),
+                    line: 1,
+                    column: 1,
+                },
+                UnmappableSample {
+                    display: "é (U+00E9)".to_string(),
+                    line: 1,
+                    column: 3,
+                },
+            ],
+        );
+    }
+
+    /// A repeated unmappable character must be sampled once, keeping the
+    /// position of its *first* occurrence (column 1) even though it also
+    /// recurs later (column 7) -- while `unmappable_count` still counts
+    /// both occurrences.
+    #[test]
+    fn lossy_save_report_keeps_first_occurrence_position_on_repeat() {
+        let text = "é and é again";
+        let report = lossy_save_report(text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 2, "count is per occurrence");
+        assert_eq!(
+            report.samples,
+            vec![UnmappableSample {
+                display: "é (U+00E9)".to_string(),
+                line: 1,
+                column: 1,
+            }],
+            "samples are per distinct character, at their first position"
+        );
+    }
+
+    #[test]
+    fn lossy_save_report_sample_list_is_capped_but_count_is_not() {
+        // 30 distinct combining marks (U+0300..=U+031D), all unmappable in
+        // Big5, all on one line -- well past SAMPLE_CAP (20).
+        let text: String = (0x0300u32..0x0300 + 30)
+            .map(|cp| char::from_u32(cp).unwrap())
+            .collect();
+        let report = lossy_save_report(&text, "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 30);
+        assert_eq!(report.samples.len(), SAMPLE_CAP);
+        assert!(
+            report.samples_truncated,
+            "distinct characters beyond the cap must be flagged"
+        );
+        assert_eq!(report.samples[0].line, 1);
+        assert_eq!(report.samples[0].column, 1);
+        assert_eq!(report.samples[SAMPLE_CAP - 1].column, SAMPLE_CAP);
+    }
+
+    #[test]
+    fn lossy_save_report_shift_jis_also_rejects_combining_marks() {
+        let report = lossy_save_report("e\u{0301}", "Shift_JIS").unwrap();
+        assert_eq!(report.unmappable_count, 1);
+        assert_eq!(report.samples[0].line, 1);
+        assert_eq!(report.samples[0].column, 2);
+    }
+
+    #[test]
+    fn lossy_save_report_empty_text_is_trivially_representable() {
+        let report = lossy_save_report("", "Big5").unwrap();
+        assert_eq!(report.unmappable_count, 0);
+        assert!(report.samples.is_empty());
+        assert!(!report.samples_truncated);
     }
 }

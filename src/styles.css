@@ -1371,6 +1371,36 @@ select:focus-visible {
   color: var(--accent-fg);
 }
 
+.confirm-dialog-title {
+  font-weight: 600;
+}
+
+/* Lossy-save character preview (ROADMAP.md v0.4 Track A, src/lossysave.ts):
+   the sample list inside a .confirm-dialog can run up to SAMPLE_CAP (20)
+   lines, well past what should grow the dialog itself -- scrolls instead,
+   same max-height/overflow-y idiom as .batchconvert-scan-errors-list. */
+.lossy-samples {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  font-size: var(--font-ui-xs);
+  color: var(--fg-muted);
+  background: var(--bg-base);
+}
+
+.lossy-samples-truncated {
+  margin: -8px 0 14px;
+  font-size: var(--font-ui-xs);
+  color: var(--fg-faint);
+}
+
 .prefs-overlay {
   position: fixed;
   inset: 0;

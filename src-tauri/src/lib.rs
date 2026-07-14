@@ -169,6 +169,14 @@ pub struct SaveResult {
     /// the next save's `expected_fingerprint`. `None` unless `written` is
     /// true.
     fingerprint: Option<Fingerprint>,
+    /// Which characters can't be represented in `encoding`, not just that
+    /// some can't (ROADMAP.md v0.4 Track A "Lossy-save character preview")
+    /// [danger]. Populated only on the lossy-rejection path (`unmappable:
+    /// true, written: false`, from the first, `allow_lossy: false` call);
+    /// `None` on every other result — a successful write (lossy or not)
+    /// and a `stale` rejection both have nothing new to show, and the
+    /// frontend never re-triggers the lossy-preview dialog from either.
+    lossy_report: Option<normalize::LossySaveReport>,
 }
 
 /// Read a file from disk, decoding with the given encoding label or with
@@ -509,11 +517,18 @@ fn save_document(
     let text = encoding::apply_line_ending(&content, &line_ending);
     let (bytes, unmappable) = encoding::encode(&text, &encoding, with_bom)?;
     if unmappable && !allow_lossy {
+        // Scan `content` (the LF-normalized buffer as sent by the
+        // frontend), never `text` (the line-ending-converted buffer just
+        // encoded above) -- see `normalize::lossy_save_report`'s doc
+        // comment for why a CR-converted buffer would silently break
+        // position reporting.
+        let lossy_report = normalize::lossy_save_report(&content, &encoding)?;
         return Ok(SaveResult {
             unmappable: true,
             written: false,
             stale: false,
             fingerprint: None,
+            lossy_report: Some(lossy_report),
         });
     }
     let target = std::path::Path::new(&path);
@@ -525,6 +540,7 @@ fn save_document(
                     written: false,
                     stale: true,
                     fingerprint: None,
+                    lossy_report: None,
                 });
             }
         }
@@ -535,6 +551,7 @@ fn save_document(
         written: true,
         stale: false,
         fingerprint: Fingerprint::from_path(target).ok(),
+        lossy_report: None,
     })
 }
 
@@ -658,7 +675,7 @@ pub fn run() {
 mod tests {
     use super::{
         atomic_write, existing_paths_from_args, explain_detection, open_document, preview_slice,
-        save_document, tmp_candidate_path, EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD,
+        save_document, tmp_candidate_path, Fingerprint, EXPLAIN_SAMPLE_BYTES, LARGE_FILE_THRESHOLD,
         PREVIEW_BYTES,
     };
     // Only the unix-gated symlink test uses this; an unconditional import
@@ -1271,6 +1288,149 @@ mod tests {
             original,
             "refused save must leave the original bytes on disk untouched"
         );
+
+        // ROADMAP.md v0.4 Track A "Lossy-save character preview": the
+        // rejection must name *which* character can't be encoded and
+        // *where* (Ln:Col), not just that some can't. "hello 🚀 世界" -- 世
+        // and 界 are ordinary Big5-representable Traditional Chinese
+        // characters; only the emoji is the problem, at its 1-based column
+        // (h-e-l-l-o-space-🚀 = column 7).
+        let report = result
+            .lossy_report
+            .expect("lossy rejection must carry a report");
+        assert_eq!(report.unmappable_count, 1);
+        assert_eq!(
+            report.samples,
+            vec![crate::normalize::UnmappableSample {
+                display: "🚀 (U+1F680)".to_string(),
+                line: 1,
+                column: 7,
+            }]
+        );
+        assert!(!report.samples_truncated);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Failing-test-first target (ROADMAP.md v0.4 Track A "Lossy-save
+    /// character preview"): position must be computed against the
+    /// LF-normalized `content` the frontend sent, never the
+    /// line-ending-converted buffer `encoding::encode` actually writes.
+    /// `line_ending: "CR"` is the sharpest regression case -- a CR-only
+    /// converted buffer has no `\n` at all (`encoding::apply_line_ending`
+    /// replaces every `\n` with a bare `\r`), so an implementation that
+    /// mistakenly scanned the converted buffer instead of `content` would
+    /// see zero line breaks and report every line as line 1. The
+    /// unmappable character sits on the second of three lines here, so a
+    /// correct implementation must still report `line: 2`.
+    #[test]
+    fn save_document_lossy_report_uses_lf_buffer_positions_regardless_of_line_ending() {
+        let dir = std::env::temp_dir().join("plume-save-lossy-cr-position");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+        std::fs::write(&target, b"placeholder").unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        let content = "line one\nline two \u{1F680}\nline three".to_string();
+        let result = save_document(
+            path,
+            content,
+            "Big5".to_string(),
+            false,
+            "CR".to_string(),
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert!(result.unmappable);
+        assert!(!result.written);
+        let report = result
+            .lossy_report
+            .expect("lossy rejection must carry a report");
+        assert_eq!(report.unmappable_count, 1, "{report:?}");
+        assert_eq!(
+            report.samples,
+            vec![crate::normalize::UnmappableSample {
+                display: "\u{1F680} (U+1F680)".to_string(),
+                line: 2,
+                column: 10,
+            }],
+            "position must reflect the LF-normalized buffer, not the CR-converted save buffer"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `stale` rejection (issue #113's fingerprint guard) only happens on
+    /// a retry that already passed `allow_lossy: true`, so the frontend
+    /// never needs a fresh lossy sample list there -- `lossy_report` stays
+    /// `None` even though `unmappable` itself is still computed and may be
+    /// true.
+    #[test]
+    fn save_document_stale_rejection_has_no_lossy_report() {
+        let dir = std::env::temp_dir().join("plume-save-lossy-stale-no-report");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+        std::fs::write(&target, b"original").unwrap();
+        let path = target.to_string_lossy().into_owned();
+
+        // A fingerprint that can never match anything currently on disk --
+        // stands in for "the file changed since this baseline was taken".
+        let stale_fingerprint = Fingerprint::from_path(&target).unwrap();
+        std::fs::write(&target, b"changed on disk by someone else").unwrap();
+
+        let result = save_document(
+            path,
+            "hello \u{1F680} world".to_string(),
+            "Big5".to_string(),
+            false,
+            "LF".to_string(),
+            true, // already consented to lossy, as the frontend's stale retry does
+            Some(stale_fingerprint),
+            false,
+        )
+        .unwrap();
+
+        assert!(result.stale);
+        assert!(!result.written);
+        assert!(
+            result.lossy_report.is_none(),
+            "a stale rejection must not carry a lossy report"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A successful UTF-8 save is never unmappable in the first place, so
+    /// `lossy_report` must stay `None` on the ordinary happy path -- it
+    /// should never spuriously populate outside the one rejection branch.
+    #[test]
+    fn save_document_successful_utf8_save_has_no_lossy_report() {
+        let dir = std::env::temp_dir().join("plume-save-lossy-utf8-happy-path");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.txt");
+        let path = target.to_string_lossy().into_owned();
+
+        let result = save_document(
+            path,
+            "hello \u{1F680} world".to_string(),
+            "UTF-8".to_string(),
+            false,
+            "LF".to_string(),
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert!(!result.unmappable);
+        assert!(result.written);
+        assert!(result.lossy_report.is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

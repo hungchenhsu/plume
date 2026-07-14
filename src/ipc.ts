@@ -107,6 +107,37 @@ export function locateLineOffset(
   });
 }
 
+/** One distinct unmappable character sample from a lossy-save rejection,
+ *  carrying its first-occurrence position (src-tauri/src/normalize.rs's
+ *  `UnmappableSample`). `line`/`column` are 1-based; `column` counts
+ *  UTF-16 code units (matching CM6's own offsets, the same convention
+ *  `onCursorMoved`/`statusbar.cursor` already use), not Unicode scalar
+ *  values -- an astral character counts as 2. */
+export interface LossySample {
+  /** Formatted "char (U+XXXX)" text, e.g. "é (U+00E9)" — same convention as
+   *  `RepresentabilityReport.samples`' entries. */
+  display: string;
+  line: number;
+  column: number;
+}
+
+/** Which characters can't be represented in the target encoding, not just
+ *  that some can't (ROADMAP.md v0.4 Track A "Lossy-save character preview";
+ *  src-tauri/src/normalize.rs's `LossySaveReport`, shared scan technique
+ *  with `RepresentabilityReport`/`checkRepresentable`). */
+export interface LossyReport {
+  /** Total count of Unicode scalar values with no representation in the
+   *  target encoding — never capped, counted per occurrence. */
+  unmappableCount: number;
+  /** Up to 20 distinct unmappable characters, in first-encountered order,
+   *  each with its own position (`normalize.rs`'s `SAMPLE_CAP`). */
+  samples: LossySample[];
+  /** True when there were more distinct unmappable characters than fit in
+   *  `samples` — the dialog appends a note so a capped list is never
+   *  mistaken for a complete one. */
+  samplesTruncated: boolean;
+}
+
 export interface SaveResult {
   unmappable: boolean;
   written: boolean;
@@ -120,6 +151,12 @@ export interface SaveResult {
    *  store it as the tab's new `Doc.fingerprint` for the next save. `null`
    *  unless `written` is true. */
   fingerprint: unknown;
+  /** Populated only on the lossy-rejection path (`unmappable: true,
+   *  written: false`, from the first, `allowLossy: false` call) — `null` on
+   *  every other result (a successful write, lossy or not, and a `stale`
+   *  rejection both have nothing new to show). See `showLossySaveConfirm`
+   *  (src/lossysave.ts) for how this drives the confirm dialog. */
+  lossyReport: LossyReport | null;
 }
 
 /**
@@ -175,8 +212,10 @@ export function explainDetection(
  * Multi-phase save. Call with `allowLossy: false` first. If the target
  * encoding can't represent some characters, the result comes back with
  * `unmappable: true` and `written: false` — nothing was written and the
- * file on disk is untouched. Re-invoke with `allowLossy: true` (only after
- * explicit user confirmation) to write the lossy bytes.
+ * file on disk is untouched. `lossyReport` names *which* characters and
+ * *where* (ROADMAP.md v0.4 Track A "Lossy-save character preview") — see
+ * `showLossySaveConfirm` (src/lossysave.ts). Re-invoke with `allowLossy:
+ * true` (only after explicit user confirmation) to write the lossy bytes.
  *
  * Issue #113: `expectedFingerprint` (the tab's `Doc.fingerprint`, from the
  * last open/reload/save) is re-checked against the file's current on-disk
