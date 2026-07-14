@@ -129,6 +129,28 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "删除行尾空白",
     ),
     (
+        "move_line_up",
+        "Move Line Up",
+        "上移一行",
+        "行を上に移動",
+        "上移一行",
+    ),
+    (
+        "move_line_down",
+        "Move Line Down",
+        "下移一行",
+        "行を下に移動",
+        "下移一行",
+    ),
+    (
+        "duplicate_line",
+        "Duplicate Line",
+        "複製行",
+        "行を複製",
+        "复制行",
+    ),
+    ("delete_line", "Delete Line", "刪除行", "行を削除", "删除行"),
+    (
         "uppercase",
         "UPPERCASE",
         "轉大寫",
@@ -332,6 +354,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &MenuItemBuilder::with_id("trim_trailing_whitespace", l("trim_trailing_whitespace"))
                 .build(app)?,
         )
+        .separator()
+        // No accelerators: CM6's own `defaultKeymap` (bundled into
+        // editor.ts's `basicSetup`) already binds Alt-ArrowUp/Down,
+        // Shift-Alt-ArrowUp/Down, and Shift-Mod-k inside the editor. A
+        // native menu accelerator on the same keys would give the
+        // shortcut two owners — the same double-fire pitfall the View
+        // menu's Fold All/Unfold All items avoid below.
+        .item(&MenuItemBuilder::with_id("move_line_up", l("move_line_up")).build(app)?)
+        .item(&MenuItemBuilder::with_id("move_line_down", l("move_line_down")).build(app)?)
+        .item(&MenuItemBuilder::with_id("duplicate_line", l("duplicate_line")).build(app)?)
+        .item(&MenuItemBuilder::with_id("delete_line", l("delete_line")).build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("uppercase", l("uppercase")).build(app)?)
         .item(&MenuItemBuilder::with_id("lowercase", l("lowercase")).build(app)?)
@@ -595,6 +628,10 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 "sort_lines",
                 "unique_lines",
                 "trim_trailing_whitespace",
+                "move_line_up",
+                "move_line_down",
+                "duplicate_line",
+                "delete_line",
                 "uppercase",
                 "lowercase",
             ] {

@@ -1176,6 +1176,18 @@ void listen<string>("plume://menu", (event) => {
     case "trim_trailing_whitespace":
       runLineOperation(() => editor.transformLines(trimTrailingWhitespace));
       break;
+    case "move_line_up":
+      runLineOperation(() => editor.moveLineUp());
+      break;
+    case "move_line_down":
+      runLineOperation(() => editor.moveLineDown());
+      break;
+    case "duplicate_line":
+      runLineOperation(() => editor.duplicateLine());
+      break;
+    case "delete_line":
+      runLineOperation(() => editor.deleteLine());
+      break;
     case "uppercase":
       runLineOperation(() => editor.transformSelection(upperCase));
       break;

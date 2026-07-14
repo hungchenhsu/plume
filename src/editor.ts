@@ -29,6 +29,12 @@ import {
   foldAll as cmFoldAll,
   unfoldAll as cmUnfoldAll,
 } from "@codemirror/language";
+import {
+  copyLineDown as cmCopyLineDown,
+  deleteLine as cmDeleteLine,
+  moveLineDown as cmMoveLineDown,
+  moveLineUp as cmMoveLineUp,
+} from "@codemirror/commands";
 import { languages } from "@codemirror/language-data";
 import { openSearchPanel } from "@codemirror/search";
 import { editorTheme } from "./editor-theme";
@@ -161,6 +167,36 @@ export interface EditorHandle {
   /** Unfold every folded range (CM6's `unfoldAll` command, Mod-Alt-] —
    *  View menu's "Unfold All"). */
   unfoldAll(): void;
+  /**
+   * Move the current line — or, with a multi-line selection, every
+   * selected line as one block — up by one line. Thin wrapper around
+   * `@codemirror/commands`'s `moveLineUp`, which is already bound to
+   * Alt-ArrowUp (Option-ArrowUp on macOS) by `defaultKeymap` inside
+   * `basicSetup`; this exists so the same action is also reachable from
+   * the Edit > Line Operations menu (see menu.rs's `move_line_up` — no
+   * native accelerator there, same reasoning as `foldAll`/`unfoldAll`
+   * above: the key is already owned by CM6 and a duplicate native
+   * accelerator would double-fire). A no-op (already the first line, or a
+   * read-only buffer — `moveLine` checks `state.readOnly` itself) simply
+   * dispatches nothing.
+   */
+  moveLineUp(): void;
+  /** Downward counterpart of `moveLineUp` (CM6's `moveLineDown`,
+   *  Alt-ArrowDown / Option-ArrowDown). */
+  moveLineDown(): void;
+  /**
+   * Duplicate the current line — or, with a multi-line selection, every
+   * selected line as one block — placing the copy directly below and
+   * moving the selection into it. CM6's `copyLineDown` command, already
+   * bound to Shift-Alt-ArrowDown (Shift-Option-ArrowDown on macOS); see
+   * `moveLineUp`'s doc comment for the no-native-accelerator rationale.
+   */
+  duplicateLine(): void;
+  /** Delete the current line — or, with a multi-line selection, every
+   *  selected line as one block. CM6's `deleteLine` command, already bound
+   *  to Shift-Mod-k (Shift-Cmd-K on macOS, Shift-Ctrl-K elsewhere); see
+   *  `moveLineUp`'s doc comment for the no-native-accelerator rationale. */
+  deleteLine(): void;
   /**
    * Apply a pure text transform (see lineops.ts) to a line-bounded region
    * of the live buffer: the current selection expanded to the start of
@@ -761,6 +797,18 @@ export function createEditor(
     },
     unfoldAll: () => {
       cmUnfoldAll(view);
+    },
+    moveLineUp: () => {
+      cmMoveLineUp(view);
+    },
+    moveLineDown: () => {
+      cmMoveLineDown(view);
+    },
+    duplicateLine: () => {
+      cmCopyLineDown(view);
+    },
+    deleteLine: () => {
+      cmDeleteLine(view);
     },
     transformLines: (fn) => {
       const { state } = view;
