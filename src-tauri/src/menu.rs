@@ -208,6 +208,7 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "インデントガイド",
         "缩进参考线",
     ),
+    ("read_only", "Read-Only", "唯讀", "読み取り専用", "只读"),
     (
         "fold_all",
         "Fold All",
@@ -512,6 +513,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .checked(current_prefs.indent_guides)
                 .build(app)?,
         )
+        .item(
+            // Unlike word_wrap/show_invisibles/indent_guides above, this is
+            // per-tab, not a global preference — there is no prefs.rs value
+            // to read at build time (session restore happens later, in the
+            // frontend), so this starts unchecked/enabled and gets
+            // corrected once the initial active tab is known: main.ts's
+            // showActive (via syncReadOnlyState) calls sync_read_only_menu
+            // right after restoreSession, and again on every subsequent
+            // tab switch or toggle (ROADMAP.md v0.4 Track C).
+            &CheckMenuItemBuilder::with_id("read_only", l("read_only")).build(app)?,
+        )
         .separator()
         // No accelerator: CM6's own `foldKeymap` (bundled into editor.ts's
         // `basicSetup`) already binds Mod-Alt-[ / Mod-Alt-] inside the
@@ -593,6 +605,41 @@ pub fn sync_theme_menu<R: Runtime>(app: AppHandle<R>, theme: String) -> Result<(
             item.set_checked(id == target).map_err(|e| e.to_string())?;
         }
     }
+    Ok(())
+}
+
+/// Re-check (or uncheck) the View > Read-Only item and set whether it can be
+/// clicked at all (ROADMAP.md v0.4 Track C). Unlike `sync_theme_menu`'s radio
+/// group, this is a single standalone `CheckMenuItem` whose native checkmark
+/// would normally flip itself automatically on click (same as `word_wrap`) —
+/// but that alone isn't enough here: the checked state must also track
+/// *switching* to a different tab (a plain click never fires), so the
+/// frontend always passes both values explicitly rather than relying on the
+/// native auto-toggle. `enabled` is `false` for a truncated large-file
+/// preview — its read-only state can never be lifted, so the item is shown
+/// checked but disabled rather than left clickable with nothing a click
+/// could legitimately do. Called from main.ts's `syncReadOnlyState`, itself
+/// invoked on every tab switch (`showActive`) and on the toggle action
+/// itself (`toggleReadOnly`).
+#[tauri::command]
+pub fn sync_read_only_menu<R: Runtime>(
+    app: AppHandle<R>,
+    checked: bool,
+    enabled: bool,
+) -> Result<(), String> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(item) = menu
+        .get("view")
+        .and_then(|item| item.as_submenu().cloned())
+        .and_then(|view| view.get("read_only"))
+        .and_then(|item| item.as_check_menuitem().cloned())
+    else {
+        return Ok(());
+    };
+    item.set_checked(checked).map_err(|e| e.to_string())?;
+    item.set_enabled(enabled).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -678,7 +725,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
 
     if let Some(view) = menu.get("view").and_then(|item| item.as_submenu().cloned()) {
         view.set_text(l("view")).map_err(|e| e.to_string())?;
-        for id in ["word_wrap", "show_invisibles", "indent_guides"] {
+        for id in ["word_wrap", "show_invisibles", "indent_guides", "read_only"] {
             if let Some(item) = view
                 .get(id)
                 .and_then(|item| item.as_check_menuitem().cloned())
@@ -790,6 +837,19 @@ mod tests {
     #[test]
     fn label_returns_the_zh_cn_entry_for_zh_cn() {
         assert_eq!(label("open", "zh-CN"), "打开…");
+    }
+
+    // ROADMAP.md v0.4 Track C per-tab read-only mode: the View menu's new
+    // "read_only" CheckMenuItem id, pinned across all four languages —
+    // labels_has_a_non_empty_string_for_every_language_and_id above only
+    // checks non-emptiness, not the actual text, so this catches a typo'd
+    // translation the generic sweep wouldn't.
+    #[test]
+    fn label_returns_the_correct_read_only_text_for_every_language() {
+        assert_eq!(label("read_only", "en"), "Read-Only");
+        assert_eq!(label("read_only", "zh-TW"), "唯讀");
+        assert_eq!(label("read_only", "ja"), "読み取り専用");
+        assert_eq!(label("read_only", "zh-CN"), "只读");
     }
 
     #[test]

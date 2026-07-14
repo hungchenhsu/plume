@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EditorBuffer } from "./editor";
-import { DRAG_THRESHOLD_PX, TabStore, type Doc } from "./tabs";
+import { DRAG_THRESHOLD_PX, isEffectivelyReadOnly, TabStore, type Doc } from "./tabs";
 
 function makeDoc(id: number, path: string | null = null): Doc {
   return {
@@ -14,6 +14,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     dirty: false,
     revision: 0,
     truncated: false,
+    userReadOnly: false,
     totalSize: 0,
     chunkOffset: 0,
     nextChunkOffset: null,
@@ -78,6 +79,31 @@ function stubRect(el: HTMLElement, left: number, width = 100): void {
     },
   } as DOMRect);
 }
+
+// ROADMAP.md v0.4 Track C per-tab read-only mode: truncated (large-file
+// preview) read-only can never be lifted; userReadOnly is the user's own
+// per-tab lock, layered independently on top of it. Exhaustive over the
+// 2x2 combination table since this is the single formula every read-only
+// enforcement/UI call site (editor.ts's setReadOnly, the View menu's
+// checked/enabled state, the status bar badge, saveFlow/runLineOperation's
+// guard) is built on.
+describe("isEffectivelyReadOnly", () => {
+  it("is false when neither truncated nor userReadOnly is set", () => {
+    expect(isEffectivelyReadOnly({ truncated: false, userReadOnly: false })).toBe(false);
+  });
+
+  it("is true when only truncated is set", () => {
+    expect(isEffectivelyReadOnly({ truncated: true, userReadOnly: false })).toBe(true);
+  });
+
+  it("is true when only userReadOnly is set", () => {
+    expect(isEffectivelyReadOnly({ truncated: false, userReadOnly: true })).toBe(true);
+  });
+
+  it("is true when both truncated and userReadOnly are set", () => {
+    expect(isEffectivelyReadOnly({ truncated: true, userReadOnly: true })).toBe(true);
+  });
+});
 
 describe("TabStore", () => {
   it("activates a doc when it is added", () => {

@@ -26,6 +26,7 @@ export interface Messages {
   "statusbar.cursor": (line: number, column: number) => string;
   "statusbar.encodingWithBom": (encoding: string) => string;
   "statusbar.readonlyPreview": (size: string) => string;
+  "statusbar.userReadOnly": string;
   "statusbar.decodeWarning": string;
   "statusbar.buildingIndex": string;
   "statusbar.textStats": (words: number, chars: number, lines: number) => string;
@@ -173,6 +174,8 @@ export interface Messages {
   "dialog.openFailedTitle": string;
   "dialog.readonlyPreviewTitle": string;
   "dialog.readonlyPreviewMessage": (title: string) => string;
+  "dialog.userReadOnlyTitle": string;
+  "dialog.userReadOnlyMessage": (title: string) => string;
   "dialog.saveFailedTitle": string;
   "dialog.lossyEncodingTitle": string;
   "dialog.lossyEncodingMessage": (encoding: string) => string;
@@ -217,6 +220,7 @@ const en: Messages = {
   "statusbar.cursor": (line, column) => `Ln ${line}, Col ${column}`,
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
+  "statusbar.userReadOnly": "🔒 Read-only",
   "statusbar.decodeWarning": "⚠ decoded with errors",
   "statusbar.buildingIndex": "Building line index…",
   "statusbar.textStats": (words, chars, lines) =>
@@ -387,6 +391,9 @@ const en: Messages = {
   "dialog.readonlyPreviewTitle": "Read-only preview",
   "dialog.readonlyPreviewMessage": (title) =>
     `"${title}" is a read-only preview of a large file; saving is disabled.`,
+  "dialog.userReadOnlyTitle": "Read-only",
+  "dialog.userReadOnlyMessage": (title) =>
+    `"${title}" is marked read-only. Uncheck View > Read-Only to edit it.`,
   "dialog.saveFailedTitle": "Save failed",
   "dialog.lossyEncodingTitle": "Encoding warning",
   "dialog.lossyEncodingMessage": (encoding) =>
@@ -441,6 +448,7 @@ const zhTW: Messages = {
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 欄`,
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
+  "statusbar.userReadOnly": "🔒 唯讀",
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
   "statusbar.buildingIndex": "正在建立行號索引…",
   "statusbar.textStats": (words, chars, lines) => `${words} 詞、${chars} 字元、${lines} 行`,
@@ -596,6 +604,9 @@ const zhTW: Messages = {
   "dialog.readonlyPreviewTitle": "唯讀預覽",
   "dialog.readonlyPreviewMessage": (title) =>
     `「${title}」是大型檔案的唯讀預覽，無法儲存。`,
+  "dialog.userReadOnlyTitle": "唯讀",
+  "dialog.userReadOnlyMessage": (title) =>
+    `「${title}」已設為唯讀，取消勾選「檢視 > 唯讀」即可編輯。`,
   "dialog.saveFailedTitle": "儲存失敗",
   "dialog.lossyEncodingTitle": "編碼警告",
   "dialog.lossyEncodingMessage": (encoding) =>
@@ -646,6 +657,7 @@ const ja: Messages = {
   "statusbar.cursor": (line, column) => `行 ${line}、列 ${column}`,
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
+  "statusbar.userReadOnly": "🔒 読み取り専用",
   "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
   "statusbar.buildingIndex": "行番号インデックスを構築中…",
   "statusbar.textStats": (words, chars, lines) => `${words} 語、${chars} 文字、${lines} 行`,
@@ -810,6 +822,9 @@ const ja: Messages = {
   "dialog.readonlyPreviewTitle": "読み取り専用プレビュー",
   "dialog.readonlyPreviewMessage": (title) =>
     `「${title}」は大きいファイルの読み取り専用プレビューです。保存はできません。`,
+  "dialog.userReadOnlyTitle": "読み取り専用",
+  "dialog.userReadOnlyMessage": (title) =>
+    `「${title}」は読み取り専用に設定されています。「表示 > 読み取り専用」のチェックを外すと編集できます。`,
   "dialog.saveFailedTitle": "保存に失敗しました",
   "dialog.lossyEncodingTitle": "エンコーディングに関する警告",
   "dialog.lossyEncodingMessage": (encoding) =>
@@ -864,6 +879,7 @@ const zhCN: Messages = {
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 列`,
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
+  "statusbar.userReadOnly": "🔒 只读",
   "statusbar.decodeWarning": "⚠ 解码时发生错误",
   "statusbar.buildingIndex": "正在构建行号索引…",
   "statusbar.textStats": (words, chars, lines) => `${words} 词、${chars} 字符、${lines} 行`,
@@ -1018,6 +1034,9 @@ const zhCN: Messages = {
   "dialog.openFailedTitle": "打开失败",
   "dialog.readonlyPreviewTitle": "只读预览",
   "dialog.readonlyPreviewMessage": (title) => `“${title}”是大文件的只读预览，无法保存。`,
+  "dialog.userReadOnlyTitle": "只读",
+  "dialog.userReadOnlyMessage": (title) =>
+    `“${title}”已设为只读，取消勾选“视图 > 只读”即可编辑。`,
   "dialog.saveFailedTitle": "保存失败",
   "dialog.lossyEncodingTitle": "编码警告",
   "dialog.lossyEncodingMessage": (encoding) =>

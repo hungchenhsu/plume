@@ -213,6 +213,10 @@ export interface SessionFile {
   title: string;
   withBom: boolean;
   lineEnding: string;
+  /** User-toggled per-tab read-only lock (ROADMAP.md v0.4 Track C),
+   *  restored on relaunch so a locked tab stays locked — see
+   *  src-tauri/src/session.rs `SessionFile::user_read_only`. */
+  userReadOnly: boolean;
 }
 
 export interface SessionData {
@@ -264,6 +268,17 @@ export function savePreferences(preferences: Preferences): Promise<void> {
  *  THEMES ("system" | "light" | "dark" | "paper" | "dusk"). */
 export function syncThemeMenu(theme: string): Promise<void> {
   return invoke<void>("sync_theme_menu", { theme });
+}
+
+/** Re-check the View > Read-Only item after the active tab's effective
+ *  read-only state changes (a toggle, or a tab switch — see main.ts's
+ *  `syncReadOnlyState`, called from `showActive` and `toggleReadOnly`).
+ *  `checked` is `isEffectivelyReadOnly(doc)`; `enabled` is `!doc.truncated`
+ *  — a truncated large-file preview's read-only state can never be
+ *  lifted, so its menu item is shown checked but disabled rather than
+ *  left clickable (see menu.rs `sync_read_only_menu`). */
+export function syncReadOnlyMenu(checked: boolean, enabled: boolean): Promise<void> {
+  return invoke<void>("sync_read_only_menu", { checked, enabled });
 }
 
 /** Relabel the native menu's custom items (File/Edit/View submenus, and
