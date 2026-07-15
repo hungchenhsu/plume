@@ -3,6 +3,7 @@
 //! (Big5, Shift_JIS, …) that byte-oriented search would miss.
 
 use crate::encoding;
+use crate::linebreak;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -163,9 +164,14 @@ impl Matcher {
     }
 }
 
-/// Search decoded lines of one file, appending matches.
+/// Search decoded lines of one file, appending matches. Lines are split
+/// with `linebreak::split_str_lines` — the shared LF/CRLF/lone-CR
+/// definition `replaceinfiles.rs` and the large-file index already use —
+/// rather than `str::lines()`, which does not recognize a lone CR
+/// (Classic Mac line endings) as a terminator at all and so would treat a
+/// whole CR-only file as a single line (issue #162).
 fn search_text(text: &str, matcher: &Matcher, path: &str, out: &mut Vec<SearchMatch>) {
-    for (index, line) in text.lines().enumerate() {
+    for (index, line) in linebreak::split_str_lines(text).into_iter().enumerate() {
         if matcher.matches(line) {
             out.push(SearchMatch {
                 path: path.to_string(),
@@ -474,6 +480,135 @@ mod tests {
             Path::new(&results.scan_errors[0].path).ends_with("hidden.txt"),
             "scan error should name the specific entry whose metadata failed: {:?}",
             results.scan_errors[0]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Issue #162: lone-CR line semantics -----------------------------
+    //
+    // `search_text` used to split lines with `str::lines()`, which only
+    // recognizes LF and CRLF -- a lone CR (Classic Mac line endings) was
+    // never treated as a terminator at all, so an entire CR-only file
+    // collapsed into a single "line" for search purposes. This silently
+    // disagreed with `replaceinfiles.rs`, which already splits lines via
+    // the shared `linebreak::scan_line_breaks` three-way (LF/CRLF/lone CR)
+    // definition -- the same panel's Find and Replace tabs could report
+    // different line numbers (and match counts) for the same file.
+    // `search_text` now splits through `linebreak::split_str_lines`
+    // instead, the `&str`-level counterpart of that same shared
+    // definition (see `linebreak.rs`'s own equivalence test locking the
+    // two together).
+
+    /// Failing-test-first, issue #162: a lone CR must terminate a line.
+    /// Before the fix, `first\rneedle\rthird` was one `str::lines()` line,
+    /// so "needle" was reported on line 1 with the whole string as its
+    /// preview; it must be line 2 with just "needle" as the preview.
+    #[test]
+    fn search_text_recognizes_lone_cr_as_a_line_terminator() {
+        let matcher = Matcher::new("needle", true, false).unwrap();
+        let mut out = Vec::new();
+        search_text("first\rneedle\rthird", &matcher, "doc.txt", &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(
+            out[0].line, 2,
+            "needle sits on the second lone-CR-delimited line"
+        );
+        assert_eq!(out[0].preview, "needle");
+    }
+
+    /// Regression: CRLF must still count as *one* terminator, not two
+    /// lines plus a spurious empty line.
+    #[test]
+    fn search_text_crlf_terminator_unchanged() {
+        let matcher = Matcher::new("needle", true, false).unwrap();
+        let mut out = Vec::new();
+        search_text("first\r\nneedle\r\nthird", &matcher, "doc.txt", &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].line, 2);
+        assert_eq!(out[0].preview, "needle");
+    }
+
+    /// Regression: plain LF files are unaffected by the switch away from
+    /// `str::lines()`.
+    #[test]
+    fn search_text_lf_terminator_unchanged() {
+        let matcher = Matcher::new("needle", true, false).unwrap();
+        let mut out = Vec::new();
+        search_text("first\nneedle\nthird", &matcher, "doc.txt", &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].line, 2);
+        assert_eq!(out[0].preview, "needle");
+    }
+
+    /// A file mixing all three terminator styles must still report correct
+    /// 1-based line numbers for a match on any of them.
+    #[test]
+    fn search_text_mixed_terminators_report_correct_line_numbers() {
+        let matcher = Matcher::new("needle", true, false).unwrap();
+        let mut out = Vec::new();
+        // line 1: LF-terminated, line 2: CRLF-terminated, line 3: lone-CR
+        // terminated (the match), line 4: LF-terminated, line 5: no
+        // terminator at all (EOF).
+        search_text(
+            "one\ntwo\r\nneedle\rfour\nfive",
+            &matcher,
+            "doc.txt",
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].line, 3);
+        assert_eq!(out[0].preview, "needle");
+    }
+
+    /// End-to-end lock, issue #162's own framing: on a file where every
+    /// matching line contains the needle exactly once, Find and
+    /// Replace-in-Files must agree on the count for the same lone-CR
+    /// (Classic Mac) file. (With several hits on one line the two
+    /// legitimately differ by design: Find is line-oriented — one
+    /// navigable entry per matching line — while Replace counts the
+    /// occurrences it will actually replace.) Before this fix,
+    /// `search_in_folder`
+    /// collapsed the whole file into a single `str::lines()` "line", so a
+    /// literal search reports one match per matching *line*, not one per
+    /// matching *file* -- two needles on two separate lone-CR lines were
+    /// undercounted as 1 (the single collapsed "line" merely contains the
+    /// substring once, as far as `str::contains` is concerned), while
+    /// `scan_replace_in_folder` (already using the three-way split)
+    /// correctly reported 2. After the fix both report 2.
+    #[test]
+    fn search_and_replace_scan_agree_on_lone_cr_match_count() {
+        let dir = fixture_dir("cross-module-agreement");
+        std::fs::write(dir.join("doc.txt"), b"needle one\rneedle two\r").unwrap();
+
+        let search_results = search_in_folder(
+            dir.to_string_lossy().into_owned(),
+            "needle".into(),
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            search_results.matches.len(),
+            2,
+            "one needle per lone-CR line: {:?}",
+            search_results.matches
+        );
+        assert_eq!(search_results.matches[0].line, 1);
+        assert_eq!(search_results.matches[1].line, 2);
+
+        let replace_scan = crate::replaceinfiles::scan_replace_in_folder(
+            dir.to_string_lossy().into_owned(),
+            "needle".into(),
+            true,
+            false,
+            "X".into(),
+        )
+        .unwrap();
+        assert_eq!(replace_scan.entries.len(), 1, "{:?}", replace_scan.entries);
+        assert_eq!(
+            replace_scan.entries[0].match_count, 2,
+            "search and replace-scan must agree on how many matches this file contains"
         );
 
         std::fs::remove_dir_all(&dir).ok();
