@@ -897,6 +897,113 @@ cases of "never misrepresent user text")
   draft-release workflow is billing-blocked — re-run it on the tag once
   Actions billing is restored; publish remains user-gated)
 
+## v0.5 — feature cycle (planned 2026-07-15, delegated)
+
+Scope planned autonomously under the user's 2026-07-15 delegation (same
+model as v0.4: user away, plan the cycle, merge on green CI, post-merge
+review). The plan passed an adversarial review before work started
+(AGREE-WITH-CHANGES; every requested change adopted or explicitly
+adjudicated in the session log). Theme: extend the v0.3/v0.4 trust
+machinery (fsguard fingerprints, lossy two-phase gate, scan-error
+surfacing, shared line-break semantics) to byte-level fidelity and
+multi-file replace, and clear the open bug queue. Items marked
+**[danger]** follow judgment overlay §1: failing-test-first, round-trip
+tests, adversarial review before commit; danger items are never worked
+in parallel. #89 is deliberately left open as the good-first-issue
+surface for incoming contributors.
+
+**Track R — debt & robustness** (bug queue first)
+- [x] July dependency cadence: lockfile-level patch/minor float, no
+  manifest changes, full local matrix green (merged as #156 ahead of
+  this section — routine DIRECTION §7 policy, not new scope)
+- [ ] #136: explicit-encoding UTF-8 large-file preview applies the same
+  tail trim gate as auto-detect (mid-character cut at the 2 MiB window
+  edge misreports U+FFFD/malformed); real interior malformed bytes must
+  still surface [danger]
+- [ ] Chunk-paging property fuzz: deterministic-PRNG random operation
+  sequences (Next/Prev/goto/append/prepend × line-ending mixes ×
+  multi-byte boundaries) checked against whole-file ground truth;
+  scheduled after the #136 fix (built first it would trip the known
+  bug) and before the #134 paging change it protects [danger]
+- [ ] #134: user-initiated goto/paging/bookmark jumps preempt an
+  in-flight auto-append (bump generation + clear the in-flight flag,
+  the reload precedent) instead of silently no-op'ing [danger]
+- [ ] #124: per-doc save/reload in-flight mutual exclusion — no more
+  orphan backup or fingerprint/buffer divergence when a reload lands
+  mid-save; second save deferred, watcher state re-evaluated on
+  unlock [danger]
+- [ ] #128: batch scan classify_file switches to single-handle bounded
+  read (#117's exact pattern) closing the metadata/read TOCTOU [danger]
+- [ ] #130: find-in-files collect_files records unreadable
+  directories/entries as scan errors surfaced in the panel (#116's
+  pattern) instead of silently skipping subtrees
+- [ ] #96 (1/3): streaming replace read-chunk byte-passthrough — a
+  chunk with no match involvement, no decoder pending on either edge,
+  and no carry in/out is copied byte-identical (the BOM-bearing first
+  chunk always excluded); regions that are re-encoded are honestly
+  disclosed; regression fixtures use the #96-verified non-injective
+  byte pairs (Big5 8E 69, Shift_JIS 87 90, GBK A2 E3) [danger]
+- [ ] #96 (2/3): lazy byte-drift detection on a doc's first save —
+  rebuild the full save pipeline (line-ending re-application + BOM)
+  against the on-disk bytes and warn once, informed-consent style,
+  before normalizing legacy byte variants; Mixed-line-ending files are
+  skipped (their pipeline output is inherently unreproducible) [danger]
+- [ ] #96 (3/3): batch conversion dry-run report gains a per-file
+  byte-drift flag (a same-encoding "no-op" conversion that would still
+  canonicalize bytes becomes visible before execute) [danger]
+
+**Track S — replace in files** (the new capability, built on Track R's
+byte-preservation machinery)
+- [ ] Rust backend: line-scoped replace (search.rs's existing per-line
+  match semantics) with line-level byte preservation — only matched
+  lines are re-encoded, line-terminator bytes are copied verbatim,
+  untouched lines stay byte-identical; UTF-16 falls back to whole-file
+  re-encode (its mapping is 1:1, no drift); per-file fingerprint
+  continuity from dry-run to execute (files changed in between are
+  reported, never silently re-matched), atomic temp+rename, lossy
+  two-phase gate, scan-error surfacing; regex match with literal-only
+  replacement (no backrefs, v1 scope); the 5 MiB search cap carries
+  over with oversized files disclosed as skipped; stateful encodings
+  excluded by an ASCII-compat invariant test [danger]
+- [ ] Frontend: replace field in the find-in-files panel + dry-run
+  preview (files × hit counts × drift/lossy flags), per-file
+  checkboxes, a batch-convert-strength destructive confirm, and a
+  post-execute summary; i18n across en/zh-TW/ja/zh-CN
+- [ ] Find-in-files query/replace inputs wired to the existing
+  searchhistory module (localStorage datalist, the CM6-panel precedent)
+
+**Track E — encoding breadth [danger]**
+- [ ] Curated encoding list expansion: windows-125x family, common
+  ISO-8859 members, KOI8-R/U, windows-874, macintosh (one-shot
+  selection from encoding_rs's supported set), each addition with
+  round-trip tests and a fuzz-pool entry; stateful encodings
+  (ISO-2022-*) are permanently excluded, pinned by an ASCII-compat
+  invariant test over the entire picker list
+- [ ] Encoding picker group headers (popup.ts section support:
+  Unicode / East Asian / Western / Central European / Other), reopen
+  and save-with-encoding menus kept in sync
+- [ ] Detection-boundary documentation: single-byte families chardetng
+  cannot reliably detect are labeled "manual reopen only" consistently
+  in the detection diagnostics; no detection behavior change
+
+**Track C — comfort (stretch: cut first under schedule pressure)**
+- [ ] Reopen closed tab (Mod+Shift+T, per-session stack, File menu
+  entry, untitled tabs excluded)
+- [ ] Tab context menu: Close Others / Close to the Right / Copy Path /
+  Reveal in Finder(Explorer) via the already-bundled opener plugin
+  (zero new dependencies; path items disabled for untitled tabs)
+- [ ] Go to line supports line:column (column positioned within the
+  loaded window in large-file mode)
+
+**Track H — outward & close-out**
+- [ ] README: add an Install section (GitHub Releases pointer +
+  unsigned-build caveats for macOS/Windows) and an accuracy pass over
+  existing content; no naming-heavy outward material while D1 is
+  undecided; positioning red lines checked per DIRECTION §5-S13
+- [ ] Cycle close-out: version 0.5.0 bumped consistently, tag
+  v0.5.0-alpha.1, zh-TW release notes, prerelease published (publishing
+  pre-releases is delegated; final releases remain user-gated)
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
