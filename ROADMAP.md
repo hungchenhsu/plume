@@ -1209,12 +1209,32 @@ byte-preservation machinery)
   directions in tests. 690 vitest (+6).
 
 **Track E — encoding breadth [danger]**
-- [ ] Curated encoding list expansion: windows-125x family, common
+- [x] Curated encoding list expansion: windows-125x family, common
   ISO-8859 members, KOI8-R/U, windows-874, macintosh (one-shot
   selection from encoding_rs's supported set), each addition with
   round-trip tests and a fuzz-pool entry; stateful encodings
   (ISO-2022-*) are permanently excluded, pinned by an ASCII-compat
-  invariant test over the entire picker list
+  invariant test over the entire picker list. 11→27 choices
+  (windows-1250–1258, ISO-8859-2/5/7/15, KOI8-R/U, windows-874,
+  macintosh); every consumer (reopen/save-with/convert menus,
+  preferences' default + per-extension tables, batch, compare
+  preview) picks the additions up generically. The whitelist mirror
+  reuses fuzz_roundtrip.rs's existing `ALL_ENCODING_LABELS` as the
+  single Rust-side constant (no second mirror to drift), with
+  back-references in both files; the invariant test asserts every
+  label resolves to its canonical name and is ascii-compatible or
+  UTF-16 — pushing "ISO-2022-JP" into the list fails it (verified
+  red). 16 new encode-filtered fuzz pools each with a sanity test
+  (single-byte encodings almost never malform, so the fuzz claim
+  stays honest: it covers encode-side round-trips, not decode
+  robustness); the release-mode 3000-case × 26-encoding ignored
+  variant passes. Adversarial review AGREE — 68 display-name strings
+  across four locales fact-checked (no language mix-ups), the
+  windows-1258 Vietnamese combining-character non-injectivity attack
+  held off (encoding_rs's single-byte path does no normalization;
+  precomposed forms simply filter out), list correspondence 27↔26
+  exact. Mojibake-wizard Cyrillic hypotheses (windows-1251⇄KOI8-R)
+  filed as #182. 422 Rust tests (+33) + 690 vitest.
 - [ ] Encoding picker group headers (popup.ts section support:
   Unicode / East Asian / Western / Central European / Other), reopen
   and save-with-encoding menus kept in sync
