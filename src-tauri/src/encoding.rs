@@ -31,7 +31,9 @@
 //! file whose bytes would be canonicalized.
 
 use chardetng::EncodingDetector;
-use encoding_rs::{Encoding, UTF_16BE, UTF_16LE, UTF_8};
+use encoding_rs::{
+    Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, SHIFT_JIS, UTF_16BE, UTF_16LE, UTF_8,
+};
 
 pub struct DecodedText {
     pub content: String,
@@ -265,6 +267,53 @@ pub fn is_utf8_label(label: &str) -> bool {
     Encoding::for_label(label.as_bytes()) == Some(UTF_8)
 }
 
+/// Whether an encoding label names one of the legacy multi-byte encodings
+/// `trim_truncated_legacy_tail` knows how to trim a truncated preview tail
+/// for: Big5, Shift_JIS, GBK, gb18030, EUC-JP, EUC-KR. Resolved through
+/// `Encoding::for_label` exactly like `is_utf8_label`, so a caller (the
+/// `open_document` trim gate) can never disagree with what `decode_with`
+/// is about to do for the same label.
+///
+/// Deliberately excludes, all on purpose rather than by omission:
+/// - Single-byte encodings (windows-1252 and friends): every byte already
+///   *is* one whole character, so a raw preview cut can never split one —
+///   there is nothing to trim, ever.
+/// - UTF-8 and UTF-16: each already has its own dedicated, more direct
+///   gate (`is_utf8_label`; the `utf16` parameter threaded through
+///   `preview_slice` and `open_document`'s trim gate).
+/// - ISO-2022-JP: the one `encoding_rs` encoding whose *decoder* is
+///   genuinely stateful — a shift escape sequence changes the meaning of
+///   every subsequent byte for the rest of the stream, not just the next
+///   character (see `streamreplace.rs`'s module doc comment, and the
+///   judgment-overlay dead-end this repeats) — so there is no fixed
+///   per-character byte bound to retry cuts against the way there is for
+///   the other legacy encodings here. Left with its pre-existing
+///   (untrimmed) preview behavior; issue #165 does not claim to fix it.
+pub fn is_legacy_multibyte_label(label: &str) -> bool {
+    Encoding::for_label(label.as_bytes()).is_some_and(|enc| max_legacy_seq_len(enc).is_some())
+}
+
+/// The longest byte length of a single character's encoded sequence in
+/// one of the legacy multi-byte encodings `is_legacy_multibyte_label` /
+/// `trim_truncated_legacy_tail` support, or `None` for every other
+/// encoding (see `is_legacy_multibyte_label`'s doc comment for why each
+/// is excluded). Per the WHATWG Encoding Standard's index tables: Big5,
+/// Shift_JIS, GBK, and EUC-KR are 1 or 2 bytes per character; EUC-JP is
+/// 1, 2, or 3 (its JIS X 0212 plane, reached via a `0x8F` lead byte, is
+/// the only 3-byte case); gb18030 is 1, 2, or 4 (its four-byte plane
+/// covers the rest of Unicode; unlike EUC-JP it has no 3-byte case).
+fn max_legacy_seq_len(enc: &'static Encoding) -> Option<usize> {
+    if enc == GB18030 {
+        Some(4)
+    } else if enc == EUC_JP {
+        Some(3)
+    } else if enc == BIG5 || enc == SHIFT_JIS || enc == GBK || enc == EUC_KR {
+        Some(2)
+    } else {
+        None
+    }
+}
+
 /// Trim a trailing UTF-8 multibyte sequence that is incomplete *only
 /// because the input was truncated at its end*, returning the longest
 /// valid-UTF-8 prefix in that case and `bytes` unchanged otherwise. The
@@ -333,6 +382,106 @@ pub fn trim_truncated_utf8_head(bytes: &[u8]) -> &[u8] {
         .take_while(|&&b| (0x80..0xC0).contains(&b))
         .count();
     &bytes[orphaned..]
+}
+
+/// Trim a trailing multi-byte sequence from `bytes` that is incomplete
+/// only because the input was truncated at its end, for one of the
+/// legacy multi-byte encodings `is_legacy_multibyte_label` names (Big5,
+/// Shift_JIS, GBK, gb18030, EUC-JP, EUC-KR) — `label` is resolved the
+/// same way `decode_with` resolves it. Returns `bytes` unchanged if
+/// `label` does not resolve to one of those encodings: a defensive
+/// no-op, since callers are expected to gate on `is_legacy_multibyte_label`
+/// first, as `open_document`'s trim gate in `lib.rs` does.
+///
+/// This is the legacy-encoding sibling of `trim_truncated_utf8_tail`
+/// (issue #165, following #136's UTF-8 fix). UTF-8's version leans on
+/// `str::from_utf8`'s `error_len()` as a free, structural oracle for "ran
+/// out of input mid-character" versus "genuinely invalid byte" (see that
+/// function's doc comment); `encoding_rs`'s legacy multi-byte decoders
+/// expose no equivalent, and hand-writing one from each encoding's own
+/// lead/trail byte tables was rejected (issue #165's "修法方向") as
+/// high-maintenance and easy to get subtly wrong for six different
+/// encodings. This uses decode semantics instead, in two steps:
+///
+/// 1. **Rule out genuine corruption anywhere in `bytes`.** Feed the whole
+///    slice through a fresh streaming `Decoder` with `last: false` (“more
+///    input might still follow” — see `decode_chunk` in
+///    `streamcodec.rs`, reused here unmodified). A streaming decoder only
+///    ever flags a malformed sequence for a byte that is invalid
+///    *regardless of what follows* — never for a valid-so-far prefix
+///    that simply ran out of buffer at a boundary it was told is not
+///    necessarily the real end of the stream. This is the exact
+///    `encoding_rs` behavior `streamreplace.rs::chunk_is_decode_self_sufficient`
+///    already relies on, used here in mirror image: that function forces
+///    `last: true` on an isolated chunk to *detect* a pending tail; this
+///    forces `last: false` over the *whole* slice to *rule out* any
+///    position-independent error before ever considering a trim. If this
+///    step reports any malformed sequence, it is a genuine error
+///    somewhere in `bytes` — interior or not — and `bytes` is returned
+///    unchanged so the real decode surfaces it, exactly as #136's
+///    interior-malformed principle requires. This is a stricter
+///    discriminator than "malformed disappears after trimming within the
+///    encoding's max sequence length" alone would be: without it, a
+///    genuinely corrupt byte that happened to fall in the last one to
+///    three positions of the window would be indistinguishable from a
+///    truncated sequence and silently trimmed away instead of surfaced —
+///    the exact silent-corruption shape ARCHITECTURE.md's hard
+///    constraint forbids.
+/// 2. **Find the exact trim depth.** Once step 1 has ruled out genuine
+///    corruption anywhere in `bytes`, any malformed sequence a
+///    *forced-final* (`last: true`) decode reports can only be that
+///    trailing incomplete sequence. Retry increasingly deep cuts from
+///    the tail — `bytes` itself first (cut depth 0, the common case
+///    where the window already ends cleanly), then 1 byte short, up to
+///    `max_legacy_seq_len(enc) - 1` bytes short (a valid sequence can
+///    never be missing *all* of its own bytes) — and return the first
+///    (shallowest) cut whose forced-final decode comes back clean.
+///    `open_document`'s `next_offset` is derived from the returned
+///    slice's own length, so a trimmed open still hands the next chunk
+///    read a character-aligned offset too (mirroring #136).
+///
+/// Cost: up to `max_legacy_seq_len(enc) + 1` whole-slice decodes — step 1,
+/// plus at most `max_legacy_seq_len(enc)` retries in step 2 (the loop
+/// tries cut depth 0 first, which is also charged to this budget) — at
+/// most 5 total, for gb18030. This only runs on the narrow path
+/// `open_document` gates it behind (issue #165): a preview window with no
+/// newline to cut at, for a file already over `LARGE_FILE_THRESHOLD`,
+/// explicitly reopened as one of these encodings. A handful of decodes of
+/// one ~2 MiB window on that path costs tens of milliseconds, not a hot
+/// path anywhere else — recorded here as the accepted trade-off issue
+/// #165 called for instead of six sets of hand-written lead/trail tables.
+pub fn trim_truncated_legacy_tail<'a>(bytes: &'a [u8], label: &str) -> &'a [u8] {
+    let Some(enc) = Encoding::for_label(label.as_bytes()) else {
+        return bytes;
+    };
+    let Some(max_len) = max_legacy_seq_len(enc) else {
+        return bytes;
+    };
+    if bytes.is_empty() {
+        return bytes;
+    }
+    let mut probe = enc.new_decoder_without_bom_handling();
+    let (_, genuinely_malformed) = crate::streamcodec::decode_chunk(&mut probe, bytes, false);
+    if genuinely_malformed {
+        return bytes;
+    }
+    let max_cut = max_len.saturating_sub(1).min(bytes.len());
+    for cut_len in 0..=max_cut {
+        let candidate = &bytes[..bytes.len() - cut_len];
+        if enc
+            .decode_without_bom_handling_and_without_replacement(candidate)
+            .is_some()
+        {
+            return candidate;
+        }
+    }
+    // Step 1 already ruled out genuine corruption anywhere in `bytes`, so
+    // every cut depth up to `max_len - 1` still failing here should not
+    // be reachable in practice — but if it somehow is, leave `bytes`
+    // unchanged rather than guess further; the real decode below then
+    // reports `malformed` truthfully instead of this function silently
+    // picking a boundary it isn't sure of.
+    bytes
 }
 
 /// Decide which UTF-16 byte order (if any) a large-file preview should
@@ -1220,6 +1369,121 @@ mod tests {
         // report on its own terms.
         let four = [0x80, 0x81, 0x82, 0x83];
         assert_eq!(trim_truncated_utf8_head(&four), &[0x83]);
+    }
+
+    // --- Issue #165: the #136 UTF-8 fix's sibling for an explicit reopen
+    // as one of the legacy multi-byte encodings (Big5, Shift_JIS, GBK,
+    // gb18030, EUC-JP, EUC-KR) ---
+
+    #[test]
+    fn is_legacy_multibyte_label_true_for_legacy_false_for_others() {
+        for label in ["Big5", "Shift_JIS", "GBK", "gb18030", "EUC-JP", "EUC-KR"] {
+            assert!(
+                is_legacy_multibyte_label(label),
+                "{label} must be recognized as a legacy multi-byte encoding"
+            );
+        }
+        for label in [
+            "UTF-8",
+            "UTF-16LE",
+            "UTF-16BE",
+            "windows-1252",
+            "ISO-2022-JP",
+            "not-a-real-label",
+        ] {
+            assert!(
+                !is_legacy_multibyte_label(label),
+                "{label} must NOT be treated as a legacy multi-byte encoding \
+                 (single-byte encodings and UTF-8/16 have their own dedicated \
+                 gates, ISO-2022-JP's decoder is stateful, and an unknown \
+                 label never resolves to anything)"
+            );
+        }
+    }
+
+    #[test]
+    fn trim_truncated_legacy_tail_big5_drops_only_truncated_final_sequence() {
+        // "測" and "試" are each 2-byte Big5 characters; cut the sample's
+        // last byte off so it ends in a 1-of-2-byte truncated sequence.
+        let (full, unmappable) = encode("ab測試", "Big5", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in Big5"
+        );
+        let cut = &full[..full.len() - 1];
+        assert_eq!(
+            trim_truncated_legacy_tail(cut, "Big5"),
+            &full[..full.len() - 2],
+            "must drop the whole truncated final character, keeping only \
+             the complete characters before it"
+        );
+    }
+
+    #[test]
+    fn trim_truncated_legacy_tail_keeps_valid_and_ascii_and_empty_unchanged() {
+        let (full, unmappable) = encode("ab測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_eq!(trim_truncated_legacy_tail(&full, "Big5"), &full[..]);
+        assert_eq!(
+            trim_truncated_legacy_tail(b"plain ascii", "Big5"),
+            b"plain ascii"
+        );
+        assert_eq!(trim_truncated_legacy_tail(b"", "Big5"), b"");
+    }
+
+    #[test]
+    fn trim_truncated_legacy_tail_keeps_interior_invalid_unchanged() {
+        // 0xFF is never a valid Big5 lead byte; placed well before the
+        // end, with an otherwise-clean tail. No cut depth can remove an
+        // *interior* error by trimming only the tail, so this must come
+        // back unchanged and surface as malformed via the real decode
+        // instead -- #136's interior-malformed principle, carried over to
+        // Big5.
+        let (mut full, unmappable) = encode("ab測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        full[1] = 0xFF; // inside "ab", nowhere near the tail
+        assert_eq!(trim_truncated_legacy_tail(&full, "Big5"), &full[..]);
+    }
+
+    #[test]
+    fn trim_truncated_legacy_tail_gb18030_drops_truncated_four_byte_tail_at_each_split_position() {
+        // U+20000 is outside the BMP, so gb18030 always encodes it with
+        // its four-byte supplementary-plane form -- a fixed linear
+        // mapping, unlike the BMP's compatibility ranges -- making this
+        // the one case among the six supported encodings whose longest
+        // sequence is 4 bytes rather than 2 or 3 (see
+        // `max_legacy_seq_len`).
+        let (full, unmappable) = encode("a\u{20000}b", "gb18030", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in gb18030"
+        );
+        assert_eq!(full.len(), 6, "1 (a) + 4 (U+20000) + 1 (b) bytes");
+        let complete_prefix = &full[..1]; // just "a"
+        for visible in 1..=3 {
+            let cut = &full[..1 + visible];
+            assert_eq!(
+                trim_truncated_legacy_tail(cut, "gb18030"),
+                complete_prefix,
+                "{visible}-of-4 visible bytes of the truncated character must \
+                 all be dropped, keeping only the complete prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn trim_truncated_legacy_tail_unknown_or_non_legacy_label_is_noop() {
+        let (full, unmappable) = encode("ab測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        let cut = &full[..full.len() - 1];
+        // A label this function doesn't own -- UTF-8, a single-byte
+        // encoding, or one this crate has never heard of -- must never be
+        // trimmed; `open_document`'s gate is expected to have already
+        // resolved which trim function (if any) applies before ever
+        // calling this one.
+        assert_eq!(trim_truncated_legacy_tail(cut, "UTF-8"), cut);
+        assert_eq!(trim_truncated_legacy_tail(cut, "windows-1252"), cut);
+        assert_eq!(trim_truncated_legacy_tail(cut, "not-a-real-label"), cut);
     }
 
     #[test]
