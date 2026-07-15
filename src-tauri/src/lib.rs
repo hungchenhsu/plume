@@ -1,5 +1,6 @@
 mod backup;
 mod batch;
+mod bytedrift;
 mod charinspect;
 mod chunk;
 mod comparepreview;
@@ -648,6 +649,7 @@ pub fn run() {
             open_document,
             explain_detection,
             save_document,
+            bytedrift::check_byte_drift,
             session::load_session,
             session::save_session,
             prefs::load_preferences,

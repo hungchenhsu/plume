@@ -1081,11 +1081,35 @@ surface for incoming contributors.
   lesson is recorded in the judgment overlay. New
   `StreamReplaceReport.unmatched_region_reencoded` field awaits the
   (2/3)/(3/3) UI. 360 Rust tests (26 in streamreplace, +8).
-- [ ] #96 (2/3): lazy byte-drift detection on a doc's first save —
+- [x] #96 (2/3): lazy byte-drift detection on a doc's first save —
   rebuild the full save pipeline (line-ending re-application + BOM)
   against the on-disk bytes and warn once, informed-consent style,
   before normalizing legacy byte variants; Mixed-line-ending files are
-  skipped (their pipeline output is inherently unreproducible) [danger]
+  skipped (their pipeline output is inherently unreproducible) [danger].
+  New `bytedrift.rs::check_byte_drift(path, encoding, with_bom)`:
+  re-reads the on-disk bytes, decodes via the same `decode_with` path
+  an explicit open uses (adversarial review verified the label
+  round-trip is exact and legacy encodings never hit BOM handling),
+  re-detects the file's own line ending from disk — deliberately not
+  the doc's current setting, so a user's explicit LF→CRLF conversion
+  is never misreported as legacy-byte canonicalization (a review-caught
+  false positive: the dialog would have blamed Big5 for a byte change
+  the user themselves requested) — then applies apply_line_ending +
+  encode + BOM re-prefix and memcmps. Skips (cheapest-first, Mixed and
+  UTF-8/UTF-16 before any disk read, proven by nonexistent-path tests):
+  Mixed line endings, Unicode targets (1:1 mappings), malformed files
+  (the stronger malformed warning already owns those). Frontend gate
+  (`bytedrift.ts`, injectable orchestrator + pure decision helpers)
+  runs inside runSaveFlow's #124 lock before the stale/lossy gates,
+  first save per doc per session only (`byteDriftChecked`, reset on
+  reload/reopen, deliberately not persisted to the session store), and
+  only for same-path saves (Save As has no baseline to drift from).
+  Cancel aborts the save like the lossy gate; an IPC failure fails
+  open for that save but leaves the flag unset so the next save
+  retries (review-caught: setting it eagerly would have silenced the
+  check for the whole session on a transient file lock). i18n across
+  en/zh-TW/ja/zh-CN. Failing-test-first both rounds (stub → 7 of 10
+  red; review fixes → 4 more red-then-green). 372 Rust + 616 vitest.
 - [ ] #96 (3/3): batch conversion dry-run report gains a per-file
   byte-drift flag (a same-encoding "no-op" conversion that would still
   canonicalize bytes becomes visible before execute) [danger]

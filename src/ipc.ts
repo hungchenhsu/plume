@@ -241,6 +241,53 @@ export function saveDocument(args: {
   return invoke<SaveResult>("save_document", args);
 }
 
+export interface ByteDriftReport {
+  /** True when saving right now would silently canonicalize a non-injective
+   *  legacy byte sequence (issue #96) -- always `false` when `skipped` is
+   *  `true`. */
+  drift: boolean;
+  /** True when the check didn't run to a real verdict (the file's own bytes
+   *  mix line-ending styles, a UTF-8/UTF-16 target, or on-disk bytes that
+   *  don't even decode cleanly in this encoding --
+   *  src-tauri/src/bytedrift.rs's `SKIP_*` constants). */
+  skipped: boolean;
+  /** One of `src-tauri/src/bytedrift.rs`'s `SKIP_*` reason strings when
+   *  `skipped` is true, else `null`. */
+  reason: string | null;
+}
+
+/**
+ * Lazy byte-drift detection for the save path (issue #96 (2/3)) [danger]:
+ * rebuilds `save_document`'s own pipeline — decode the file's *current*
+ * on-disk bytes with `encoding`, normalize to LF, re-apply the line ending
+ * *detected from those same bytes*, re-encode with `withBom` — and reports
+ * whether that rebuild would fail to reproduce those bytes exactly. A
+ * handful of legacy multi-byte encodings (Big5, Shift_JIS, GBK) have
+ * non-injective decode mappings, so a save can silently canonicalize bytes
+ * the user never touched even though nothing is malformed or unmappable —
+ * see `src-tauri/src/encoding.rs`'s module doc.
+ *
+ * Deliberately takes no line-ending argument: the Rust side detects it from
+ * the disk bytes themselves, so a doc-level line-ending switch (Format
+ * menu) between open and first save can never misreport the user's own
+ * reversible conversion as encoding drift — see
+ * `src-tauri/src/bytedrift.rs`'s module doc.
+ *
+ * Deliberately lazy: called from main.ts's `runSaveFlow` at most once per
+ * document per session (`Doc.byteDriftChecked`, gated by
+ * `src/bytedrift.ts`'s `shouldCheckByteDrift`), right before the first
+ * save — never from `openDocument`, which would cost every document an
+ * extra decode+encode+memcmp on the open hot path for a check only a
+ * minority of documents ever need (ARCHITECTURE.md's "Instant" pillar).
+ */
+export function checkByteDrift(args: {
+  path: string;
+  encoding: string;
+  withBom: boolean;
+}): Promise<ByteDriftReport> {
+  return invoke<ByteDriftReport>("check_byte_drift", args);
+}
+
 export interface SessionFile {
   /** Null for untitled documents kept alive by a hot-exit backup. */
   path: string | null;

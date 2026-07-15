@@ -24,7 +24,11 @@
 //! silently canonicalized. See the `tests` module below (`big5_`,
 //! `shift_jis_`, `gbk_non_canonical_bytes_are_canonicalized_on_encode`)
 //! for three currently-observed, pinned examples, and issue #96 for the
-//! full analysis and the product-level decision this leaves open.
+//! full analysis. Mitigations shipped for #96: `streamreplace.rs` now
+//! byte-passes-through unmatched self-sufficient chunks instead of
+//! re-encoding them, and `bytedrift.rs::check_byte_drift` gives the
+//! user a one-time informed-consent warning before the first save of a
+//! file whose bytes would be canonicalized.
 
 use chardetng::EncodingDetector;
 use encoding_rs::{Encoding, UTF_16BE, UTF_16LE, UTF_8};

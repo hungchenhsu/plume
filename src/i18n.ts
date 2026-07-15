@@ -235,6 +235,17 @@ export interface Messages {
   ) => string;
   "dialog.normalizeUnrepresentableConfirm": string;
   "dialog.normalizeFailedTitle": string;
+  /** Lazy byte-drift detection (issue #96 (2/3)) [danger]: the one-time,
+   *  informed-consent dialog shown before a document's first save this
+   *  session when src-tauri/src/bytedrift.rs's `check_byte_drift` finds
+   *  that saving would silently canonicalize a non-injective legacy byte
+   *  sequence (Big5/Shift_JIS/GBK-family duplicate mappings — see
+   *  src-tauri/src/encoding.rs's module doc). Plain native confirm (main.ts
+   *  runSaveFlow), not a custom DOM dialog like lossyEncoding/staleFile —
+   *  this is purely informational, with no sample list to lay out. */
+  "dialog.byteDriftTitle": string;
+  "dialog.byteDriftMessage": (encoding: string) => string;
+  "dialog.byteDriftConfirm": string;
 
   "encoding.utf8": string;
   "encoding.utf8Bom": string;
@@ -499,6 +510,12 @@ const en: Messages = {
     `Normalize anyway?`,
   "dialog.normalizeUnrepresentableConfirm": "Normalize Anyway",
   "dialog.normalizeFailedTitle": "Normalize failed",
+  "dialog.byteDriftTitle": "Byte drift warning",
+  "dialog.byteDriftMessage": (encoding) =>
+    `This file contains ${encoding} byte sequences that can't be preserved exactly. ` +
+    `Saving will normalize them to their canonical byte form — the text won't change, ` +
+    `but the original bytes will, and this can't be undone.`,
+  "dialog.byteDriftConfirm": "Save Anyway",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8 with BOM",
@@ -740,6 +757,11 @@ const zhTW: Messages = {
     `以 ${encoding} 儲存將在正規化後遺失 ${count} 個字元：${samples.join("、")}${truncated ? " 等" : ""}。仍要正規化嗎？`,
   "dialog.normalizeUnrepresentableConfirm": "仍要正規化",
   "dialog.normalizeFailedTitle": "正規化失敗",
+  "dialog.byteDriftTitle": "位元組漂移警告",
+  "dialog.byteDriftMessage": (encoding) =>
+    `此檔案含有 ${encoding} 中無法逐位元組保留的位元組序列，儲存將把它們正規化為標準形式——` +
+    `文字內容不會改變，但原始位元組會遺失，且無法復原。`,
+  "dialog.byteDriftConfirm": "仍要儲存",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（含 BOM）",
@@ -995,6 +1017,12 @@ const ja: Messages = {
     `${truncated ? " など" : ""}。それでも正規化しますか？`,
   "dialog.normalizeUnrepresentableConfirm": "このまま正規化",
   "dialog.normalizeFailedTitle": "正規化に失敗しました",
+  "dialog.byteDriftTitle": "バイトドリフトの警告",
+  "dialog.byteDriftMessage": (encoding) =>
+    `このファイルには、正確に保持できない ${encoding} のバイト列が含まれています。保存すると` +
+    `正規の形式に正規化されます。テキスト自体は変わりませんが、元のバイト列は失われ、元に戻す` +
+    `ことはできません。`,
+  "dialog.byteDriftConfirm": "このまま保存",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（BOM 付き）",
@@ -1234,6 +1262,11 @@ const zhCN: Messages = {
     `以 ${encoding} 保存将在规范化后丢失 ${count} 个字符：${samples.join("、")}${truncated ? " 等" : ""}。仍要规范化吗？`,
   "dialog.normalizeUnrepresentableConfirm": "仍要规范化",
   "dialog.normalizeFailedTitle": "规范化失败",
+  "dialog.byteDriftTitle": "字节漂移警告",
+  "dialog.byteDriftMessage": (encoding) =>
+    `此文件包含无法逐字节保留的 ${encoding} 字节序列，保存将把它们规范化为标准形式——` +
+    `文本内容不会改变，但原始字节会丢失，且无法撤销。`,
+  "dialog.byteDriftConfirm": "仍要保存",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（带 BOM）",

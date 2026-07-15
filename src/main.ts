@@ -25,6 +25,7 @@ import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
   buildLineIndex,
+  checkByteDrift,
   checkRepresentable,
   listBackups,
   loadBackup,
@@ -58,6 +59,7 @@ import {
   toggleBookmark,
   windowRelativeBookmarks,
 } from "./bookmarks";
+import { runByteDriftGate } from "./bytedrift";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { preemptChunkLoad, shouldApplyChunkResponse } from "./chunkguard";
 import { showComparePreview } from "./comparepreview";
@@ -438,6 +440,7 @@ function makeUntitled(): Doc {
     pendingSaveAs: null,
     backupName: null,
     fingerprint: null,
+    byteDriftChecked: false,
     buffer: editor.newBuffer(""),
   };
 }
@@ -608,6 +611,7 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     pendingSaveAs: null,
     backupName: null,
     fingerprint: opened.fingerprint,
+    byteDriftChecked: false,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
   };
 }
@@ -1288,6 +1292,10 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
   // sequence rather than resetting to a fixed 0 (issue #112).
   doc.revision = nextRevision++;
   doc.fingerprint = opened.fingerprint;
+  // A fresh on-disk baseline replaces whatever this doc's byte-drift check
+  // (if any) was about — issue #96 (2/3)'s one-time dialog re-asks once
+  // more for it, same reasoning as the fingerprint reset just above.
+  doc.byteDriftChecked = false;
   doc.truncated = opened.truncated;
   doc.totalSize = opened.totalSize;
   doc.chunkOffset = 0;
@@ -1474,6 +1482,42 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     // different path; only a same-path resave has a baseline worth
     // checking against (issue #113).
     const expectedFingerprint = path === oldPath ? doc.fingerprint : null;
+    // Lazy byte-drift detection (issue #96 (2/3)) [danger]: a same-path
+    // resave is the only case with an on-disk baseline #96's
+    // canonicalization concern can even apply to — same reasoning as
+    // expectedFingerprint just above, not folded into
+    // shouldCheckByteDrift's own input since it's the same condition this
+    // codebase already treats as inline, not a named gate (see
+    // bytedrift.ts's doc comment). Runs — and shows its one-time,
+    // informed-consent dialog — before both the lossy-encode and stale-
+    // fingerprint gates below, so the user learns about a silent legacy-
+    // byte canonicalization before either of those retries could also
+    // fire for the same save attempt.
+    if (path === oldPath) {
+      // No line ending is passed: the Rust side detects it from the disk
+      // bytes themselves, so a Format-menu line-ending switch made after
+      // open can't misreport as drift (see checkByteDrift's doc comment).
+      // A rejected IPC call (file briefly locked/deleted) fails open
+      // inside runByteDriftGate without spending the one-per-session
+      // flag — save_document's own atomic write and fingerprint-staleness
+      // check still guard the actual write.
+      const proceed = await runByteDriftGate(
+        doc,
+        () =>
+          checkByteDrift({
+            path,
+            encoding: doc.encoding,
+            withBom: doc.withBom,
+          }),
+        () =>
+          confirmDialog(t("dialog.byteDriftMessage", doc.encoding), {
+            title: t("dialog.byteDriftTitle"),
+            kind: "warning",
+            okLabel: t("dialog.byteDriftConfirm"),
+          }),
+      );
+      if (!proceed) return false;
+    }
     let result = await saveDocument({
       ...saveParams,
       allowLossy: false,
@@ -1604,6 +1648,9 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     // Same fresh-baseline reasoning as reloadFromDisk (issue #112).
     doc.revision = nextRevision++;
     doc.fingerprint = opened.fingerprint;
+    // Same reasoning as applyOpenedForReload (issue #96 (2/3)): a new
+    // explicit-encoding decode is a new baseline for the drift check too.
+    doc.byteDriftChecked = false;
     doc.truncated = opened.truncated;
     doc.totalSize = opened.totalSize;
     doc.chunkOffset = 0;
@@ -2336,6 +2383,7 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     // session, so the next save must skip the staleness check (issue #113)
     // exactly like an untitled document's first save.
     fingerprint: null,
+    byteDriftChecked: false,
     buffer: editor.newBuffer(content, false, file.cursor ?? 0),
   });
   if (file.path) void watchFile(file.path).catch(() => {});
@@ -2412,6 +2460,7 @@ async function restoreSession(): Promise<void> {
       // null here, so this is the same "no on-disk baseline yet" case as
       // makeUntitled (issue #113).
       fingerprint: null,
+      byteDriftChecked: false,
       buffer: editor.newBuffer(content, false, 0),
     });
   }

@@ -30,6 +30,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     pendingSaveAs: null,
     backupName: null,
     fingerprint: null,
+    byteDriftChecked: false,
     buffer: {} as EditorBuffer,
   };
 }
