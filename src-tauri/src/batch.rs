@@ -259,6 +259,52 @@ fn validate_line_ending(line_ending: &str) -> Result<(), String> {
     }
 }
 
+/// Open `path` once and run the fast metadata size check used by
+/// `classify_file`'s scan-side guard, but read no bytes yet — the
+/// scan-side counterpart to [`open_for_conversion`] (issue #117), except it
+/// returns a terminal [`BatchEntry`] directly (`classify_file` never fails
+/// the way `execute_batch_conversion` can) and captures no [`Fingerprint`]:
+/// a dry-run scan has nothing to later commit against. Split out from
+/// [`classify_file`] so a test can grow the file behind the returned
+/// handle (through a second, independent handle to the same path) before
+/// ever calling [`take_bounded`] on it, deterministically exercising the
+/// metadata-check -> read TOCTOU (issue #128) instead of timing a real
+/// race — the same seam-splitting technique
+/// [`open_for_conversion`]/[`bounded_read`] already use for issue #117's
+/// identical race on the execute side.
+///
+/// The size check here is a fast path only, *not* the guard: it lets an
+/// already-oversized file fail before any read is attempted, but a file
+/// that passes this check can still grow past `MAX_FILE_SIZE` before
+/// [`take_bounded`] actually runs — that call, not this metadata, is what
+/// bounds the real memory use (see `classify_file`).
+fn open_for_classification(path: &Path) -> Result<std::fs::File, BatchEntry> {
+    let path_str = path.to_string_lossy().into_owned();
+    let file = std::fs::File::open(path).map_err(|_| BatchEntry {
+        path: path_str.clone(),
+        detected: String::new(),
+        status: STATUS_UNDECODABLE.to_string(),
+        line_ending: String::new(),
+    })?;
+    let meta = file.metadata().map_err(|_| BatchEntry {
+        path: path_str.clone(),
+        detected: String::new(),
+        status: STATUS_UNDECODABLE.to_string(),
+        line_ending: String::new(),
+    })?;
+    // Fast path only (see doc comment above): lets an already-oversized
+    // file fail before attempting any read at all.
+    if meta.len() > MAX_FILE_SIZE {
+        return Err(BatchEntry {
+            path: path_str,
+            detected: String::new(),
+            status: STATUS_TOO_LARGE.to_string(),
+            line_ending: String::new(),
+        });
+    }
+    Ok(file)
+}
+
 /// Classify one file against the encoding axis (`target`/`target_with_bom`,
 /// `target: None` meaning "keep this file's own encoding") and the
 /// line-ending axis (`target_line_ending`, `"keep"` meaning "don't touch
@@ -273,19 +319,27 @@ fn classify_file(
 ) -> BatchEntry {
     let path_str = path.to_string_lossy().into_owned();
 
-    let too_large = std::fs::metadata(path)
-        .map(|m| m.len() > MAX_FILE_SIZE)
-        .unwrap_or(false);
-    if too_large {
-        return BatchEntry {
-            path: path_str,
-            detected: String::new(),
-            status: STATUS_TOO_LARGE.to_string(),
-            line_ending: String::new(),
-        };
-    }
+    // Single handle carries both the fast-path size check
+    // (`open_for_classification`) and the real bound (`take_bounded`) —
+    // issue #128: the previous `std::fs::metadata(path)` then
+    // `std::fs::read(path)` pair were two independent path resolutions, so
+    // a file that grew past `MAX_FILE_SIZE` in the gap between them still
+    // got read into memory in full by the second call. Scan is a dry run
+    // (nothing is written), so this was never a data-integrity bug like
+    // #114/#117 — but it let a file's own growth bypass the 10 MiB cap and
+    // pull the whole thing into memory regardless. Same fix as issue
+    // #117's `open_for_conversion`/`bounded_read` split on the execute
+    // side.
+    let file = match open_for_classification(path) {
+        Ok(file) => file,
+        Err(entry) => return entry,
+    };
 
-    let Ok(bytes) = std::fs::read(path) else {
+    // The real guard: caps the underlying reads themselves at
+    // `MAX_FILE_SIZE + 1` bytes, so a file that keeps growing after the
+    // fast-path check above still costs at most O(MAX_FILE_SIZE) here,
+    // never O(file size).
+    let Ok(bytes) = take_bounded(file) else {
         return BatchEntry {
             path: path_str,
             detected: String::new(),
@@ -293,6 +347,17 @@ fn classify_file(
             line_ending: String::new(),
         };
     };
+    // Grew past the cap between the fast-path check and this read: the
+    // same outcome an already-oversized file gets from the fast path,
+    // just discovered one step later.
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        return BatchEntry {
+            path: path_str,
+            detected: String::new(),
+            status: STATUS_TOO_LARGE.to_string(),
+            line_ending: String::new(),
+        };
+    }
 
     // No per-extension hint: matches the task's "encoding::detect, no
     // hint" instruction and keeps scan/execute using the identical
@@ -1482,6 +1547,82 @@ mod tests {
             "message should explain the file grew past the limit: {}",
             err.message
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #128 (failing-test-first): `classify_file` ran its size guard
+    /// as two independent path resolutions — `std::fs::metadata(path)`
+    /// then `std::fs::read(path)` — so a file that grew past
+    /// `MAX_FILE_SIZE` in the gap between them still got read into memory
+    /// in full by the second call. Scan is a dry run (nothing is
+    /// written), so this was never a data-integrity bug like #114/#117 —
+    /// but it let a file's own growth bypass the 10 MiB cap and pull the
+    /// whole thing into memory regardless, an OOM risk on a "just
+    /// looking" dry-run scan. Same fix as #117's
+    /// `open_for_conversion`/`bounded_read` split on the execute side,
+    /// exercised the identical deterministic way: grow the file through a
+    /// *second*, independent handle after `classify_file`'s own fast-path
+    /// metadata check (`open_for_classification`) has already passed,
+    /// instead of timing a real race.
+    #[test]
+    fn classify_file_bounds_the_read_when_the_file_grows_after_the_metadata_check() {
+        let dir = fixture_dir("classify-grows-after-metadata-check");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"small enough to pass the metadata check\n").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        // Exactly what `classify_file` does before the bounded read: open
+        // once and run the fast metadata check (passes — the file is
+        // small).
+        let handle = open_for_classification(Path::new(&path))
+            .expect("small file must pass the metadata check");
+
+        // Simulate an external writer appending after that check but
+        // before the read: a *different* handle to the same path, growing
+        // the file well past MAX_FILE_SIZE. `handle` itself is untouched —
+        // still positioned at 0 — so the next read through it sees the
+        // file's current (grown) contents, exactly like a real concurrent
+        // append would.
+        {
+            use std::io::Write;
+            let mut writer = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            let filler = vec![b'x'; (MAX_FILE_SIZE + 1) as usize];
+            writer.write_all(&filler).unwrap();
+            writer.flush().unwrap();
+        }
+        let grown_size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            grown_size > MAX_FILE_SIZE + 1,
+            "fixture must actually grow past the take limit: {grown_size}"
+        );
+
+        // The real guard: reading through the already-open handle must
+        // never materialize more than MAX_FILE_SIZE + 1 bytes — the
+        // take-limit sentinel — regardless of how much larger the file has
+        // actually grown (`grown_size` above). This is what the pre-fix
+        // `std::fs::read(path)` got wrong: it had no cap and would have
+        // read all `grown_size` bytes.
+        let bytes = take_bounded(handle).expect("take-bounded read itself never errors on I/O");
+        assert_eq!(
+            bytes.len() as u64,
+            MAX_FILE_SIZE + 1,
+            "the read must stop at the take limit's sentinel byte, never at the file's full \
+             grown size ({grown_size})"
+        );
+
+        // And the public-facing `classify_file` still reports this file as
+        // `tooLarge` — the same status an already-oversized file gets from
+        // the fast path — with classification semantics unchanged: only
+        // the guard mechanism (bounded read vs. trusted metadata) changed
+        // underneath it.
+        let entry = classify_file(Path::new(&path), None, false, "keep");
+        assert_eq!(entry.status, STATUS_TOO_LARGE, "{entry:?}");
+        assert_eq!(entry.detected, "");
+        assert_eq!(entry.line_ending, "");
 
         std::fs::remove_dir_all(&dir).ok();
     }
