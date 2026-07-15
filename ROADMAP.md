@@ -152,12 +152,16 @@ domain: failing-test-first, round-trip tests mandatory)
 - [x] Issue templates, labels, and a good-first-issue starter set
   (unblocked; do first — it is the interface for incoming contributors)
 - [x] i18n dictionaries: ja and zh-CN (builds on the v0.2 i18n module)
-- [ ] D1 official name — user decision, currently deferred (evidence
-  archived in `.claude/archive/d1-naming-final.md`)
+- [ ] D1 official name — user decision; shortlist re-verified 2026-07-15
+  (evidence lives in the maintainer's local private storage since the
+  repo went public — see DIRECTION §3/D1)
 - [ ] D2 signing + auto-update — blocked on D1 and user-held keys
-  (runbook: `.claude/archive/d2-updater-runbook.md`)
-- [ ] D3 going-public sweep — includes purging `.claude/archive/`
-  naming evidence before the repo turns public
+  (runbook in the maintainer's local private storage)
+- [x] D3 going-public sweep, archive part: internal decision material
+  (naming evidence, updater runbook) relocated out of the repo to the
+  maintainer's local private storage (2026-07-15, user-approved; note
+  the files remain reachable in git history — accepted). Remaining D3
+  items (D1 naming, README pass, signing) tracked in DIRECTION §2
 
 ## v0.4 — feature cycle (planned 2026-07-14, delegated)
 
