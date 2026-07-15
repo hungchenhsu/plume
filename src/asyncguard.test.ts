@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fingerprintsEqual, mustDefer, type LockOwner } from "./savemutex";
 import { captureIdentity, validateIdentity, type GuardIdentity } from "./asyncguard";
+import { planNormalization, type NormalizeForm } from "./normalize";
 
 describe("captureIdentity", () => {
   it("copies id and revision as of the call", () => {
@@ -498,5 +499,398 @@ describe("issue #169 — reopenWithEncoding defers to an in-flight save instead 
 
     saveCall.resolve();
     await savePromise;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// main.ts-shaped simulation for runNormalizeFlow's own confirm-dialog and
+// representability-IPC awaits (issue #158). Same technique as the
+// reload/reopen harness above (main.ts has no *.test.ts of its own — see
+// that harness's own header comment): mirrors runNormalizeFlow's control
+// flow closely enough to reproduce each race, wired to the real
+// captureIdentity/validateIdentity (this module) and the real
+// planNormalization (normalize.ts) rather than reimplementing their logic
+// independently.
+//
+// Unlike reload/reopen, the eventual mutation (`editor.replaceContent`)
+// writes to a single surface shared by every tab, not a per-doc buffer — so
+// the id/revision guard alone isn't sufficient: a doc can be untouched and
+// still open (validateIdentity would say "apply") yet no longer be what the
+// editor is showing, if the user switched tabs during one of
+// runNormalizeFlow's three await gaps (the first confirm, the
+// checkRepresentable IPC round trip, the second confirm).
+// NormalizeEditorState below models the editor as its own object,
+// independent of any NormalizeDocState, precisely so a wrongful cross-tab
+// apply is visible as THAT object ending up with tab A's normalized text
+// while tab B is active — the bug this section exists to catch.
+// normalizeGuardOutcomeSim adds the explicit active-tab check
+// showMojibakeRepairWizard already established for this same hazard
+// (mojibake.ts's own snapshot-staleness check predates asyncguard.ts, so it
+// doesn't reuse captureIdentity/validateIdentity, but the "is this still
+// the active tab" half of its reasoning is identical).
+
+interface NormalizeDocState {
+  id: number;
+  revision: number;
+  encoding: string;
+}
+
+interface NormalizeTabsState {
+  docs: NormalizeDocState[];
+  activeId: number | null;
+}
+
+/** Stand-in for main.ts's single shared `editor` (editor.ts's
+ *  EditorBuffer) — content lives here, not on any particular
+ *  NormalizeDocState, so a wrongful cross-tab apply is visible as THIS
+ *  object ending up with tab A's normalized text while tab B is active. */
+interface NormalizeEditorState {
+  content: string;
+}
+
+/** Mirrors main.ts's `isUnicodeEncoding`. */
+function isUnicodeEncodingSim(encoding: string): boolean {
+  return encoding === "UTF-8" || encoding.startsWith("UTF-16");
+}
+
+type NormalizeGuardOutcome = "apply" | "silent" | "notify";
+
+/** Mirrors main.ts's `normalizeGuardOutcome` (issue #158): asyncguard.ts's
+ *  identity verdict, plus the active-tab check described above. "apply"
+ *  only when `doc` is both unchanged since `guard` was captured AND still
+ *  the tab the (shared) editor is currently showing. "silent" for a closed
+ *  tab or one the user switched away from — nothing useful to tell them
+ *  either way, same reasoning as asyncguard.ts's own "closed" verdict and
+ *  showMojibakeRepairWizard's activeId check. "notify" only for a
+ *  same-tab edit (asyncguard.ts's "edited", while still active): the user
+ *  is still looking right at this tab and just confirmed an operation, so
+ *  silently discarding it would be confusing. */
+function normalizeGuardOutcomeSim(
+  tabs: NormalizeTabsState,
+  guard: GuardIdentity,
+  doc: NormalizeDocState,
+): NormalizeGuardOutcome {
+  if (tabs.activeId !== guard.id) return "silent";
+  const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+  if (verdict === "apply") return "apply";
+  if (verdict === "closed") return "silent";
+  return "notify";
+}
+
+interface NormalizeDeps {
+  confirmDialog: () => Promise<boolean>;
+  checkRepresentable: (text: string, encoding: string) => Promise<{ unmappableCount: number }>;
+  /** Fire-and-forget stand-in for main.ts's un-awaited
+   *  `void messageDialog(...)` — matches showMojibakeRepairWizard's own
+   *  staleContentMessage, a plain acknowledgement nothing needs to wait
+   *  on. */
+  notifyStale: () => void;
+}
+
+/** Mirrors runNormalizeFlow (issue #158): capture identity before the first
+ *  await, re-validate (guard + active-tab, via normalizeGuardOutcomeSim)
+ *  after every await that precedes the eventual apply — the first confirm,
+ *  the representability IPC round trip, and the second
+ *  (unrepresentable-chars) confirm — with zero further await between the
+ *  last passing check and the apply itself on every path (a "notify" or
+ *  "silent" outcome always returns immediately instead of falling through). */
+async function runNormalizeFlowSim(
+  tabs: NormalizeTabsState,
+  editorState: NormalizeEditorState,
+  doc: NormalizeDocState,
+  form: NormalizeForm,
+  deps: NormalizeDeps,
+): Promise<void> {
+  const guard = captureIdentity(doc);
+  const plan = planNormalization(editorState.content, form);
+  if (!plan.changed) return;
+
+  const proceed = await deps.confirmDialog();
+  if (!proceed) return;
+  let outcome = normalizeGuardOutcomeSim(tabs, guard, doc);
+  if (outcome === "notify") deps.notifyStale();
+  if (outcome !== "apply") return;
+
+  if (!isUnicodeEncodingSim(doc.encoding)) {
+    const report = await deps.checkRepresentable(plan.normalized, doc.encoding);
+    outcome = normalizeGuardOutcomeSim(tabs, guard, doc);
+    if (outcome === "notify") deps.notifyStale();
+    if (outcome !== "apply") return;
+
+    if (report.unmappableCount > 0) {
+      const proceedAnyway = await deps.confirmDialog();
+      if (!proceedAnyway) return;
+      outcome = normalizeGuardOutcomeSim(tabs, guard, doc);
+      if (outcome === "notify") deps.notifyStale();
+      if (outcome !== "apply") return;
+    }
+  }
+
+  editorState.content = plan.normalized;
+}
+
+/** Drains the microtask queue until `predicate` holds (or gives up after 20
+ *  ticks) — used to deterministically land a test's own mutation inside a
+ *  later await gap (checkRepresentable, the second confirm) that sits
+ *  behind one or more earlier awaits a given test resolves immediately
+ *  rather than controls directly. Over-waiting is harmless: once the
+ *  awaited chain reaches a promise nothing has resolved yet, further ticks
+ *  are no-ops, so this always settles as soon as the target call actually
+ *  lands. */
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 20 && !predicate(); i++) {
+    await Promise.resolve();
+  }
+}
+
+const NFD_CAFE = "café"; // "café" spelled with a combining acute accent (NFD)
+const NFC_CAFE = "café"; // precomposed "café" (NFC)
+
+describe("issue #158 — runNormalizeFlow's own confirm/IPC awaits race a tab switch or same-tab edit", () => {
+  describe("first confirm dialog", () => {
+    it("switching tabs while the confirm dialog is up: normalized text is not applied to the new active tab's editor, silently", async () => {
+      const docA: NormalizeDocState = { id: 1, revision: 0, encoding: "UTF-8" };
+      const docB: NormalizeDocState = { id: 2, revision: 0, encoding: "UTF-8" };
+      const tabs: NormalizeTabsState = { docs: [docA, docB], activeId: docA.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      const confirmCall = deferred<boolean>();
+      let notifyCalls = 0;
+
+      const flowPromise = runNormalizeFlowSim(tabs, editorState, docA, "NFC", {
+        confirmDialog: () => confirmCall.promise,
+        checkRepresentable: () => {
+          throw new Error("UTF-8 doc must never call checkRepresentable");
+        },
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      // User switches to tab B while the confirm dialog is still open —
+      // mirrors tabs.setActive reassigning activeId; the shared editor now
+      // shows B's own content, not A's.
+      tabs.activeId = docB.id;
+      editorState.content = "tab B's own live content";
+
+      confirmCall.resolve(true);
+      await flowPromise;
+
+      expect(editorState.content).toBe("tab B's own live content");
+      expect(notifyCalls).toBe(0); // silent — the user isn't looking at A anymore
+    });
+
+    it("typing in the same tab while the confirm dialog is up: the fresh edit is not overwritten, and a stale notice fires", async () => {
+      const doc: NormalizeDocState = { id: 1, revision: 0, encoding: "UTF-8" };
+      const tabs: NormalizeTabsState = { docs: [doc], activeId: doc.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      const confirmCall = deferred<boolean>();
+      let notifyCalls = 0;
+
+      const flowPromise = runNormalizeFlowSim(tabs, editorState, doc, "NFC", {
+        confirmDialog: () => confirmCall.promise,
+        checkRepresentable: () => {
+          throw new Error("UTF-8 doc must never call checkRepresentable");
+        },
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      // User keeps typing in the same tab while the confirm dialog is open
+      // — mirrors the editor's onChange handler bumping doc.revision on
+      // every keystroke.
+      doc.revision += 1;
+      editorState.content = NFD_CAFE + " plus fresh typing";
+
+      confirmCall.resolve(true);
+      await flowPromise;
+
+      expect(editorState.content).toBe(NFD_CAFE + " plus fresh typing");
+      expect(notifyCalls).toBe(1);
+    });
+  });
+
+  describe("representability IPC (legacy encoding path)", () => {
+    it("switching tabs while checkRepresentable is in flight: not applied, silently", async () => {
+      const docA: NormalizeDocState = { id: 1, revision: 0, encoding: "Big5" };
+      const docB: NormalizeDocState = { id: 2, revision: 0, encoding: "Big5" };
+      const tabs: NormalizeTabsState = { docs: [docA, docB], activeId: docA.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      const repCall = deferred<{ unmappableCount: number }>();
+      let checkRepCalls = 0;
+      let notifyCalls = 0;
+
+      const flowPromise = runNormalizeFlowSim(tabs, editorState, docA, "NFC", {
+        confirmDialog: () => Promise.resolve(true),
+        checkRepresentable: () => {
+          checkRepCalls += 1;
+          return repCall.promise;
+        },
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      await waitUntil(() => checkRepCalls > 0);
+      expect(checkRepCalls).toBe(1); // sanity: racing the intended await
+
+      tabs.activeId = docB.id;
+      editorState.content = "tab B's own live content";
+
+      repCall.resolve({ unmappableCount: 0 });
+      await flowPromise;
+
+      expect(editorState.content).toBe("tab B's own live content");
+      expect(notifyCalls).toBe(0);
+    });
+
+    it("typing in the same tab while checkRepresentable is in flight: the fresh edit is not overwritten, and a stale notice fires", async () => {
+      const doc: NormalizeDocState = { id: 1, revision: 0, encoding: "Big5" };
+      const tabs: NormalizeTabsState = { docs: [doc], activeId: doc.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      const repCall = deferred<{ unmappableCount: number }>();
+      let checkRepCalls = 0;
+      let notifyCalls = 0;
+
+      const flowPromise = runNormalizeFlowSim(tabs, editorState, doc, "NFC", {
+        confirmDialog: () => Promise.resolve(true),
+        checkRepresentable: () => {
+          checkRepCalls += 1;
+          return repCall.promise;
+        },
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      await waitUntil(() => checkRepCalls > 0);
+      expect(checkRepCalls).toBe(1);
+
+      doc.revision += 1;
+      editorState.content = NFD_CAFE + " plus fresh typing";
+
+      repCall.resolve({ unmappableCount: 0 });
+      await flowPromise;
+
+      expect(editorState.content).toBe(NFD_CAFE + " plus fresh typing");
+      expect(notifyCalls).toBe(1);
+    });
+  });
+
+  describe("second (unrepresentable-characters) confirm dialog", () => {
+    it("switching tabs while the second confirm dialog is up: not applied, silently", async () => {
+      const docA: NormalizeDocState = { id: 1, revision: 0, encoding: "Big5" };
+      const docB: NormalizeDocState = { id: 2, revision: 0, encoding: "Big5" };
+      const tabs: NormalizeTabsState = { docs: [docA, docB], activeId: docA.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      const secondConfirmCall = deferred<boolean>();
+      let confirmCalls = 0;
+      let notifyCalls = 0;
+
+      const flowPromise = runNormalizeFlowSim(tabs, editorState, docA, "NFC", {
+        confirmDialog: () => {
+          confirmCalls += 1;
+          return confirmCalls === 1 ? Promise.resolve(true) : secondConfirmCall.promise;
+        },
+        checkRepresentable: () => Promise.resolve({ unmappableCount: 2 }),
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      await waitUntil(() => confirmCalls > 1);
+      expect(confirmCalls).toBe(2); // sanity: racing the second confirm
+
+      tabs.activeId = docB.id;
+      editorState.content = "tab B's own live content";
+
+      secondConfirmCall.resolve(true);
+      await flowPromise;
+
+      expect(editorState.content).toBe("tab B's own live content");
+      expect(notifyCalls).toBe(0);
+    });
+
+    it("typing in the same tab while the second confirm dialog is up: the fresh edit is not overwritten, and a stale notice fires", async () => {
+      const doc: NormalizeDocState = { id: 1, revision: 0, encoding: "Big5" };
+      const tabs: NormalizeTabsState = { docs: [doc], activeId: doc.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      const secondConfirmCall = deferred<boolean>();
+      let confirmCalls = 0;
+      let notifyCalls = 0;
+
+      const flowPromise = runNormalizeFlowSim(tabs, editorState, doc, "NFC", {
+        confirmDialog: () => {
+          confirmCalls += 1;
+          return confirmCalls === 1 ? Promise.resolve(true) : secondConfirmCall.promise;
+        },
+        checkRepresentable: () => Promise.resolve({ unmappableCount: 2 }),
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      await waitUntil(() => confirmCalls > 1);
+      expect(confirmCalls).toBe(2);
+
+      doc.revision += 1;
+      editorState.content = NFD_CAFE + " plus fresh typing";
+
+      secondConfirmCall.resolve(true);
+      await flowPromise;
+
+      expect(editorState.content).toBe(NFD_CAFE + " plus fresh typing");
+      expect(notifyCalls).toBe(1);
+    });
+  });
+
+  describe("control — no race", () => {
+    it("Unicode-encoding doc: applies normally with a single confirm, no representability check, no dialog regression", async () => {
+      const doc: NormalizeDocState = { id: 1, revision: 0, encoding: "UTF-8" };
+      const tabs: NormalizeTabsState = { docs: [doc], activeId: doc.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      let notifyCalls = 0;
+
+      await runNormalizeFlowSim(tabs, editorState, doc, "NFC", {
+        confirmDialog: () => Promise.resolve(true),
+        checkRepresentable: () => {
+          throw new Error("UTF-8 doc must never call checkRepresentable");
+        },
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      expect(editorState.content).toBe(NFC_CAFE);
+      expect(notifyCalls).toBe(0);
+    });
+
+    it("legacy-encoding doc with unrepresentable characters: applies normally through all three awaits", async () => {
+      const doc: NormalizeDocState = { id: 1, revision: 0, encoding: "Big5" };
+      const tabs: NormalizeTabsState = { docs: [doc], activeId: doc.id };
+      const editorState: NormalizeEditorState = { content: NFD_CAFE };
+      let confirmCalls = 0;
+      let checkRepCalls = 0;
+      let notifyCalls = 0;
+
+      await runNormalizeFlowSim(tabs, editorState, doc, "NFC", {
+        confirmDialog: () => {
+          confirmCalls += 1;
+          return Promise.resolve(true);
+        },
+        checkRepresentable: () => {
+          checkRepCalls += 1;
+          return Promise.resolve({ unmappableCount: 2 });
+        },
+        notifyStale: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      expect(editorState.content).toBe(NFC_CAFE);
+      expect(confirmCalls).toBe(2);
+      expect(checkRepCalls).toBe(1);
+      expect(notifyCalls).toBe(0);
+    });
   });
 });

@@ -59,7 +59,7 @@ import {
   type SessionData,
   type SessionFile,
 } from "./ipc";
-import { captureIdentity, validateIdentity } from "./asyncguard";
+import { captureIdentity, validateIdentity, type GuardIdentity } from "./asyncguard";
 import { dropBackup } from "./backup";
 import { showBatchConvert } from "./batchconvert";
 import {
@@ -2280,6 +2280,43 @@ function isUnicodeEncoding(encoding: string): boolean {
   return encoding === "UTF-8" || encoding.startsWith("UTF-16");
 }
 
+type NormalizeGuardOutcome = "apply" | "silent" | "notify";
+
+/**
+ * Re-validate `guard` (captured at the very start of `runNormalizeFlow`,
+ * before its first await) against `doc`'s current state — called after
+ * each of that function's three await gaps (the confirm dialog, the
+ * checkRepresentable IPC round trip, the second confirm), right before
+ * deciding whether to keep going [issue #158]. Combines asyncguard.ts's
+ * id/revision identity check (issue #159 — the same one
+ * fetchAndApplyReload/fetchAndApplyReopen use) with an explicit active-tab
+ * check neither of those needs: `editor` is a single surface shared by
+ * every tab, so even a `doc` that's untouched and still open must not be
+ * written to once the user has switched away from it —
+ * `editor.replaceContent` would land on whatever tab is now showing
+ * instead. This is exactly the hazard `showMojibakeRepairWizard` already
+ * guards against via its own `tabs.activeId` check (that check predates
+ * asyncguard.ts, so it doesn't use captureIdentity/validateIdentity, but
+ * the reasoning is the same).
+ *
+ * "apply": nothing relevant happened — safe to keep going, with zero
+ * further await before the next mutation (see call sites below). "silent":
+ * either the tab closed (asyncguard.ts's "closed") or the user switched to
+ * a different tab — nothing useful to tell them either way, same as
+ * showMojibakeRepairWizard's own silent tab-switch case. "notify": still
+ * the active tab, but its revision moved (asyncguard.ts's "edited",
+ * overwhelmingly a keystroke) — the user is still looking right at this
+ * tab and just confirmed an operation, so silently discarding it with no
+ * explanation would be confusing; the caller shows a dialog.
+ */
+function normalizeGuardOutcome(guard: GuardIdentity, doc: Doc): NormalizeGuardOutcome {
+  if (tabs.activeId !== guard.id) return "silent";
+  const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+  if (verdict === "apply") return "apply";
+  if (verdict === "closed") return "silent";
+  return "notify";
+}
+
 /**
  * Edit > Normalize to NFC/NFD (ROADMAP.md v0.4 Track A) [danger]. Never
  * applies silently:
@@ -2317,10 +2354,25 @@ function isUnicodeEncoding(encoding: string): boolean {
  * disk with no way to save it back, exactly like those (ROADMAP.md v0.4
  * Track A item 6 — no separate native-menu-disabled wiring needed, this is
  * the same runtime guard).
+ *
+ * `doc`/the active tab can move on during any of the three await gaps
+ * below — a same-tab edit, a tab switch, or the tab closing outright
+ * (issue #158: cross-tab apply and edit-overwrite were both filed against
+ * the original unconditional `editor.replaceContent` at the end). `guard`
+ * (captured up front) is re-validated via `normalizeGuardOutcome` after
+ * every one of them, with the same zero-await-before-apply discipline
+ * fetchAndApplyReload/fetchAndApplyReopen already established (issue
+ * #159): the outcome check itself is a plain synchronous call, and only
+ * its "notify" branch (a fire-and-forget dialog, matching
+ * showMojibakeRepairWizard's own un-awaited staleContentMessage) touches
+ * anything async — every path that reaches the final
+ * `editor.replaceContent` does so with no further await after its last
+ * passing check.
  */
 async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
   const doc = tabs.active;
   if (!doc) return;
+  const guard = captureIdentity(doc);
   try {
     const plan = planNormalization(editor.content(), form);
     if (!plan.changed) return;
@@ -2334,9 +2386,26 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
       },
     );
     if (!proceed) return;
+    let outcome = normalizeGuardOutcome(guard, doc);
+    if (outcome === "notify") {
+      void messageDialog(t("dialog.normalizeStaleMessage"), {
+        title: t("dialog.normalizeStaleTitle"),
+        kind: "warning",
+      });
+    }
+    if (outcome !== "apply") return;
 
     if (!isUnicodeEncoding(doc.encoding)) {
       const report = await checkRepresentable(plan.normalized, doc.encoding);
+      outcome = normalizeGuardOutcome(guard, doc);
+      if (outcome === "notify") {
+        void messageDialog(t("dialog.normalizeStaleMessage"), {
+          title: t("dialog.normalizeStaleTitle"),
+          kind: "warning",
+        });
+      }
+      if (outcome !== "apply") return;
+
       if (report.unmappableCount > 0) {
         const proceedAnyway = await confirmDialog(
           t(
@@ -2353,6 +2422,14 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
           },
         );
         if (!proceedAnyway) return;
+        outcome = normalizeGuardOutcome(guard, doc);
+        if (outcome === "notify") {
+          void messageDialog(t("dialog.normalizeStaleMessage"), {
+            title: t("dialog.normalizeStaleTitle"),
+            kind: "warning",
+          });
+        }
+        if (outcome !== "apply") return;
       }
     }
 
