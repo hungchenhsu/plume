@@ -348,6 +348,27 @@ select:focus-visible {
   flex-shrink: 0;
 }
 
+/* Non-interactive group label (e.g. the encoding picker's Unicode/East
+   Asian/… sections — see popup.ts's MenuItem.header). Bold to match the
+   browser's own default <optgroup> rendering, so the status-bar popup and
+   the native <select> pickers built from the same groups read as one
+   system; muted to stay clearly subordinate to the clickable items below
+   it, and un-clickable (a plain <div>, not a <button>). */
+.popup-section-header {
+  padding: 6px 10px 4px;
+  font-size: var(--font-ui-xs);
+  font-weight: 600;
+  color: var(--fg-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.popup-section-header:not(:first-child) {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .quickopen-overlay {
   position: fixed;
   inset: 0;

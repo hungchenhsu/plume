@@ -337,6 +337,13 @@ export interface Messages {
   "encoding.windows874": string;
   "encoding.macintosh": string;
 
+  "encoding.group.unicode": string;
+  "encoding.group.eastAsian": string;
+  "encoding.group.westernEuropean": string;
+  "encoding.group.centralEuropean": string;
+  "encoding.group.cyrillic": string;
+  "encoding.group.other": string;
+
   "common.loading": string;
 }
 
@@ -667,6 +674,13 @@ const en: Messages = {
   "encoding.windows874": "Windows-874 (Thai)",
   "encoding.macintosh": "Macintosh (Mac Roman)",
 
+  "encoding.group.unicode": "Unicode",
+  "encoding.group.eastAsian": "East Asian",
+  "encoding.group.westernEuropean": "Western European",
+  "encoding.group.centralEuropean": "Central European",
+  "encoding.group.cyrillic": "Cyrillic",
+  "encoding.group.other": "Other",
+
   "common.loading": "Loading…",
 };
 
@@ -966,6 +980,13 @@ const zhTW: Messages = {
   "encoding.koi8u": "KOI8-U（烏克蘭文）",
   "encoding.windows874": "Windows-874（泰文）",
   "encoding.macintosh": "Macintosh（Mac Roman）",
+
+  "encoding.group.unicode": "Unicode",
+  "encoding.group.eastAsian": "東亞",
+  "encoding.group.westernEuropean": "西歐",
+  "encoding.group.centralEuropean": "中歐",
+  "encoding.group.cyrillic": "西里爾",
+  "encoding.group.other": "其他",
 
   "common.loading": "載入中…",
 };
@@ -1284,6 +1305,13 @@ const ja: Messages = {
   "encoding.windows874": "Windows-874（タイ語）",
   "encoding.macintosh": "Macintosh（Mac Roman）",
 
+  "encoding.group.unicode": "Unicode",
+  "encoding.group.eastAsian": "東アジア",
+  "encoding.group.westernEuropean": "西欧",
+  "encoding.group.centralEuropean": "中欧",
+  "encoding.group.cyrillic": "キリル文字",
+  "encoding.group.other": "その他",
+
   "common.loading": "読み込み中…",
 };
 
@@ -1581,6 +1609,13 @@ const zhCN: Messages = {
   "encoding.koi8u": "KOI8-U（乌克兰文）",
   "encoding.windows874": "Windows-874（泰文）",
   "encoding.macintosh": "Macintosh（Mac Roman）",
+
+  "encoding.group.unicode": "Unicode",
+  "encoding.group.eastAsian": "东亚",
+  "encoding.group.westernEuropean": "西欧",
+  "encoding.group.centralEuropean": "中欧",
+  "encoding.group.cyrillic": "西里尔",
+  "encoding.group.other": "其他",
 
   "common.loading": "加载中…",
 };

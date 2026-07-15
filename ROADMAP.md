@@ -1235,9 +1235,20 @@ byte-preservation machinery)
   precomposed forms simply filter out), list correspondence 27↔26
   exact. Mojibake-wizard Cyrillic hypotheses (windows-1251⇄KOI8-R)
   filed as #182. 422 Rust tests (+33) + 690 vitest.
-- [ ] Encoding picker group headers (popup.ts section support:
+- [x] Encoding picker group headers (popup.ts section support:
   Unicode / East Asian / Western / Central European / Other), reopen
-  and save-with-encoding menus kept in sync
+  and save-with-encoding menus kept in sync. Final grouping: Unicode
+  4 / East Asian 6 / Western 2 / Central European 2 / Cyrillic 4 /
+  Other 9. popup.ts gains an optional non-interactive header item
+  (no click handler, no tab stop — the menu's native-focus
+  interaction model makes that sufficient); the three other showMenu
+  consumers are untouched. All three status-bar encoding menus
+  (reopen / save-with / convert-file) share one grouped-items glue
+  function; batch, preferences, and compare-preview `<select>`s use
+  native `<optgroup>` (batch's index-based values preserved via an
+  index map). `EncodingChoice.group` is optional — groupless entries
+  (batch's "keep" pseudo-choice) are skipped by design. Group names
+  i18n'd across four locales. 703 vitest (+13).
 - [ ] Detection-boundary documentation: single-byte families chardetng
   cannot reliably detect are labeled "manual reopen only" consistently
   in the detection diagnostics; no detection behavior change
