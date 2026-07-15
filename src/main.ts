@@ -88,6 +88,7 @@ import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
 import { showMenu } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
+import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
 import {
@@ -432,6 +433,9 @@ function makeUntitled(): Doc {
     bookmarks: [],
     chunkGeneration: 0,
     chunkLoadInFlight: false,
+    saveReloadInFlight: null,
+    pendingReload: false,
+    pendingSaveAs: null,
     backupName: null,
     fingerprint: null,
     buffer: editor.newBuffer(""),
@@ -599,6 +603,9 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     bookmarks: [],
     chunkGeneration: 0,
     chunkLoadInFlight: false,
+    saveReloadInFlight: null,
+    pendingReload: false,
+    pendingSaveAs: null,
     backupName: null,
     fingerprint: opened.fingerprint,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
@@ -1080,62 +1087,237 @@ function rememberRecent(path: string): void {
 const recentSaves = new Map<string, number>();
 /** Paths with a reload-confirmation dialog currently open. */
 const reloadPrompts = new Set<string>();
+/** Resolvers for saveFlow calls coalesced into doc.pendingSaveAs while the
+ *  per-doc save/reload lock (issue #124) was held by something else —
+ *  keyed by doc.id since a resolve callback has no business living on
+ *  Doc's own (session-persistence-adjacent) state. All resolvers queued
+ *  for a doc settle together, once, with whatever the pending save
+ *  actually resolves to once drained (see drainLock below) — never
+ *  dropped, so a coalesced caller's promise can never hang. */
+const pendingSaveResolvers = new Map<number, Array<(written: boolean) => void>>();
 
+/** Acquire `doc`'s save/reload lock for the duration of `body`, then
+ *  release it and drain whatever queued up while it was held (issue
+ *  #124). Every saveFlow/reloadFromDisk entry that isn't already
+ *  deferring (see savemutex.ts's mustDefer) goes through this, so the
+ *  lock is never left stuck even if `body` throws or its promise rejects
+ *  — the release and drain live in `finally`. */
+async function withLock(
+  doc: Doc,
+  owner: "save" | "reload",
+  body: () => Promise<void>,
+): Promise<void> {
+  doc.saveReloadInFlight = owner;
+  try {
+    await body();
+  } finally {
+    doc.saveReloadInFlight = null;
+    await drainLock(doc);
+  }
+}
+
+/** Once the lock releases, run whatever queued up behind it —
+ *  savemutex.ts's nextDrainStep always drains a pending reload before a
+ *  pending save. Recurses (through withLock's own finally calling this
+ *  again) until nothing is left pending, since draining one step can
+ *  itself pick up a newer request that arrived while it ran. */
+async function drainLock(doc: Doc): Promise<void> {
+  const step = nextDrainStep({
+    pendingReload: doc.pendingReload,
+    pendingSaveAs: doc.pendingSaveAs,
+    dirty: doc.dirty,
+  });
+  if (step.kind === "done") return;
+  if (step.kind === "reload") {
+    doc.pendingReload = false;
+    await withLock(doc, "reload", () => reevaluateReload(doc));
+    return;
+  }
+  const resolvers = pendingSaveResolvers.get(doc.id) ?? [];
+  pendingSaveResolvers.delete(doc.id);
+  doc.pendingSaveAs = null;
+  if (step.kind === "dropSave") {
+    // The doc came out of the lock already clean — either the save that
+    // just finished wrote this exact content (double-save coalesce: its
+    // revision-matched completion cleared dirty), or a reload the user
+    // explicitly consented to (reevaluateReload's dirty-confirm, or the
+    // stale-save dialog's own "reload" choice) discarded it. Running the
+    // pending save for real would be a redundant no-op write either way,
+    // so it's dropped. Resolving `true` is exact for the coalesce case —
+    // the content the caller wanted saved is on disk — and a deliberate
+    // simplification for the consented-discard case (the user just chose
+    // to abandon those edits, so no caller should act on them anymore).
+    // The two are indistinguishable here without threading "what released
+    // the lock" through the decision table, and resolving `false` instead
+    // would make the *common* coalesce case misreport failure — e.g. the
+    // save-with-encoding menu would roll its speculative encoding back
+    // even though the save it coalesced into genuinely wrote (see its
+    // .then(written) handler below).
+    for (const resolve of resolvers) resolve(true);
+    await drainLock(doc);
+    return;
+  }
+  let result = false;
+  await withLock(doc, "save", async () => {
+    result = await runSaveFlow(doc, step.saveAs);
+  });
+  for (const resolve of resolvers) resolve(result);
+}
+
+/**
+ * Replace `doc`'s buffer with what's on disk right now. Every caller has
+ * already resolved discarding whatever the buffer held (a clean doc, or an
+ * explicit reload/overwrite confirmation) — see handleExternalChange and
+ * saveFlow's stale-confirm branch. Public entry point: defers instead of
+ * running if a save or another reload is already in flight for this doc
+ * (issue #124) rather than racing it — see savemutex.ts's module comment
+ * for what that race used to do to the hot-exit backup and doc.fingerprint.
+ * The deferred request isn't dropped: withLock's finally drains it once
+ * the lock frees up, via reevaluateReload below.
+ */
 async function reloadFromDisk(doc: Doc): Promise<void> {
+  if (!doc.path) return;
+  if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+    doc.pendingReload = true;
+    return;
+  }
+  await withLock(doc, "reload", () => fetchAndApplyReload(doc));
+}
+
+/** Fetch doc.path fresh and unconditionally apply it — reloadFromDisk's
+ *  own behavior once the lock is confirmed free, factored out so
+ *  reevaluateReload (the drained-pending-reload path) can share the fetch
+ *  shape while gating the apply differently. */
+async function fetchAndApplyReload(doc: Doc): Promise<void> {
   if (!doc.path) return;
   try {
     const opened = await openDocument(doc.path, doc.encoding);
-    doc.encoding = opened.encoding;
-    doc.withBom = opened.hadBom;
-    doc.lineEnding = opened.lineEnding;
-    doc.malformed = opened.malformed;
-    doc.dirty = false;
-    // The buffer is now exactly the on-disk content, so whatever hot-exit
-    // backup covered the just-discarded edits (if any — every caller of
-    // reloadFromDisk has already resolved discarding, via its own
-    // dirty/confirm gate) is stale; leaving it around would let the next
-    // launch's orphan recovery resurrect that discarded content as a
-    // spurious dirty tab (issue #115). dropBackup no-ops when there is
-    // nothing to drop.
-    dropBackup(doc);
-    // A fresh baseline unrelated to whatever a still-in-flight saveFlow
-    // snapshotted before this reload — draws a new value from the shared
-    // sequence rather than resetting to a fixed 0 (issue #112).
-    doc.revision = nextRevision++;
-    doc.fingerprint = opened.fingerprint;
-    doc.truncated = opened.truncated;
-    doc.totalSize = opened.totalSize;
-    doc.chunkOffset = 0;
-    doc.nextChunkOffset = opened.nextOffset;
-    doc.prevChunkOffsets = [];
-    doc.windowChunks = opened.truncated
-      ? [
-          {
-            chars: opened.content.length,
-            bytes: opened.nextOffset ?? opened.totalSize,
-          },
-        ]
-      : [];
-    // The file on disk changed, so any prior index is potentially stale —
-    // ensureLineIndex would also catch a size mismatch, but reload always
-    // rebuilds from scratch (offset 0) so there's nothing to salvage anyway.
-    doc.lineIndex = null;
-    doc.windowStartLine = opened.truncated ? 1 : null;
-    // Invalidate any pageChunk/autoAppendChunk/prependChunk/
-    // gotoLargeFileLine response still in flight for this doc (issue
-    // #120): bumping the generation makes it discard itself instead of
-    // clobbering the fresh state just set above once it resolves; clearing
-    // the in-flight flag immediately (rather than waiting for that
-    // now-irrelevant response to actually settle) lets a new chunk
-    // request start right away.
-    doc.chunkGeneration += 1;
-    doc.chunkLoadInFlight = false;
-    doc.buffer = editor.newBuffer(opened.content, opened.truncated);
-    if (tabs.activeId === doc.id) showActive();
-    else tabs.render();
+    applyOpenedForReload(doc, opened);
   } catch {
     // The file may be mid-replace or deleted; keep the buffer as-is.
   }
+}
+
+/**
+ * Drained pending reload (issue #124's drainLock, once whatever held the
+ * lock — a save, or another reload — releases it): re-validate against
+ * disk instead of blindly applying the reload that was requested earlier.
+ * A fresh read whose fingerprint still matches doc.fingerprint (the
+ * baseline the lock holder that just released already established, via a
+ * successful save's own fingerprint update or a prior reload's own fetch)
+ * means nothing has changed beyond that — most commonly, the watcher
+ * notification behind this pending reload was simply the echo of a save
+ * that just wrote this same doc, not a genuine external edit. Applying it
+ * anyway would be a pointless, disruptive buffer replacement (fresh undo
+ * history, lost cursor/scroll position) for content identical to what's
+ * already showing. Only a genuine fingerprint mismatch means something
+ * *else* changed the file in the meantime — and even then (critic-review
+ * P2 on #124) the disk side alone isn't consent to apply: the doc may
+ * have gone *dirty* while the reload sat in the pending slot. The
+ * counterexample: a clean doc's save takes the lock, an external change
+ * lands, handleExternalChange's no-prompt clean-doc branch defers the
+ * reload, the user types in that window, and the save's own completion
+ * correctly keeps dirty (#112's revision guard) — silently applying here
+ * would then discard those fresh keystrokes with no dialog and no backup
+ * left covering them. So a dirty doc walks the same confirm dialog
+ * handleExternalChange already shows for dirty docs; only explicit user
+ * consent discards. Awaiting a dialog while holding the doc's lock is
+ * already this codebase's shape — runSaveFlow holds it across its
+ * lossy/stale confirms — and can't deadlock: anything that fires
+ * meanwhile just lands in the pending slots this same drain loop
+ * processes next. On consent the apply uses a second fresh read, not the
+ * pre-dialog snapshot — the disk may well have moved again while the
+ * dialog sat open (same reason handleExternalChange's own confirm path
+ * re-reads via reloadFromDisk rather than caching a read from before its
+ * dialog). It must NOT route through reloadFromDisk itself, though: this
+ * runs while holding the lock, so that entry point's mustDefer would just
+ * re-queue it as pendingReload — for this same drain to run again,
+ * re-detect the mismatch, and re-ask the user, forever.
+ */
+async function reevaluateReload(doc: Doc): Promise<void> {
+  const path = doc.path;
+  if (!path) return;
+  try {
+    const opened = await openDocument(path, doc.encoding);
+    if (fingerprintsEqual(opened.fingerprint, doc.fingerprint)) return;
+    if (doc.dirty) {
+      // Same one-dialog-per-path guard as handleExternalChange: if the
+      // watcher's own dirty-doc prompt is already up for this path, defer
+      // to it entirely — its outcome (reload or keep) answers the same
+      // question this would have asked.
+      if (reloadPrompts.has(path)) return;
+      reloadPrompts.add(path);
+      let reload = false;
+      try {
+        reload = await confirmDialog(t("dialog.fileChangedMessage", doc.title), {
+          title: t("dialog.fileChangedTitle"),
+          kind: "warning",
+          okLabel: t("dialog.reload"),
+        });
+      } finally {
+        reloadPrompts.delete(path);
+      }
+      if (!reload) return;
+      applyOpenedForReload(doc, await openDocument(path, doc.encoding));
+      return;
+    }
+    applyOpenedForReload(doc, opened);
+  } catch {
+    // Same as fetchAndApplyReload: mid-replace/deleted, leave as-is.
+  }
+}
+
+/** Shared state mutation once a freshly-opened `opened` has been decided
+ *  as safe to apply — reloadFromDisk's entire pre-#124 body, unchanged. */
+function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
+  doc.encoding = opened.encoding;
+  doc.withBom = opened.hadBom;
+  doc.lineEnding = opened.lineEnding;
+  doc.malformed = opened.malformed;
+  doc.dirty = false;
+  // The buffer is now exactly the on-disk content, so whatever hot-exit
+  // backup covered the just-discarded edits (if any — every caller of
+  // reloadFromDisk has already resolved discarding, via its own
+  // dirty/confirm gate) is stale; leaving it around would let the next
+  // launch's orphan recovery resurrect that discarded content as a
+  // spurious dirty tab (issue #115). dropBackup no-ops when there is
+  // nothing to drop.
+  dropBackup(doc);
+  // A fresh baseline unrelated to whatever a still-in-flight saveFlow
+  // snapshotted before this reload — draws a new value from the shared
+  // sequence rather than resetting to a fixed 0 (issue #112).
+  doc.revision = nextRevision++;
+  doc.fingerprint = opened.fingerprint;
+  doc.truncated = opened.truncated;
+  doc.totalSize = opened.totalSize;
+  doc.chunkOffset = 0;
+  doc.nextChunkOffset = opened.nextOffset;
+  doc.prevChunkOffsets = [];
+  doc.windowChunks = opened.truncated
+    ? [
+        {
+          chars: opened.content.length,
+          bytes: opened.nextOffset ?? opened.totalSize,
+        },
+      ]
+    : [];
+  // The file on disk changed, so any prior index is potentially stale —
+  // ensureLineIndex would also catch a size mismatch, but reload always
+  // rebuilds from scratch (offset 0) so there's nothing to salvage anyway.
+  doc.lineIndex = null;
+  doc.windowStartLine = opened.truncated ? 1 : null;
+  // Invalidate any pageChunk/autoAppendChunk/prependChunk/
+  // gotoLargeFileLine response still in flight for this doc (issue
+  // #120): bumping the generation makes it discard itself instead of
+  // clobbering the fresh state just set above once it resolves; clearing
+  // the in-flight flag immediately (rather than waiting for that
+  // now-irrelevant response to actually settle) lets a new chunk
+  // request start right away.
+  doc.chunkGeneration += 1;
+  doc.chunkLoadInFlight = false;
+  doc.buffer = editor.newBuffer(opened.content, opened.truncated);
+  if (tabs.activeId === doc.id) showActive();
+  else tabs.render();
 }
 
 async function handleExternalChange(path: string): Promise<void> {
@@ -1230,13 +1412,43 @@ function blockedByReadOnly(doc: Doc): boolean {
   return false;
 }
 
-/** Save the active document. Resolves to true only when bytes actually
- *  reached the disk — callers that speculatively changed doc state (e.g.
- *  the save-with-encoding menu) roll back on false. */
+/**
+ * Save the active document. Resolves to true only when bytes actually
+ * reached the disk — callers that speculatively changed doc state (e.g.
+ * the save-with-encoding menu) roll back on false.
+ *
+ * Defers instead of running if a reload — or another saveFlow — is already
+ * in flight for this doc (issue #124), rather than racing it: two
+ * overlapping saveFlow calls used to each snapshot/compare independently,
+ * landing on a dirty/backup outcome that depended on IPC resolution order
+ * instead of being deterministic. The deferred call isn't dropped: it
+ * resolves once drainLock actually runs the coalesced request (see
+ * pendingSaveResolvers above) and reports that attempt's real outcome.
+ */
 async function saveFlow(saveAs: boolean): Promise<boolean> {
   const doc = tabs.active;
   if (!doc) return false;
   if (blockedByReadOnly(doc)) return false;
+  if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+    return new Promise<boolean>((resolve) => {
+      doc.pendingSaveAs = saveAs;
+      const resolvers = pendingSaveResolvers.get(doc.id) ?? [];
+      resolvers.push(resolve);
+      pendingSaveResolvers.set(doc.id, resolvers);
+    });
+  }
+  let result = false;
+  await withLock(doc, "save", async () => {
+    result = await runSaveFlow(doc, saveAs);
+  });
+  return result;
+}
+
+/** saveFlow's body once its per-doc lock (issue #124) is confirmed held —
+ *  exactly saveFlow's pre-#124 implementation, taking the already-resolved
+ *  active doc as a parameter (rather than re-reading tabs.active) since
+ *  drainLock also calls this directly for a coalesced pending save. */
+async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
   const oldPath = doc.path;
   let path = doc.path;
   if (saveAs || path === null) {
@@ -2115,6 +2327,9 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     bookmarks: [],
     chunkGeneration: 0,
     chunkLoadInFlight: false,
+    saveReloadInFlight: null,
+    pendingReload: false,
+    pendingSaveAs: null,
     backupName: file.backup,
     // Restored from the hot-exit backup blob, not from a fresh disk read —
     // there is no verified on-disk baseline for this tab's content this
@@ -2189,6 +2404,9 @@ async function restoreSession(): Promise<void> {
       bookmarks: [],
       chunkGeneration: 0,
       chunkLoadInFlight: false,
+      saveReloadInFlight: null,
+      pendingReload: false,
+      pendingSaveAs: null,
       backupName: name,
       // Orphaned backup with no session entry at all — path is always
       // null here, so this is the same "no on-disk baseline yet" case as
