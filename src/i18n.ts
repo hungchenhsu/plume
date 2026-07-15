@@ -80,6 +80,7 @@ export interface Messages {
     truncated: boolean,
     filesScanned: number,
   ) => string;
+  "findInFiles.scanErrorsSummary": (count: number) => string;
 
   "goto.placeholder": string;
 
@@ -317,6 +318,8 @@ const en: Messages = {
   "findInFiles.searching": "Searching…",
   "findInFiles.status": (count, truncated, filesScanned) =>
     `${count}${truncated ? "+" : ""} match${count === 1 ? "" : "es"} in ${filesScanned} files`,
+  "findInFiles.scanErrorsSummary": (count) =>
+    `${count} item${count === 1 ? "" : "s"} could not be searched — results may be incomplete.`,
 
   "goto.placeholder": "Go to line…",
 
@@ -576,6 +579,8 @@ const zhTW: Messages = {
   "findInFiles.searching": "搜尋中…",
   "findInFiles.status": (count, truncated, filesScanned) =>
     `在 ${filesScanned} 個檔案中找到 ${count}${truncated ? "+" : ""} 筆符合`,
+  "findInFiles.scanErrorsSummary": (count) =>
+    `有 ${count} 個項目無法搜尋——搜尋結果可能不完整。`,
 
   "goto.placeholder": "跳至行號…",
 
@@ -815,6 +820,8 @@ const ja: Messages = {
   "findInFiles.searching": "検索中…",
   "findInFiles.status": (count, truncated, filesScanned) =>
     `${filesScanned} 個のファイル中 ${count}${truncated ? "+" : ""} 件一致`,
+  "findInFiles.scanErrorsSummary": (count) =>
+    `${count} 件の項目を検索できませんでした — 検索結果は不完全な可能性があります。`,
 
   "goto.placeholder": "行に移動…",
 
@@ -1068,6 +1075,8 @@ const zhCN: Messages = {
   "findInFiles.searching": "搜索中…",
   "findInFiles.status": (count, truncated, filesScanned) =>
     `在 ${filesScanned} 个文件中找到 ${count}${truncated ? "+" : ""} 处匹配`,
+  "findInFiles.scanErrorsSummary": (count) =>
+    `有 ${count} 个项目无法搜索——搜索结果可能不完整。`,
 
   "goto.placeholder": "跳转到行…",
 
