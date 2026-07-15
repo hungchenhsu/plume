@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { fingerprintsEqual, mustDefer, type LockOwner } from "./savemutex";
-import { captureIdentity, validateIdentity, type GuardIdentity } from "./asyncguard";
+import {
+  captureIdentity,
+  reloadEncodingFor,
+  validateIdentity,
+  type GuardIdentity,
+} from "./asyncguard";
 import { planNormalization, type NormalizeForm } from "./normalize";
 
 describe("captureIdentity", () => {
@@ -38,6 +43,35 @@ describe("validateIdentity — full branch table", () => {
 
   it("closed takes priority over edited when both conditions independently hold", () => {
     expect(validateIdentity(captured, { id: 2, revision: 999 }, false)).toBe("closed");
+  });
+});
+
+describe("reloadEncodingFor — full branch table (issue #161)", () => {
+  it("no speculative window: falls back to doc.encoding, unchanged from every reload path's pre-#161 behavior", () => {
+    expect(
+      reloadEncodingFor({ encoding: "UTF-8", speculativeEncoding: null }),
+    ).toBe("UTF-8");
+    expect(
+      reloadEncodingFor({ encoding: "Big5", speculativeEncoding: null }),
+    ).toBe("Big5");
+  });
+
+  it("a Save with Encoding speculative window is open: returns the protected original, not the not-yet-written doc.encoding", () => {
+    expect(
+      reloadEncodingFor({
+        encoding: "UTF-8", // the speculative target Save with Encoding applied
+        speculativeEncoding: { encoding: "Big5" }, // the protected original
+      }),
+    ).toBe("Big5");
+  });
+
+  it("the speculative original can equal the current doc.encoding (no-op mutation, e.g. re-picking the same encoding+BOM combination) without changing the result", () => {
+    expect(
+      reloadEncodingFor({
+        encoding: "UTF-8",
+        speculativeEncoding: { encoding: "UTF-8" },
+      }),
+    ).toBe("UTF-8");
   });
 });
 

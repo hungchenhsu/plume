@@ -4,6 +4,13 @@ import { t } from "./i18n";
 import type { LineIndex } from "./ipc";
 import type { LockOwner } from "./savemutex";
 
+/** The {encoding, withBom} pair Save with Encoding protects across its own
+ *  speculative window — see Doc.speculativeEncoding below. */
+export interface SpeculativeEncoding {
+  encoding: string;
+  withBom: boolean;
+}
+
 export interface Doc {
   id: number;
   path: string | null;
@@ -105,6 +112,26 @@ export interface Doc {
    *  function reference has no business riding along on this
    *  session-persistence-adjacent state. */
   pendingSaveAs: boolean | null;
+  /** Set for the duration of Save with Encoding's own speculative
+   *  doc.encoding/withBom mutation (issue #161) — main.ts's saveWithEncoding
+   *  menu action applies its target encoding before the save that's
+   *  supposed to make it real has actually reached disk, so a reload
+   *  landing during that window (most commonly the stale-save dialog's own
+   *  "Reload" choice, deferred through the lock above into
+   *  reevaluateReload) must not decode with a target nothing on disk has
+   *  adopted yet. Holds the *protected* original {encoding, withBom} pair
+   *  a reload should use instead — see asyncguard.ts's reloadEncodingFor.
+   *  Cleared the instant a reload actually applies
+   *  (applyOpenedForReload): from then on doc.encoding/withBom already
+   *  hold a fresh, disk-verified truth of their own, and the speculative
+   *  caller's eventual rollback must not stomp it back to the pre-save
+   *  snapshot — checked via reference equality against the exact object
+   *  it set, not mere nullness, so a second overlapping speculative
+   *  change can't have its own rollback clobbered by an earlier one's.
+   *  Also cleared unconditionally once that caller's own save settles
+   *  either way. Null the overwhelming majority of the time — only
+   *  non-null while such a save is actually in flight. */
+  speculativeEncoding: SpeculativeEncoding | null;
   /** Hot-exit backup file name once unsaved content has been flushed. */
   backupName: string | null;
   /** Opaque metadata snapshot of the on-disk file as of the last open,

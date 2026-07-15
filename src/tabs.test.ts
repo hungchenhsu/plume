@@ -36,6 +36,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     saveReloadInFlight: null,
     pendingReload: false,
     pendingSaveAs: null,
+    speculativeEncoding: null,
     backupName: null,
     fingerprint: null,
     byteDriftChecked: false,
