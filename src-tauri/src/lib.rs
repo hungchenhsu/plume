@@ -24,6 +24,7 @@ mod normalize;
 mod openfile_probe;
 mod prefs;
 mod recent;
+mod replaceinfiles;
 mod search;
 mod session;
 mod startup_probe;
@@ -668,6 +669,8 @@ pub fn run() {
             recent::load_recent_files,
             recent::add_recent_file,
             search::search_in_folder,
+            replaceinfiles::scan_replace_in_folder,
+            replaceinfiles::execute_replace_in_folder,
             backup::save_backup,
             backup::load_backup,
             backup::delete_backup,

@@ -475,6 +475,122 @@ export function searchInFolder(
   });
 }
 
+export interface ReplaceScanEntry {
+  path: string;
+  matchCount: number;
+  /** Detected encoding name, e.g. "Big5". Empty when `skippedReason` is set
+   *  and the file was never even opened (too large). */
+  encoding: string;
+  /** Opaque metadata snapshot of the file as of this scan (see
+   *  src-tauri/src/fsguard.rs). Round-trip this back as the matching
+   *  `ReplaceExecuteTarget.expectedFingerprint` when the user executes —
+   *  `null` means there is no verified baseline for this file (capture
+   *  failed, or it was never opened). */
+  fingerprint: unknown;
+  /** True when the replacement text contains a character that can't be
+   *  represented in `encoding` — always `false` when `matchCount` is 0 or
+   *  `skippedReason` is set (nothing would be written either way). Execute
+   *  refuses to write such a file unless called with `allowLossy: true`. */
+  lossy: boolean;
+  /** Why this file was excluded from the search entirely (too large, or a
+   *  decode error) — `null` for every entry that actually contributes to
+   *  `matchCount`. A successfully-scanned file with zero matches is simply
+   *  omitted from `entries`, not reported here with a reason. */
+  skippedReason: string | null;
+}
+
+export interface ReplaceScanReport {
+  entries: ReplaceScanEntry[];
+  /** Directories or entries the walk could not read — mirrors
+   *  `SearchResults.scanErrors`/`BatchScanReport.scanErrors` exactly: a
+   *  non-empty list means `entries` may be missing whatever those paths
+   *  contained, never "no matches there". The root folder itself failing
+   *  to open is a harder failure — `scanReplaceInFolder` rejects outright
+   *  instead of returning an empty-looking report. */
+  scanErrors: SearchScanError[];
+  /** True when the scan stopped after 500 reportable entries; more of the
+   *  folder may not have been examined at all. */
+  truncated: boolean;
+}
+
+/**
+ * Dry-run scan of `folder` for `query` (`caseSensitive`/`useRegex` match
+ * `searchInFolder`'s semantics exactly — a match never spans two lines, and
+ * `useRegex: false` treats `query` as a literal substring) — nothing on
+ * disk changes. `replacement` is used only to predict each entry's `lossy`
+ * flag. Rejects outright if `folder` itself can't be listed; see
+ * `ReplaceScanReport.scanErrors` for entries the walk still partially
+ * missed after that point.
+ */
+export function scanReplaceInFolder(
+  folder: string,
+  query: string,
+  caseSensitive: boolean,
+  useRegex: boolean,
+  replacement: string,
+): Promise<ReplaceScanReport> {
+  return invoke<ReplaceScanReport>("scan_replace_in_folder", {
+    folder,
+    query,
+    caseSensitive,
+    useRegex,
+    replacement,
+  });
+}
+
+export interface ReplaceExecuteTarget {
+  path: string;
+  /** Should be the exact `fingerprint` `scanReplaceInFolder` reported for
+   *  this path (see `ReplaceScanEntry.fingerprint`). */
+  expectedFingerprint: unknown;
+}
+
+export interface ReplaceExecuteEntry {
+  path: string;
+  /** 0 for every status except "ok" (including the harmless case where a
+   *  target genuinely had zero matches by the time execute ran). */
+  replacedCount: number;
+  /** "ok" | "changed_since_scan" | "lossy_blocked" | "io_error" |
+   *  "decode_error" | "too_large" */
+  status: string;
+  message: string;
+}
+
+/**
+ * Execute a replace over exactly `files` (normally the checked subset of a
+ * prior `scanReplaceInFolder` report) for the same
+ * `query`/`caseSensitive`/`useRegex`/`replacement` used to produce it —
+ * regex mode never expands `replacement` (a literal `"$1"` is inserted
+ * as-is, never a captured group; v1 scope). Each target's
+ * `expectedFingerprint` is checked against the file's current on-disk state
+ * *before* anything is read or decoded — a file changed since the scan
+ * (however long ago) comes back `"changed_since_scan"` and is left
+ * completely untouched, never silently replaced against a stale match
+ * count. `allowLossy: false` (the first call) also leaves any file whose
+ * replacement would be unmappable in its own encoding completely untouched
+ * (`"lossy_blocked"`); re-invoke with `allowLossy: true`, after explicit
+ * user confirmation, to write those too. One file's failure never stops the
+ * rest of the batch. Unlike `scanReplaceInFolder`, an empty `query` is
+ * rejected outright rather than silently doing nothing.
+ */
+export function executeReplaceInFolder(
+  files: ReplaceExecuteTarget[],
+  query: string,
+  caseSensitive: boolean,
+  useRegex: boolean,
+  replacement: string,
+  allowLossy: boolean,
+): Promise<ReplaceExecuteEntry[]> {
+  return invoke<ReplaceExecuteEntry[]>("execute_replace_in_folder", {
+    files,
+    query,
+    caseSensitive,
+    useRegex,
+    replacement,
+    allowLossy,
+  });
+}
+
 export function unwatchFile(path: string): Promise<void> {
   return invoke<void>("unwatch_file", { path });
 }
