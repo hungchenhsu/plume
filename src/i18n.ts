@@ -291,6 +291,11 @@ export interface Messages {
   "dialog.reopenMessage": (title: string) => string;
   "dialog.reopen": string;
   "dialog.reopenFailedTitle": string;
+  /** Shown instead of running Reopen with Encoding (issue #169) when a
+   *  save or reload already holds the doc's save/reload lock — reopen
+   *  never queues a deferred retry, so this is the whole response. */
+  "dialog.reopenBusyTitle": string;
+  "dialog.reopenBusyMessage": (title: string) => string;
   "dialog.printTitle": string;
   "dialog.streamReplaceUseRegularTitle": string;
   "dialog.streamReplaceUseRegularMessage": string;
@@ -637,6 +642,9 @@ const en: Messages = {
     `Reopening will discard unsaved changes in "${title}". Continue?`,
   "dialog.reopen": "Reopen",
   "dialog.reopenFailedTitle": "Reopen failed",
+  "dialog.reopenBusyTitle": "Busy",
+  "dialog.reopenBusyMessage": (title) =>
+    `"${title}" is still saving or reloading. Try again in a moment.`,
   "dialog.printTitle": "Print",
   "dialog.streamReplaceUseRegularTitle": "Replace in Large File",
   "dialog.streamReplaceUseRegularMessage":
@@ -958,6 +966,8 @@ const zhTW: Messages = {
     `重新開啟將捨棄「${title}」中未儲存的變更，是否繼續？`,
   "dialog.reopen": "重新開啟",
   "dialog.reopenFailedTitle": "重新開啟失敗",
+  "dialog.reopenBusyTitle": "操作進行中",
+  "dialog.reopenBusyMessage": (title) => `「${title}」正在儲存或重新載入，請稍候再試一次。`,
   "dialog.printTitle": "列印",
   "dialog.streamReplaceUseRegularTitle": "在大型檔案中取代",
   "dialog.streamReplaceUseRegularMessage":
@@ -1286,6 +1296,9 @@ const ja: Messages = {
     `再度開くと「${title}」の未保存の変更が破棄されます。続行しますか？`,
   "dialog.reopen": "再度開く",
   "dialog.reopenFailedTitle": "再度開くのに失敗しました",
+  "dialog.reopenBusyTitle": "処理中",
+  "dialog.reopenBusyMessage": (title) =>
+    `「${title}」は保存中または再読み込み中です。しばらくしてからもう一度お試しください。`,
   "dialog.printTitle": "印刷",
   "dialog.streamReplaceUseRegularTitle": "大きいファイル内で置換",
   "dialog.streamReplaceUseRegularMessage":
@@ -1603,6 +1616,8 @@ const zhCN: Messages = {
   "dialog.reopenMessage": (title) => `重新打开将放弃“${title}”中未保存的更改，是否继续？`,
   "dialog.reopen": "重新打开",
   "dialog.reopenFailedTitle": "重新打开失败",
+  "dialog.reopenBusyTitle": "操作进行中",
+  "dialog.reopenBusyMessage": (title) => `“${title}”正在保存或重新加载，请稍候再试一次。`,
   "dialog.printTitle": "打印",
   "dialog.streamReplaceUseRegularTitle": "在大文件中替换",
   "dialog.streamReplaceUseRegularMessage":
