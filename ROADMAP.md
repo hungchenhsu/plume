@@ -1137,7 +1137,7 @@ surface for incoming contributors.
 
 **Track S — replace in files** (the new capability, built on Track R's
 byte-preservation machinery)
-- [ ] Rust backend: line-scoped replace (search.rs's existing per-line
+- [x] Rust backend: line-scoped replace (search.rs's existing per-line
   match semantics) with line-level byte preservation — only matched
   lines are re-encoded, line-terminator bytes are copied verbatim,
   untouched lines stay byte-identical; UTF-16 falls back to whole-file
@@ -1147,7 +1147,32 @@ byte-preservation machinery)
   two-phase gate, scan-error surfacing; regex match with literal-only
   replacement (no backrefs, v1 scope); the 5 MiB search cap carries
   over with oversized files disclosed as skipped; stateful encodings
-  excluded by an ASCII-compat invariant test [danger]
+  excluded by an ASCII-compat invariant test [danger]. New
+  `replaceinfiles.rs` (`scan_replace_in_folder` /
+  `execute_replace_in_folder` + ipc.ts bindings; the panel UI is the
+  next item). Three reviewed design decisions: scan counts matches on
+  linebreak.rs's three-way byte-level split rather than `.lines()`
+  (which misses lone CR — dry-run and execute must agree on
+  Classic-Mac files, pinned by an agreement test); a twin folder walk
+  instead of reusing search.rs's collect_files (whose silent 5 MiB
+  drop conflicts with skipped+reason disclosure; batch.rs set the twin
+  precedent); and routing on encoding_rs's own
+  `is_ascii_compatible()` — exactly {REPLACEMENT, UTF-16LE/BE,
+  ISO-2022-JP} fall out, so the R1a stateful-encoder lesson is honored
+  by construction (ISO-2022-JP whole-file fallback, shift-state
+  self-consistent, pinned by a cross-line Roman-mode fixture), and
+  REPLACEMENT can never reach a write (everything it decodes is
+  malformed → skipped). The ASCII-compat invariant test sweeps all 40
+  encoding_rs encodings over planes 0–1 empirically rather than by
+  table. Lossy gate re-checks at execute time from the encoder's own
+  unmappable flag (never trusting the scan's prediction);
+  `regex::NoExpand` keeps replacements literal ("$1" writes
+  literally). Mixed-line-ending files preserve every line's own
+  terminator verbatim (whole-file bytes oracle). Adversarial review
+  AGREE (seven attack surfaces held); its observations filed/tracked:
+  ext-hint detection divergence vs open_document (#178), HTML
+  numeric-reference lossy semantics to be spelled out in the panel's
+  confirm wording (next item). 389 Rust tests (+12).
 - [ ] Frontend: replace field in the find-in-files panel + dry-run
   preview (files × hit counts × drift/lossy flags), per-file
   checkboxes, a batch-convert-strength destructive confirm, and a
