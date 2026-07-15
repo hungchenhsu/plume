@@ -145,8 +145,15 @@ export interface EditorHandle {
   focus(): void;
   /** Open the find/replace panel (regex, case and word toggles built in). */
   openSearch(): void;
-  /** Move the cursor to a 1-based line and scroll it into view. */
-  goToLine(line: number): void;
+  /** Move the cursor to a 1-based line and scroll it into view. `line` is
+   *  clamped to the document's line range. `column` (1-based, UTF-16 code
+   *  units — same unit and origin as the `column` `onCursorMoved` reports,
+   *  see `updateListener` below) positions the cursor within that line
+   *  when given; omitted, it defaults to the line start (pre-existing
+   *  behavior). Clamped to the target line's own length, so a column past
+   *  the end of a short line lands at that line's end rather than
+   *  spilling onto the next line. */
+  goToLine(line: number, column?: number): void;
   /** Replace the set of bookmarked lines shown in the gutter for the live
    *  buffer (buffer-relative, 1-based line numbers — see
    *  src/bookmarks.ts `windowRelativeBookmarks` for how main.ts derives
@@ -1209,12 +1216,21 @@ export function createEditor(
         }),
       });
     },
-    goToLine: (line) => {
+    goToLine: (line, column) => {
       const clamped = Math.max(1, Math.min(line, view.state.doc.lines));
       const info = view.state.doc.line(clamped);
+      // info.to - info.from is the line's length in UTF-16 code units
+      // (excludes the line break, same as onCursorMoved's own column
+      // math above) — clamping here mirrors the "column past end of
+      // line" case a real cursor move already produces.
+      const offset =
+        column === undefined
+          ? 0
+          : Math.max(0, Math.min(column - 1, info.to - info.from));
+      const pos = info.from + offset;
       view.dispatch({
-        selection: { anchor: info.from },
-        effects: EditorView.scrollIntoView(info.from, { y: "center" }),
+        selection: { anchor: pos },
+        effects: EditorView.scrollIntoView(pos, { y: "center" }),
       });
       view.focus();
     },

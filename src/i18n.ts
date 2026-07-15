@@ -476,7 +476,7 @@ const en: Messages = {
   "findInFiles.replaceFailuresHeading": (count) =>
     `${count} file${count === 1 ? "" : "s"} could not be replaced:`,
 
-  "goto.placeholder": "Go to line…",
+  "goto.placeholder": "Go to line:column…",
 
   "quickOpen.searchPlaceholder": "Search recent files…",
   "quickOpen.noRecent": "No recent files",
@@ -814,7 +814,7 @@ const zhTW: Messages = {
   "findInFiles.replaceStatusTooLarge": "檔案過大，未寫入",
   "findInFiles.replaceFailuresHeading": (count) => `${count} 個檔案未變更：`,
 
-  "goto.placeholder": "跳至行號…",
+  "goto.placeholder": "跳至行:欄…",
 
   "quickOpen.searchPlaceholder": "搜尋最近的檔案…",
   "quickOpen.noRecent": "沒有最近的檔案",
@@ -1129,7 +1129,7 @@ const ja: Messages = {
   "findInFiles.replaceStatusTooLarge": "サイズ超過のため未書き込み",
   "findInFiles.replaceFailuresHeading": (count) => `${count} 件のファイルを変更できませんでした:`,
 
-  "goto.placeholder": "行に移動…",
+  "goto.placeholder": "行:列に移動…",
 
   "quickOpen.searchPlaceholder": "最近使用したファイルを検索…",
   "quickOpen.noRecent": "最近使用したファイルはありません",
@@ -1461,7 +1461,7 @@ const zhCN: Messages = {
   "findInFiles.replaceStatusTooLarge": "文件过大，未写入",
   "findInFiles.replaceFailuresHeading": (count) => `${count} 个文件未变更：`,
 
-  "goto.placeholder": "跳转到行…",
+  "goto.placeholder": "跳转到行:列…",
 
   "quickOpen.searchPlaceholder": "搜索最近的文件…",
   "quickOpen.noRecent": "没有最近的文件",
