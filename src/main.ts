@@ -59,7 +59,12 @@ import {
   type SessionData,
   type SessionFile,
 } from "./ipc";
-import { captureIdentity, validateIdentity, type GuardIdentity } from "./asyncguard";
+import {
+  captureIdentity,
+  reloadEncodingFor,
+  validateIdentity,
+  type GuardIdentity,
+} from "./asyncguard";
 import { dropBackup } from "./backup";
 import { showBatchConvert } from "./batchconvert";
 import {
@@ -141,6 +146,7 @@ import {
   isEffectivelyReadOnly,
   TabStore,
   type Doc,
+  type SpeculativeEncoding,
 } from "./tabs";
 
 const defaultLineEnding = navigator.userAgent.includes("Windows")
@@ -456,6 +462,7 @@ function makeUntitled(): Doc {
     saveReloadInFlight: null,
     pendingReload: false,
     pendingSaveAs: null,
+    speculativeEncoding: null,
     backupName: null,
     fingerprint: null,
     byteDriftChecked: false,
@@ -627,6 +634,7 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     saveReloadInFlight: null,
     pendingReload: false,
     pendingSaveAs: null,
+    speculativeEncoding: null,
     backupName: null,
     fingerprint: opened.fingerprint,
     byteDriftChecked: false,
@@ -1251,7 +1259,11 @@ async function fetchAndApplyReload(doc: Doc): Promise<void> {
   if (!doc.path) return;
   const guard = captureIdentity(doc);
   try {
-    const opened = await openDocument(doc.path, doc.encoding);
+    // reloadEncodingFor, not doc.encoding directly: a Save with Encoding
+    // still in flight for this doc has that speculatively set to its
+    // not-yet-written target (issue #161) — see asyncguard.ts's doc
+    // comment.
+    const opened = await openDocument(doc.path, reloadEncodingFor(doc));
     const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
     if (verdict === "closed") return;
     if (verdict === "edited") {
@@ -1310,7 +1322,13 @@ async function reevaluateReload(doc: Doc): Promise<void> {
   const path = doc.path;
   if (!path) return;
   try {
-    const opened = await openDocument(path, doc.encoding);
+    // reloadEncodingFor, not doc.encoding directly (issue #161): this is
+    // the path a stale-save dialog's own "Reload" choice actually takes
+    // (reloadFromDisk always defers while runSaveFlow's own save lock is
+    // still held across that dialog — see savemutex.ts's mustDefer doc
+    // comment) — most likely to run *during* Save with Encoding's
+    // speculative window, so it's the call site most exposed to this bug.
+    const opened = await openDocument(path, reloadEncodingFor(doc));
     if (fingerprintsEqual(opened.fingerprint, doc.fingerprint)) return;
     if (doc.dirty) {
       // Same one-dialog-per-path guard as handleExternalChange: if the
@@ -1330,7 +1348,11 @@ async function reevaluateReload(doc: Doc): Promise<void> {
         reloadPrompts.delete(path);
       }
       if (!reload) return;
-      applyOpenedForReload(doc, await openDocument(path, doc.encoding));
+      // Still reloadEncodingFor: doc.speculativeEncoding, if any, is only
+      // cleared once applyOpenedForReload below actually runs, so this
+      // second (post-consent) fetch is still inside the same protected
+      // window as the first.
+      applyOpenedForReload(doc, await openDocument(path, reloadEncodingFor(doc)));
       return;
     }
     applyOpenedForReload(doc, opened);
@@ -1347,6 +1369,17 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
   doc.lineEnding = opened.lineEnding;
   doc.malformed = opened.malformed;
   doc.dirty = false;
+  // This reload just established a fresh, coherent, disk-verified
+  // encoding/withBom (from reloadEncodingFor's protected value, if a Save
+  // with Encoding was in flight) alongside the buffer/fingerprint/malformed
+  // it also set below — an earlier speculative caller's own eventual
+  // rollback must not stomp any of that back to its pre-save snapshot
+  // (issue #161). Clearing the marker here, before that caller's rollback
+  // ever runs (savemutex.ts's lock guarantees this reload — however it was
+  // reached — fully completes before saveFlow's own promise resolves), is
+  // what tells it to skip the rollback entirely — see main.ts's
+  // saveWithEncoding menu action and asyncguard.ts's reloadEncodingFor.
+  doc.speculativeEncoding = null;
   // The buffer is now exactly the on-disk content, so whatever hot-exit
   // backup covered the just-discarded edits (if any — every caller of
   // reloadFromDisk has already resolved discarding, via its own
@@ -1995,18 +2028,46 @@ function showEncodingMenu(anchor: HTMLElement): void {
               // choice; rolled back if nothing was written (lossy save
               // declined, dialog cancelled, or write failure) so a
               // "clean" doc never shows an encoding the disk doesn't have.
-              const prevEncoding = doc.encoding;
-              const prevWithBom = doc.withBom;
+              // The protected original is also mirrored onto
+              // doc.speculativeEncoding (issue #161): a reload landing
+              // before this save resolves — the stale-save dialog's own
+              // "Reload" choice, most commonly, deferred through the lock
+              // into reevaluateReload — decodes with it instead of this
+              // not-yet-written target (see asyncguard.ts's
+              // reloadEncodingFor). applyOpenedForReload clears the marker
+              // the instant such a reload actually applies, which doubles
+              // as this rollback's own signal: a reference match below
+              // means no reload consumed it, so the plain metadata-only
+              // rollback below is still correct; a mismatch (cleared to
+              // null, or — double Save with Encoding — replaced by a
+              // newer speculative window's own marker) means a reload (or
+              // a newer speculative save) already established a fresher,
+              // internally-coherent doc.encoding/withBom/buffer/
+              // fingerprint/malformed of its own that this rollback must
+              // not stomp those two fields back out of sync with.
+              const original: SpeculativeEncoding = {
+                encoding: doc.encoding,
+                withBom: doc.withBom,
+              };
               doc.encoding = e.value;
               doc.withBom = e.withBom;
+              doc.speculativeEncoding = original;
               updateStatusBar(doc);
-              void saveFlow(false).then((written) => {
-                if (!written) {
-                  doc.encoding = prevEncoding;
-                  doc.withBom = prevWithBom;
-                  updateStatusBar(doc);
-                }
-              });
+              void saveFlow(false)
+                .then((written) => {
+                  if (!written && doc.speculativeEncoding === original) {
+                    doc.encoding = original.encoding;
+                    doc.withBom = original.withBom;
+                    updateStatusBar(doc);
+                  }
+                })
+                .finally(() => {
+                  // Always drop the marker, even if saveFlow itself threw
+                  // (e.g. the untitled-doc save dialog IPC rejecting): a
+                  // stale marker would make a later watcher reload decode
+                  // with the wrong encoding silently.
+                  doc.speculativeEncoding = null;
+                });
             },
           })),
         ),
@@ -2773,6 +2834,7 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
     saveReloadInFlight: null,
     pendingReload: false,
     pendingSaveAs: null,
+    speculativeEncoding: null,
     backupName: file.backup,
     // Restored from the hot-exit backup blob, not from a fresh disk read —
     // there is no verified on-disk baseline for this tab's content this
@@ -2851,6 +2913,7 @@ async function restoreSession(): Promise<void> {
       saveReloadInFlight: null,
       pendingReload: false,
       pendingSaveAs: null,
+      speculativeEncoding: null,
       backupName: name,
       // Orphaned backup with no session entry at all — path is always
       // null here, so this is the same "no on-disk baseline yet" case as

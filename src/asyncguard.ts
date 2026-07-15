@@ -117,3 +117,34 @@ export function validateIdentity(
   if (current.revision !== captured.revision) return "edited";
   return "apply";
 }
+
+/**
+ * Which encoding a reload reaching `doc` right now should decode with
+ * (issue #161). Ordinarily just `doc.encoding` — every reload path
+ * (fetchAndApplyReload, reevaluateReload) deliberately keeps the tab's
+ * currently assigned decode encoding rather than re-running
+ * auto-detection, so a reload after an explicit Reopen with Encoding keeps
+ * using that same explicit choice instead of silently picking something
+ * else.
+ *
+ * But main.ts's saveWithEncoding menu action mutates doc.encoding/withBom
+ * *speculatively* — applied so the save it's about to issue encodes with
+ * the new choice, before that save has actually reached disk. A reload
+ * landing during that window (most commonly the stale-save dialog's own
+ * "Reload" choice — deferred by savemutex.ts's lock into reevaluateReload,
+ * since saveFlow's withLock still holds the save lock across that dialog)
+ * must not decode the file with a target encoding nothing on disk has
+ * adopted yet: it would read the *previous*, still-on-disk bytes through
+ * the *new* encoding's decoder, silently producing mojibake instead of
+ * surfacing a decode error. `doc.speculativeEncoding`, when set, holds
+ * exactly the encoding a reload would have used had Save with Encoding
+ * never touched doc.encoding in the first place (tabs.ts's Doc.
+ * speculativeEncoding doc comment) — this restores that protected value
+ * instead of the not-yet-written one.
+ */
+export function reloadEncodingFor(doc: {
+  encoding: string;
+  speculativeEncoding: { encoding: string } | null;
+}): string {
+  return doc.speculativeEncoding?.encoding ?? doc.encoding;
+}

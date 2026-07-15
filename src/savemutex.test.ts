@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { reloadEncodingFor } from "./asyncguard";
 import { decideSaveCompletion } from "./savecompletion";
 import {
   fingerprintsEqual,
@@ -126,6 +127,12 @@ describe("fingerprintsEqual", () => {
 interface OpenedFixture {
   content: string;
   fingerprint: unknown;
+  /** Optional — only the issue #161 scenarios below care about encoding at
+   *  all; every pre-existing fixture omits these three and applyOpened
+   *  leaves the matching doc field untouched, same as it always has. */
+  encoding?: string;
+  hadBom?: boolean;
+  malformed?: boolean;
 }
 
 interface SaveIpcResult {
@@ -137,7 +144,8 @@ interface SaveIpcResult {
 
 /** Minimal stand-in for the slice of tabs.ts's Doc this simulation
  *  exercises, plus the three new lock fields main.ts's saveFlow/
- *  reloadFromDisk read and write (issue #124). */
+ *  reloadFromDisk read and write (issue #124), and the encoding/
+ *  speculativeEncoding fields issue #161's scenarios below add. */
 function makeDocState() {
   return {
     dirty: false,
@@ -148,16 +156,33 @@ function makeDocState() {
     saveReloadInFlight: null as LockOwner,
     pendingReload: false,
     pendingSaveAs: null as boolean | null,
+    encoding: "UTF-8",
+    withBom: false,
+    malformed: false,
+    speculativeEncoding: null as { encoding: string; withBom: boolean } | null,
   };
 }
 type DocState = ReturnType<typeof makeDocState>;
 
 /** Fake disk backing the save/open IPC mocks — the ground truth this
  *  simulation checks doc.fingerprint/buffer against once a scenario
- *  settles (issue #124's "(b) fingerprint 與 buffer 一致" requirement). */
+ *  settles (issue #124's "(b) fingerprint 與 buffer 一致" requirement).
+ *  `trueEncoding` (issue #161, optional — defaults to "UTF-8", matching
+ *  makeDocState's own default, so every pre-existing fixture that never
+ *  mentions encoding at all keeps decoding as a same-encoding, always-
+ *  matches no-op exactly as before) is the encoding the disk bytes
+ *  *actually* are; fetchDisk below decodes correctly only when asked for
+ *  that same encoding — anything else is the wrong-decode hazard issue
+ *  #161 is about, stood in for directly rather than via a real Big5 byte
+ *  fixture: main.ts's speculative-encoding bug is entirely about *which
+ *  encoding argument* a reload passes, never about encoding_rs's own
+ *  decode tables, which lib.rs's own Rust tests already cover — so a
+ *  frontend stand-in that's merely encoding-aware, not byte-accurate, is
+ *  the right-sized fixture here. */
 interface FakeDisk {
   content: string;
   fingerprint: unknown;
+  trueEncoding?: string;
 }
 
 function writeDisk(disk: FakeDisk, content: string, fingerprint: unknown): void {
@@ -172,14 +197,26 @@ function dropBackupSim(doc: DocState): void {
   doc.backupName = null;
 }
 
-/** Mirrors reloadFromDisk's state-mutation body (main.ts, after its
- *  openDocument await): unconditional apply. */
+/** Mirrors reloadFromDisk's state-mutation body (main.ts's
+ *  applyOpenedForReload, after its openDocument await): unconditional
+ *  apply. encoding/hadBom/malformed are only ever set on an OpenedFixture
+ *  by the issue #161 scenarios below (see its own optional fields) — every
+ *  pre-existing caller omits them, so those three assignments are no-ops
+ *  there, same as before this issue's fixture additions. Clearing
+ *  doc.speculativeEncoding unconditionally mirrors applyOpenedForReload's
+ *  own fix for the same issue: from this point on doc.encoding/withBom
+ *  hold fresh, disk-verified truth (whenever this fixture actually carries
+ *  it) that no later speculative-save rollback may stomp. */
 function applyOpened(doc: DocState, opened: OpenedFixture): void {
   doc.dirty = false;
   dropBackupSim(doc);
   doc.revision += 1;
   doc.fingerprint = opened.fingerprint;
   doc.buffer = opened.content;
+  if (opened.encoding !== undefined) doc.encoding = opened.encoding;
+  if (opened.hadBom !== undefined) doc.withBom = opened.hadBom;
+  if (opened.malformed !== undefined) doc.malformed = opened.malformed;
+  doc.speculativeEncoding = null;
 }
 
 /** Hooks a test can inject into the harness. */
@@ -196,6 +233,12 @@ interface HarnessOptions {
    *  the file immediately after our own write, before the drain's
    *  reevaluation gets to read it. */
   onDiskWritten?: () => void;
+  /** Mirrors main.ts's showStaleFileConfirm (issue #161): consulted by
+   *  runSave whenever a save IPC comes back `stale && !written`. Defaults
+   *  to throwing, same convention as confirmReload — a test that doesn't
+   *  expect a stale rejection should never silently resolve one way or the
+   *  other. */
+  staleChoice?: () => Promise<"reload" | "overwrite" | "cancel">;
 }
 
 /** One doc's harness. `disk` backs the default fetch used whenever a test
@@ -213,14 +256,79 @@ function createHarness(doc: DocState, disk: FakeDisk, options: HarnessOptions = 
         "reached the dirty-confirm dialog but the test injected no confirmReload",
       );
     });
+  const staleChoice =
+    options.staleChoice ??
+    (() => {
+      throw new Error(
+        "reached the stale-save dialog but the test injected no staleChoice",
+      );
+    });
 
-  function fetchDisk(): Promise<OpenedFixture> {
-    return Promise.resolve({ content: disk.content, fingerprint: disk.fingerprint });
+  /** `encoding` mirrors main.ts's `openDocument(path, encoding)` explicit
+   *  argument — decodes correctly only when it matches disk.trueEncoding
+   *  (issue #161's stand-in; see FakeDisk's own doc comment). Every
+   *  pre-#161 call site now threads reloadEncodingFor(doc) through here
+   *  instead of a bare doc.encoding, same as the real fetchAndApplyReload/
+   *  reevaluateReload fix. */
+  function fetchDisk(encoding: string): Promise<OpenedFixture> {
+    const trueEncoding = disk.trueEncoding ?? "UTF-8";
+    if (encoding === trueEncoding) {
+      return Promise.resolve({
+        content: disk.content,
+        fingerprint: disk.fingerprint,
+        encoding,
+        hadBom: false,
+        malformed: false,
+      });
+    }
+    // Wrong-encoding stand-in: a real decode would run disk.content's bytes
+    // through the wrong codec and most likely hit invalid sequences partway
+    // through (encoding_rs's own decode tables — not this harness's
+    // concern; see FakeDisk's doc comment). Deterministic and clearly
+    // distinct from any real fixture content, so a test asserting on it
+    // can't accidentally pass for an unrelated reason.
+    return Promise.resolve({
+      content: `mojibake(${encoding}<-${trueEncoding}):${disk.content}`,
+      fingerprint: disk.fingerprint,
+      encoding,
+      hadBom: false,
+      malformed: true,
+    });
+  }
+
+  /** Mirrors reloadFromDisk's own call into the per-doc lock (issue #124):
+   *  defers (pendingReload) if a save or another reload already holds it —
+   *  always true when called from runSave's own stale-branch below, since
+   *  that always runs from inside the save's own withLock — otherwise
+   *  applies directly. Shared by the public issueReload entry point and
+   *  runSave's stale-dialog "reload" choice so both go through exactly one
+   *  defer-or-apply decision, same as main.ts's single reloadFromDisk. */
+  async function requestReload(fetchOpen: () => Promise<OpenedFixture>): Promise<void> {
+    if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+      doc.pendingReload = true;
+      return;
+    }
+    await withLock("reload", async () => {
+      applyOpened(doc, await fetchOpen());
+    });
   }
 
   async function runSave(ipc: () => Promise<SaveIpcResult>): Promise<boolean> {
     const revisionAtStart = doc.revision;
     const result = await ipc();
+    if (result.stale && !result.written) {
+      // Mirrors runSaveFlow's own stale-branch (issue #161): showStaleFileConfirm,
+      // then — on "reload" — reloadFromDisk(doc), which (see requestReload's
+      // own doc comment) always defers here since this is still running
+      // inside the save's own withLock. Only "reload" is modeled beyond
+      // "not written" — no existing or #161 scenario in this file drives
+      // "overwrite" through this particular mock.
+      const choice = await staleChoice();
+      if (choice === "reload") {
+        await requestReload(() => fetchDisk(reloadEncodingFor(doc)));
+      }
+      return false;
+    }
     if (!result.written) return false;
     writeDisk(disk, result.writtenContent, result.fingerprint);
     options.onDiskWritten?.();
@@ -244,14 +352,20 @@ function createHarness(doc: DocState, disk: FakeDisk, options: HarnessOptions = 
    *  would silently discard those edits — the buffer side needs consent
    *  too, not just the disk side, so this walks the same confirm dialog
    *  handleExternalChange already shows dirty docs, and a confirmed
-   *  reload applies a FRESH read (disk may move again mid-dialog). */
+   *  reload applies a FRESH read (disk may move again mid-dialog).
+   *  reloadEncodingFor(doc), not a bare doc.encoding, on both fetches
+   *  (issue #161) — this is the path a stale-save dialog's own "Reload"
+   *  choice actually drains through (requestReload defers into
+   *  pendingReload, drainLock runs this once the save's lock releases), so
+   *  it's the call site most exposed to Save with Encoding's speculative
+   *  window. */
   async function reevaluateReload(): Promise<void> {
-    const opened = await fetchDisk();
+    const opened = await fetchDisk(reloadEncodingFor(doc));
     if (fingerprintsEqual(opened.fingerprint, doc.fingerprint)) return; // no-op: nothing changed beyond what already landed
     if (doc.dirty) {
       const reload = await confirmReload();
       if (!reload) return;
-      applyOpened(doc, await fetchDisk());
+      applyOpened(doc, await fetchDisk(reloadEncodingFor(doc)));
       return;
     }
     applyOpened(doc, opened);
@@ -309,14 +423,10 @@ function createHarness(doc: DocState, disk: FakeDisk, options: HarnessOptions = 
       });
       return result;
     },
-    async issueReload(fetchOpen: () => Promise<OpenedFixture> = fetchDisk): Promise<void> {
-      if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
-        doc.pendingReload = true;
-        return;
-      }
-      await withLock("reload", async () => {
-        applyOpened(doc, await fetchOpen());
-      });
+    async issueReload(
+      fetchOpen: () => Promise<OpenedFixture> = () => fetchDisk(reloadEncodingFor(doc)),
+    ): Promise<void> {
+      await requestReload(fetchOpen);
     },
   };
 }
@@ -756,5 +866,194 @@ describe("issue #124 — lock releases and drains even when the in-flight op thr
     const written = await savePromise;
     expect(written).toBe(true);
     expect(disk.content).toBe("old-content");
+  });
+});
+
+describe("issue #161 — Save with Encoding's speculative doc.encoding must not leak into a stale-save's own Reload (failing-test-first)", () => {
+  /** Mirrors main.ts's saveWithEncoding menu action: applies the target
+   *  encoding/BOM speculatively so the save encodes with the new choice,
+   *  mirrors the protected original onto doc.speculativeEncoding (issue
+   *  #161) so a reload landing before this save resolves — most commonly
+   *  the stale-save dialog's own "Reload" choice below — decodes with it
+   *  instead of the not-yet-written target, and rolls the two metadata
+   *  fields back on a `false` result. The rollback is guarded by
+   *  *reference* equality against `original`, not mere nullness: if a
+   *  reload already applied (applyOpened clears the marker), or a newer
+   *  overlapping speculative save already replaced it with its own, this
+   *  call's rollback must not stomp state that isn't its own to roll back. */
+  async function saveWithEncoding(
+    doc: DocState,
+    harness: ReturnType<typeof createHarness>,
+    target: { encoding: string; withBom: boolean },
+    ipc: () => Promise<SaveIpcResult>,
+  ): Promise<boolean> {
+    const original = { encoding: doc.encoding, withBom: doc.withBom };
+    doc.encoding = target.encoding;
+    doc.withBom = target.withBom;
+    doc.speculativeEncoding = original;
+    const written = await harness.issueSave(false, ipc);
+    if (!written && doc.speculativeEncoding === original) {
+      doc.encoding = original.encoding;
+      doc.withBom = original.withBom;
+    }
+    doc.speculativeEncoding = null;
+    return written;
+  }
+
+  it("Big5 doc, Save with Encoding to UTF-8, an external edit makes the save stale, user picks Reload: the reload decodes with the protected original Big5, not the speculative UTF-8 target", async () => {
+    const doc = makeDocState();
+    doc.encoding = "Big5";
+    doc.withBom = false;
+    doc.dirty = false;
+    doc.fingerprint = "fp-0";
+    doc.buffer = "big5-original-content";
+    doc.revision = 3;
+    // The external edit that makes the save stale — still genuinely Big5
+    // bytes, just different content and a moved fingerprint.
+    const disk: FakeDisk = {
+      content: "big5-externally-edited-content",
+      fingerprint: "fp-1",
+      trueEncoding: "Big5",
+    };
+    const harness = createHarness(doc, disk, {
+      staleChoice: () => Promise.resolve("reload"),
+    });
+
+    const written = await saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-8", withBom: false },
+      () => Promise.resolve({ written: false, stale: true, fingerprint: null, writtenContent: "" }),
+    );
+
+    expect(written).toBe(false);
+    // FAIL target pre-fix: reevaluateReload/fetchAndApplyReload passed
+    // doc.encoding as it stood at that moment — still the speculative
+    // "UTF-8" nothing on disk had adopted — so fetchDisk's stand-in
+    // returned the wrong-decode mojibake fixture with malformed: true,
+    // exactly mirroring encoding_rs decoding real Big5 bytes as UTF-8.
+    // Post-fix, reloadEncodingFor resolves the protected original "Big5"
+    // instead, so the buffer is the real (correctly "decoded") external
+    // content and malformed is false.
+    expect(doc.buffer).toBe("big5-externally-edited-content");
+    expect(doc.malformed).toBe(false);
+  });
+
+  it("rollback ordering: once the reload has applied, the metadata-only rollback must not stomp doc.encoding/withBom back out of sync with the buffer/fingerprint/malformed it just set together", async () => {
+    const doc = makeDocState();
+    doc.encoding = "Big5";
+    // Deliberately true here, and different from fetchDisk's own
+    // hardcoded hadBom: false (see its doc comment) — so a rollback that
+    // wrongly stomps doc.withBom back to this pre-save value is
+    // observably different from one that correctly leaves the reload's
+    // own fresh value alone, rather than coincidentally landing on the
+    // same boolean either way.
+    doc.withBom = true;
+    doc.dirty = false;
+    doc.fingerprint = "fp-0";
+    doc.buffer = "big5-original-content";
+    doc.revision = 3;
+    const disk: FakeDisk = {
+      content: "big5-externally-edited-content",
+      fingerprint: "fp-1",
+      trueEncoding: "Big5",
+    };
+    const harness = createHarness(doc, disk, {
+      staleChoice: () => Promise.resolve("reload"),
+    });
+
+    const written = await saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-8", withBom: false },
+      () => Promise.resolve({ written: false, stale: true, fingerprint: null, writtenContent: "" }),
+    );
+
+    expect(written).toBe(false);
+    // The reload already established a fully coherent state from one
+    // single disk read: buffer, fingerprint, encoding, and withBom all
+    // agree with each other (issue #161's own "(b) fingerprint 與 buffer
+    // 一致" requirement, extended to withBom). A rollback that stomped
+    // doc.withBom back to the pre-speculative `true` here — the pre-fix,
+    // unconditional-on-`!written` shape — would desync it from a buffer
+    // that was actually decoded with hadBom: false, and stomping
+    // doc.encoding back (even though, in this scenario, it happens to
+    // land on the same "Big5" value either way) is equally wrong in
+    // principle: applyOpened already cleared doc.speculativeEncoding,
+    // which is this rollback's own signal to leave both alone.
+    expect(doc.encoding).toBe("Big5");
+    expect(doc.withBom).toBe(false);
+    expect(doc.buffer).toBe("big5-externally-edited-content");
+    expect(doc.fingerprint).toBe("fp-1");
+    expect(doc.malformed).toBe(false);
+    expect(doc.speculativeEncoding).toBeNull();
+    expect(doc.saveReloadInFlight).toBeNull();
+    expect(doc.pendingReload).toBe(false);
+  });
+
+  it("control — Save with Encoding succeeds outright (no staleness): doc.encoding/withBom keep the new target, nothing rolled back", async () => {
+    const doc = makeDocState();
+    doc.encoding = "Big5";
+    doc.withBom = false;
+    doc.dirty = true;
+    doc.fingerprint = "fp-0";
+    doc.buffer = "some content";
+    const disk: FakeDisk = {
+      content: "old-big5-content",
+      fingerprint: "fp-0",
+      trueEncoding: "Big5",
+    };
+    const harness = createHarness(doc, disk);
+
+    const written = await saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-8", withBom: false },
+      () =>
+        Promise.resolve({
+          written: true,
+          stale: false,
+          fingerprint: "fp-2",
+          writtenContent: "utf8-bytes-content",
+        }),
+    );
+
+    expect(written).toBe(true);
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(false);
+    expect(doc.speculativeEncoding).toBeNull();
+    expect(doc.dirty).toBe(false);
+    expect(disk.content).toBe("utf8-bytes-content");
+  });
+
+  it("control — a plain (non-speculative) save's stale-Reload keeps using doc.encoding directly, exactly as before this issue", async () => {
+    const doc = makeDocState();
+    doc.encoding = "UTF-8";
+    doc.withBom = false;
+    doc.dirty = false;
+    doc.fingerprint = "fp-0";
+    doc.buffer = "utf8-original-content";
+    const disk: FakeDisk = {
+      content: "utf8-externally-edited-content",
+      fingerprint: "fp-1",
+      trueEncoding: "UTF-8",
+    };
+    const harness = createHarness(doc, disk, {
+      staleChoice: () => Promise.resolve("reload"),
+    });
+
+    // A plain Cmd+S, not Save with Encoding — doc.speculativeEncoding is
+    // never touched, so reloadEncodingFor has nothing to protect and falls
+    // back to doc.encoding, same as every #124 test above already relies
+    // on implicitly.
+    const written = await harness.issueSave(false, () =>
+      Promise.resolve({ written: false, stale: true, fingerprint: null, writtenContent: "" }),
+    );
+
+    expect(written).toBe(false);
+    expect(doc.speculativeEncoding).toBeNull();
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.buffer).toBe("utf8-externally-edited-content");
+    expect(doc.malformed).toBe(false);
   });
 });
