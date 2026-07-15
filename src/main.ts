@@ -1906,7 +1906,17 @@ function setLineEnding(lineEnding: string): void {
   if (!doc.dirty) {
     doc.dirty = true;
     tabs.render();
+    // Mirrors the editor onChange handler above: the dirty transition must
+    // repaint the native title bar's unsaved marker immediately, not wait
+    // for some unrelated later action to call updateWindowTitle (#191).
+    updateWindowTitle();
   }
+  // Also mirrors onChange: a line-ending switch is a save-relevant edit
+  // (see the revision-bump comment above), so it needs the same hot-exit
+  // backup coverage a content edit gets — without this, an app crash right
+  // after a pure line-ending change had no backup of it; a normal close
+  // still had flushBackup as a fallback either way (#192).
+  scheduleBackup();
   updateStatusBar(doc);
 }
 
