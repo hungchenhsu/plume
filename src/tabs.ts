@@ -2,6 +2,7 @@ import type { WindowChunk } from "./chunkwindow";
 import type { EditorBuffer } from "./editor";
 import { t } from "./i18n";
 import type { LineIndex } from "./ipc";
+import type { LockOwner } from "./savemutex";
 
 export interface Doc {
   id: number;
@@ -80,6 +81,30 @@ export interface Doc {
    *  flag this replaces, so an in-flight load in one tab no longer blocks
    *  unrelated auto-loading in another tab. */
   chunkLoadInFlight: boolean;
+  /** Which of save/reload currently holds this doc's in-flight lock, or
+   *  null if neither is running (issue #124) — see main.ts's withLock/
+   *  drainLock and savemutex.ts's decision table. Only one of the two may
+   *  run at a time for a given doc; a request that arrives while this is
+   *  non-null defers instead of running concurrently (see pendingReload/
+   *  pendingSaveAs below), which is what keeps a watcher/stale-confirm
+   *  reload from setting dirty=false and dropping the backup out from
+   *  under a saveFlow whose IPC round trip is still in flight. */
+  saveReloadInFlight: LockOwner;
+  /** A reload was requested while saveReloadInFlight was held by
+   *  something else; re-validated against disk once the lock releases
+   *  (savemutex.ts's fingerprintsEqual gate) rather than blindly applied —
+   *  see main.ts's reevaluateReload. Single slot: reload has no
+   *  parameters to overwrite, so a second request while one is already
+   *  pending just leaves this at true. */
+  pendingReload: boolean;
+  /** A save was requested while saveReloadInFlight was held; the saveAs
+   *  flag of the *last* such request. Single slot — a newer request
+   *  overwrites an older still-pending one rather than queuing both. Null
+   *  means no pending save. The resolver(s) waiting on its eventual
+   *  outcome live in main.ts's pendingSaveResolvers, keyed by doc.id — a
+   *  function reference has no business riding along on this
+   *  session-persistence-adjacent state. */
+  pendingSaveAs: boolean | null;
   /** Hot-exit backup file name once unsaved content has been flushed. */
   backupName: string | null;
   /** Opaque metadata snapshot of the on-disk file as of the last open,

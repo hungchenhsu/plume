@@ -988,10 +988,37 @@ surface for incoming contributors.
   stale auto chunk. +5 vitest (577 total); the harnesses are honest
   stand-ins for main.ts's orchestration (which needs a WebView), with
   the shared pure helpers imported for real.
-- [ ] #124: per-doc save/reload in-flight mutual exclusion — no more
+- [x] #124: per-doc save/reload in-flight mutual exclusion — no more
   orphan backup or fingerprint/buffer divergence when a reload lands
   mid-save; second save deferred, watcher state re-evaluated on
-  unlock [danger]
+  unlock [danger]. `Doc.saveReloadInFlight` ("save"|"reload"|null) plus
+  single pending slots (`pendingReload`/`pendingSaveAs`, latest-wins),
+  mirroring the chunkGeneration/chunkLoadInFlight per-doc convention;
+  pure decision module `src/savemutex.ts` (`mustDefer`/`nextDrainStep`/
+  `fingerprintsEqual`) exhaustively unit-tested per the #112
+  savecompletion precedent, wired through `withLock`/`drainLock` in
+  main.ts with saveFlow/reloadFromDisk split into entry gates plus
+  verbatim-extracted bodies (whitespace-normalized diff verified zero
+  behavior change in adversarial review). Drain runs the pending
+  reload first, then the pending save gated on unlock-time
+  `doc.dirty` — deliberately not the spec's original "revision
+  advanced" test: dirty is edit-based and stays true after a failed
+  save, so the dirty gate retries where a revision gate would silently
+  drop the retry (reviewer judged this strictly better). A deferred
+  reload is re-evaluated on drain against a fresh fingerprint (a save's
+  own write never triggers its own reload; a genuine third-party
+  change does), and — the review's one P2, fixed before commit —
+  re-checks `doc.dirty` at drain time: edits typed while the save was
+  in flight now get the same fileChangedMessage consent dialog as any
+  dirty-doc external change (declining keeps buffer, dirty state, and
+  hot-exit backup; consenting applies a second fresh read, deliberately
+  not re-entering reloadFromDisk which would self-defer forever), and
+  the internal stale-confirm reload self-defers onto its own lock's
+  drain with no deadlock (verified across the full holder×entrant
+  matrix). Save-IPC failure paths release the lock via finally and
+  keep the retry path alive. +22 vitest (599 total; mutation-tested —
+  a disabled mustDefer fails 9, a disabled dirty re-check fails 2).
+  Same-shaped consent gap found in reopenWithEncoding filed as #169.
 - [ ] #128: batch scan classify_file switches to single-handle bounded
   read (#117's exact pattern) closing the metadata/read TOCTOU [danger]
 - [ ] #130: find-in-files collect_files records unreadable
