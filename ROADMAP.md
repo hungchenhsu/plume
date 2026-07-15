@@ -1173,10 +1173,30 @@ byte-preservation machinery)
   ext-hint detection divergence vs open_document (#178), HTML
   numeric-reference lossy semantics to be spelled out in the panel's
   confirm wording (next item). 389 Rust tests (+12).
-- [ ] Frontend: replace field in the find-in-files panel + dry-run
+- [x] Frontend: replace field in the find-in-files panel + dry-run
   preview (files × hit counts × drift/lossy flags), per-file
   checkboxes, a batch-convert-strength destructive confirm, and a
-  post-execute summary; i18n across en/zh-TW/ja/zh-CN
+  post-execute summary; i18n across en/zh-TW/ja/zh-CN. Pure logic
+  (preview rows, confirm-message building, selection→execute-params,
+  result classification) in a new `replaceinfiles-ui.ts` (the
+  lossysave/bytedrift extraction precedent), DOM wiring in
+  findinfiles.ts; plain search behavior untouched (original tests
+  unmodified). Gate properties verified adversarially: busyReplace
+  set synchronously before the confirm await (double-click test),
+  targets/totals/confirm message snapshotted at one synchronous
+  moment (checkbox flips during the dialog can't desync message from
+  execute params), allowLossy true only when the *selected* set
+  contains lossy files (unchecked lossy files don't raise it), the
+  lossy wording names the HTML numeric-character-reference semantics
+  outright, skipped files excluded at both the DOM and pure-function
+  layers, and all five backend statuses render distinctly (failures
+  can't vanish). Review-caught fixes landed before commit: the
+  preview now surfaces `report.truncated` ("the rest of the folder
+  was not scanned") — previously a 600-match folder showed 500,
+  executed 500, and reported success with zero disclosure — and
+  regex mode shows a "replacement is literal, $1 won't expand" hint
+  before the user ever runs a scan. 684 vitest (+62 over the
+  pre-item baseline).
 - [ ] Find-in-files query/replace inputs wired to the existing
   searchhistory module (localStorage datalist, the CM6-panel precedent)
 

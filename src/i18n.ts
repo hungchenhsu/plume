@@ -82,6 +82,65 @@ export interface Messages {
   ) => string;
   "findInFiles.scanErrorsSummary": (count: number) => string;
 
+  // Replace-in-files (ROADMAP.md v0.5 Track S, frontend item): the dry-run
+  // preview + destructive confirm + result summary layered on top of the
+  // find-in-files panel above. Kept in this same "findInFiles." namespace
+  // rather than a new prefix — it's an extension of the one panel, not a
+  // separate feature surface (mirrors streamReplace.ts already reusing
+  // findInFiles.matchCase for the same reason).
+  "findInFiles.replaceButton": string;
+  "findInFiles.replaceScanning": string;
+  "findInFiles.replaceNoMatches": string;
+  "findInFiles.replacePreviewSummary": (
+    fileCount: number,
+    matchCount: number,
+    skippedCount: number,
+  ) => string;
+  /** Appended to the preview summary when `ReplaceScanReport.truncated` —
+   *  the scan stopped at its entry cap, so the report may be missing whole
+   *  files (not just matches within listed files). A user about to run a
+   *  destructive folder-wide replace must know the preview didn't cover
+   *  the whole folder. */
+  "findInFiles.replacePreviewTruncated": string;
+  "findInFiles.replaceMatchCount": (count: number) => string;
+  "findInFiles.replaceLossyTooltip": string;
+  /** Shown under the replacement field only while regex mode is on:
+   *  `replacement` is always inserted literally — `$1` and other
+   *  backreferences are never expanded (replaceinfiles.rs's v1
+   *  `regex::NoExpand` scope). */
+  "findInFiles.replaceRegexLiteralHint": string;
+  /** Localized label for `ReplaceScanEntry.skippedReason` — never the raw
+   *  Rust/OS text (see replaceinfiles-ui.ts's `skipReasonLabel`). */
+  "findInFiles.skipReasonOversized": string;
+  "findInFiles.skipReasonMalformed": string;
+  "findInFiles.skipReasonIoError": string;
+  "findInFiles.replaceExecuteButton": (count: number) => string;
+  "findInFiles.replaceConfirmMessage": (fileCount: number, matchCount: number) => string;
+  /** S1-reviewed app semantics (ROADMAP.md Track S): an unmappable
+   *  replacement character is never rejected outright, it is written as a
+   *  literal HTML numeric character reference (`&#NNNN;`) by
+   *  `encoding_rs`'s encoder (src-tauri/src/streamcodec.rs's `encode_chunk`
+   *  doc comment) — this message must say so explicitly, never gloss over
+   *  it with a generic "may lose data" warning. */
+  "findInFiles.replaceConfirmMessageLossy": (
+    fileCount: number,
+    matchCount: number,
+    lossyFileCount: number,
+  ) => string;
+  "findInFiles.replaceResultSummary": (
+    okCount: number,
+    totalReplacements: number,
+    failedCount: number,
+  ) => string;
+  /** Post-execute failure group labels — keyed by `ReplaceExecuteEntry.status`
+   *  (see ipc.ts's doc comment for the exact status set). */
+  "findInFiles.replaceStatusChangedSinceScan": string;
+  "findInFiles.replaceStatusLossyBlocked": string;
+  "findInFiles.replaceStatusIoError": string;
+  "findInFiles.replaceStatusDecodeError": string;
+  "findInFiles.replaceStatusTooLarge": string;
+  "findInFiles.replaceFailuresHeading": (count: number) => string;
+
   "goto.placeholder": string;
 
   "quickOpen.searchPlaceholder": string;
@@ -334,6 +393,45 @@ const en: Messages = {
     `${count}${truncated ? "+" : ""} match${count === 1 ? "" : "es"} in ${filesScanned} files`,
   "findInFiles.scanErrorsSummary": (count) =>
     `${count} item${count === 1 ? "" : "s"} could not be searched — results may be incomplete.`,
+
+  "findInFiles.replaceButton": "Replace in Files…",
+  "findInFiles.replaceScanning": "Scanning for replacements…",
+  "findInFiles.replaceNoMatches": "No files contain a match.",
+  "findInFiles.replacePreviewSummary": (fileCount, matchCount, skippedCount) =>
+    `${fileCount} file${fileCount === 1 ? "" : "s"}, ${matchCount} occurrence${matchCount === 1 ? "" : "s"}` +
+    (skippedCount > 0 ? `, ${skippedCount} skipped` : ""),
+  "findInFiles.replacePreviewTruncated":
+    "List cut off — the rest of the folder was not scanned and may contain more matching files.",
+  "findInFiles.replaceMatchCount": (count) => `${count} occurrence${count === 1 ? "" : "s"}`,
+  "findInFiles.replaceLossyTooltip":
+    "This file's own encoding can't represent some of the replacement text — proceeding " +
+    "will substitute a literal HTML numeric character reference (&#NNNN;) for those characters.",
+  "findInFiles.replaceRegexLiteralHint":
+    "Replacement is inserted as literal text — backreferences like $1 are not expanded.",
+  "findInFiles.skipReasonOversized": "Too large to search — skipped",
+  "findInFiles.skipReasonMalformed": "Doesn't decode cleanly — skipped",
+  "findInFiles.skipReasonIoError": "Couldn't read this file",
+  "findInFiles.replaceExecuteButton": (count) => `Replace ${count} file${count === 1 ? "" : "s"}`,
+  "findInFiles.replaceConfirmMessage": (fileCount, matchCount) =>
+    `Replace ${matchCount} occurrence${matchCount === 1 ? "" : "s"} across ${fileCount} ` +
+    `file${fileCount === 1 ? "" : "s"}? This cannot be undone.`,
+  "findInFiles.replaceConfirmMessageLossy": (fileCount, matchCount, lossyFileCount) =>
+    `Replace ${matchCount} occurrence${matchCount === 1 ? "" : "s"} across ${fileCount} ` +
+    `file${fileCount === 1 ? "" : "s"}? This cannot be undone. ${lossyFileCount} ` +
+    `file${lossyFileCount === 1 ? "" : "s"} contain replacement text that can't be represented ` +
+    `in their own encoding — proceeding will write it as a literal HTML numeric character ` +
+    `reference (&#NNNN;) instead.`,
+  "findInFiles.replaceResultSummary": (okCount, totalReplacements, failedCount) =>
+    `Replaced in ${okCount} file${okCount === 1 ? "" : "s"}: ${totalReplacements} ` +
+    `occurrence${totalReplacements === 1 ? "" : "s"}.` +
+    (failedCount > 0 ? ` ${failedCount} file${failedCount === 1 ? "" : "s"} failed.` : ""),
+  "findInFiles.replaceStatusChangedSinceScan": "Changed since preview — not touched",
+  "findInFiles.replaceStatusLossyBlocked": "Replacement not representable — not written",
+  "findInFiles.replaceStatusIoError": "Read/write failed — not written",
+  "findInFiles.replaceStatusDecodeError": "No longer decodes cleanly — not written",
+  "findInFiles.replaceStatusTooLarge": "Grew too large — not written",
+  "findInFiles.replaceFailuresHeading": (count) =>
+    `${count} file${count === 1 ? "" : "s"} could not be replaced:`,
 
   "goto.placeholder": "Go to line…",
 
@@ -607,6 +705,41 @@ const zhTW: Messages = {
   "findInFiles.scanErrorsSummary": (count) =>
     `有 ${count} 個項目無法搜尋——搜尋結果可能不完整。`,
 
+  "findInFiles.replaceButton": "在檔案中取代…",
+  "findInFiles.replaceScanning": "掃描取代目標中…",
+  "findInFiles.replaceNoMatches": "沒有檔案包含相符項目。",
+  "findInFiles.replacePreviewSummary": (fileCount, matchCount, skippedCount) =>
+    `${fileCount} 個檔案、共 ${matchCount} 處相符` +
+    (skippedCount > 0 ? `，另有 ${skippedCount} 個略過` : ""),
+  "findInFiles.replacePreviewTruncated":
+    "清單已截斷——資料夾其餘部分未掃描，可能還有更多相符檔案。",
+  "findInFiles.replaceMatchCount": (count) => `${count} 處`,
+  "findInFiles.replaceLossyTooltip":
+    "此檔案的編碼無法表示部分取代文字——繼續將以 HTML numeric character reference" +
+    "（&#NNNN; 字面文字）寫入這些字元。",
+  "findInFiles.replaceRegexLiteralHint":
+    "取代內容為字面文字——$1 等反向引用不會展開。",
+  "findInFiles.skipReasonOversized": "檔案過大，略過搜尋",
+  "findInFiles.skipReasonMalformed": "無法正確解碼，略過搜尋",
+  "findInFiles.skipReasonIoError": "無法讀取此檔案",
+  "findInFiles.replaceExecuteButton": (count) => `取代 ${count} 個檔案`,
+  "findInFiles.replaceConfirmMessage": (fileCount, matchCount) =>
+    `即將取代 ${fileCount} 個檔案中的 ${matchCount} 處相符——此操作無法復原。`,
+  "findInFiles.replaceConfirmMessageLossy": (fileCount, matchCount, lossyFileCount) =>
+    `即將取代 ${fileCount} 個檔案中的 ${matchCount} 處相符——此操作無法復原。` +
+    `${lossyFileCount} 個檔案含無法以其編碼表示的替換字元——繼續將以 HTML numeric ` +
+    `character reference（&#NNNN; 字面文字）寫入。`,
+  "findInFiles.replaceResultSummary": (okCount, totalReplacements, failedCount) =>
+    `已在 ${okCount} 個檔案取代共 ${totalReplacements} 處` +
+    (failedCount > 0 ? `，失敗 ${failedCount} 個` : "") +
+    "。",
+  "findInFiles.replaceStatusChangedSinceScan": "自預覽後已變動，未動",
+  "findInFiles.replaceStatusLossyBlocked": "替換字元無法以編碼表示，未寫入",
+  "findInFiles.replaceStatusIoError": "讀寫失敗，未寫入",
+  "findInFiles.replaceStatusDecodeError": "無法解碼，未寫入",
+  "findInFiles.replaceStatusTooLarge": "檔案過大，未寫入",
+  "findInFiles.replaceFailuresHeading": (count) => `${count} 個檔案未變更：`,
+
   "goto.placeholder": "跳至行號…",
 
   "quickOpen.searchPlaceholder": "搜尋最近的檔案…",
@@ -855,6 +988,41 @@ const ja: Messages = {
     `${filesScanned} 個のファイル中 ${count}${truncated ? "+" : ""} 件一致`,
   "findInFiles.scanErrorsSummary": (count) =>
     `${count} 件の項目を検索できませんでした — 検索結果は不完全な可能性があります。`,
+
+  "findInFiles.replaceButton": "ファイル内を置換…",
+  "findInFiles.replaceScanning": "置換対象をスキャン中…",
+  "findInFiles.replaceNoMatches": "一致するファイルがありません。",
+  "findInFiles.replacePreviewSummary": (fileCount, matchCount, skippedCount) =>
+    `${fileCount} 件のファイル、${matchCount} 件の一致` +
+    (skippedCount > 0 ? `、${skippedCount} 件スキップ` : ""),
+  "findInFiles.replacePreviewTruncated":
+    "一覧は途中で打ち切られました — フォルダーの残りはスキャンされておらず、" +
+    "一致するファイルが他にもある可能性があります。",
+  "findInFiles.replaceMatchCount": (count) => `${count} 件`,
+  "findInFiles.replaceLossyTooltip":
+    "このファイルのエンコーディングでは置換テキストの一部を表現できません — 続行すると" +
+    "これらの文字は HTML 数値文字参照（&#NNNN; というリテラル文字列）として書き込まれます。",
+  "findInFiles.replaceRegexLiteralHint":
+    "置換テキストはリテラル文字列として挿入されます — $1 などの後方参照は展開されません。",
+  "findInFiles.skipReasonOversized": "サイズ超過のためスキップ",
+  "findInFiles.skipReasonMalformed": "デコードできないためスキップ",
+  "findInFiles.skipReasonIoError": "このファイルを読み込めません",
+  "findInFiles.replaceExecuteButton": (count) => `${count} 件のファイルを置換`,
+  "findInFiles.replaceConfirmMessage": (fileCount, matchCount) =>
+    `${fileCount} 件のファイル、${matchCount} 件の一致を置換しますか？ この操作は元に戻せません。`,
+  "findInFiles.replaceConfirmMessageLossy": (fileCount, matchCount, lossyFileCount) =>
+    `${fileCount} 件のファイル、${matchCount} 件の一致を置換しますか？ この操作は元に戻せません。` +
+    `${lossyFileCount} 件のファイルに、そのエンコーディングで表現できない置換文字が含まれて` +
+    `います — 続行すると HTML 数値文字参照（&#NNNN; というリテラル文字列）として書き込まれます。`,
+  "findInFiles.replaceResultSummary": (okCount, totalReplacements, failedCount) =>
+    `${okCount} 件のファイルで ${totalReplacements} 件を置換しました。` +
+    (failedCount > 0 ? `${failedCount} 件失敗しました。` : ""),
+  "findInFiles.replaceStatusChangedSinceScan": "プレビュー後に変更されたため未処理",
+  "findInFiles.replaceStatusLossyBlocked": "置換文字を表現できないため未書き込み",
+  "findInFiles.replaceStatusIoError": "読み書きに失敗——未書き込み",
+  "findInFiles.replaceStatusDecodeError": "デコードできないため未書き込み",
+  "findInFiles.replaceStatusTooLarge": "サイズ超過のため未書き込み",
+  "findInFiles.replaceFailuresHeading": (count) => `${count} 件のファイルを変更できませんでした:`,
 
   "goto.placeholder": "行に移動…",
 
@@ -1121,6 +1289,41 @@ const zhCN: Messages = {
     `在 ${filesScanned} 个文件中找到 ${count}${truncated ? "+" : ""} 处匹配`,
   "findInFiles.scanErrorsSummary": (count) =>
     `有 ${count} 个项目无法搜索——搜索结果可能不完整。`,
+
+  "findInFiles.replaceButton": "在文件中替换…",
+  "findInFiles.replaceScanning": "正在扫描替换目标…",
+  "findInFiles.replaceNoMatches": "没有文件包含匹配项。",
+  "findInFiles.replacePreviewSummary": (fileCount, matchCount, skippedCount) =>
+    `${fileCount} 个文件，共 ${matchCount} 处匹配` +
+    (skippedCount > 0 ? `，另有 ${skippedCount} 个已跳过` : ""),
+  "findInFiles.replacePreviewTruncated":
+    "列表已截断——文件夹其余部分未扫描，可能还有更多匹配文件。",
+  "findInFiles.replaceMatchCount": (count) => `${count} 处`,
+  "findInFiles.replaceLossyTooltip":
+    "此文件的编码无法表示部分替换文本——继续将以 HTML numeric character reference" +
+    "（&#NNNN; 字面文本）写入这些字符。",
+  "findInFiles.replaceRegexLiteralHint":
+    "替换内容为字面文本——$1 等反向引用不会展开。",
+  "findInFiles.skipReasonOversized": "文件过大，已跳过",
+  "findInFiles.skipReasonMalformed": "无法正确解码，已跳过",
+  "findInFiles.skipReasonIoError": "无法读取此文件",
+  "findInFiles.replaceExecuteButton": (count) => `替换 ${count} 个文件`,
+  "findInFiles.replaceConfirmMessage": (fileCount, matchCount) =>
+    `即将替换 ${fileCount} 个文件中的 ${matchCount} 处匹配——此操作无法撤销。`,
+  "findInFiles.replaceConfirmMessageLossy": (fileCount, matchCount, lossyFileCount) =>
+    `即将替换 ${fileCount} 个文件中的 ${matchCount} 处匹配——此操作无法撤销。` +
+    `${lossyFileCount} 个文件含有无法以其编码表示的替换字符——继续将以 HTML numeric ` +
+    `character reference（&#NNNN; 字面文本）写入。`,
+  "findInFiles.replaceResultSummary": (okCount, totalReplacements, failedCount) =>
+    `已在 ${okCount} 个文件中替换共 ${totalReplacements} 处` +
+    (failedCount > 0 ? `，失败 ${failedCount} 个` : "") +
+    "。",
+  "findInFiles.replaceStatusChangedSinceScan": "预览后已变动，未处理",
+  "findInFiles.replaceStatusLossyBlocked": "替换字符无法表示，未写入",
+  "findInFiles.replaceStatusIoError": "读写失败，未写入",
+  "findInFiles.replaceStatusDecodeError": "无法解码，未写入",
+  "findInFiles.replaceStatusTooLarge": "文件过大，未写入",
+  "findInFiles.replaceFailuresHeading": (count) => `${count} 个文件未变更：`,
 
   "goto.placeholder": "跳转到行…",
 
