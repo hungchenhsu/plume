@@ -116,6 +116,18 @@ export interface Doc {
    *  untitled document, or one restored from a hot-exit backup without
    *  having been re-read from disk this session. */
   fingerprint: unknown;
+  /** Whether check_byte_drift (issue #96 (2/3)) has already run for this
+   *  doc's current on-disk baseline — the one-time, informed-consent
+   *  drift dialog is asked at most once per doc per session, not on every
+   *  save (see main.ts's runSaveFlow / src/bytedrift.ts's
+   *  shouldCheckByteDrift). Session-local only, deliberately not part of
+   *  SessionFile/session.rs: re-asking once after an app relaunch is
+   *  cheaper than a session-format migration for what is, at most, one
+   *  extra native confirm dialog. Reset to false whenever a fresh on-disk
+   *  baseline replaces the current one (reload, reopen-with-encoding) —
+   *  see applyOpenedForReload/reopenWithEncoding in main.ts — since the
+   *  drift verdict for the old baseline says nothing about the new one. */
+  byteDriftChecked: boolean;
   buffer: EditorBuffer;
 }
 
