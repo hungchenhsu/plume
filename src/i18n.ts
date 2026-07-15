@@ -320,6 +320,22 @@ export interface Messages {
   "encoding.eucJp": string;
   "encoding.eucKr": string;
   "encoding.windows1252": string;
+  "encoding.windows1250": string;
+  "encoding.windows1251": string;
+  "encoding.windows1253": string;
+  "encoding.windows1254": string;
+  "encoding.windows1255": string;
+  "encoding.windows1256": string;
+  "encoding.windows1257": string;
+  "encoding.windows1258": string;
+  "encoding.iso88592": string;
+  "encoding.iso88595": string;
+  "encoding.iso88597": string;
+  "encoding.iso885915": string;
+  "encoding.koi8r": string;
+  "encoding.koi8u": string;
+  "encoding.windows874": string;
+  "encoding.macintosh": string;
 
   "common.loading": string;
 }
@@ -634,6 +650,22 @@ const en: Messages = {
   "encoding.eucJp": "EUC-JP (Japanese)",
   "encoding.eucKr": "EUC-KR (Korean)",
   "encoding.windows1252": "Windows-1252 (Western)",
+  "encoding.windows1250": "Windows-1250 (Central European)",
+  "encoding.windows1251": "Windows-1251 (Cyrillic)",
+  "encoding.windows1253": "Windows-1253 (Greek)",
+  "encoding.windows1254": "Windows-1254 (Turkish)",
+  "encoding.windows1255": "Windows-1255 (Hebrew)",
+  "encoding.windows1256": "Windows-1256 (Arabic)",
+  "encoding.windows1257": "Windows-1257 (Baltic)",
+  "encoding.windows1258": "Windows-1258 (Vietnamese)",
+  "encoding.iso88592": "ISO-8859-2 (Central European)",
+  "encoding.iso88595": "ISO-8859-5 (Cyrillic)",
+  "encoding.iso88597": "ISO-8859-7 (Greek)",
+  "encoding.iso885915": "ISO-8859-15 (Western, with €)",
+  "encoding.koi8r": "KOI8-R (Russian)",
+  "encoding.koi8u": "KOI8-U (Ukrainian)",
+  "encoding.windows874": "Windows-874 (Thai)",
+  "encoding.macintosh": "Macintosh (Mac Roman)",
 
   "common.loading": "Loading…",
 };
@@ -918,6 +950,22 @@ const zhTW: Messages = {
   "encoding.eucJp": "EUC-JP（日文）",
   "encoding.eucKr": "EUC-KR（韓文）",
   "encoding.windows1252": "Windows-1252（西歐語系）",
+  "encoding.windows1250": "Windows-1250（中歐）",
+  "encoding.windows1251": "Windows-1251（西里爾文）",
+  "encoding.windows1253": "Windows-1253（希臘文）",
+  "encoding.windows1254": "Windows-1254（土耳其文）",
+  "encoding.windows1255": "Windows-1255（希伯來文）",
+  "encoding.windows1256": "Windows-1256（阿拉伯文）",
+  "encoding.windows1257": "Windows-1257（波羅的海文）",
+  "encoding.windows1258": "Windows-1258（越南文）",
+  "encoding.iso88592": "ISO-8859-2（中歐）",
+  "encoding.iso88595": "ISO-8859-5（西里爾文）",
+  "encoding.iso88597": "ISO-8859-7（希臘文）",
+  "encoding.iso885915": "ISO-8859-15（西歐語系，含€）",
+  "encoding.koi8r": "KOI8-R（俄文）",
+  "encoding.koi8u": "KOI8-U（烏克蘭文）",
+  "encoding.windows874": "Windows-874（泰文）",
+  "encoding.macintosh": "Macintosh（Mac Roman）",
 
   "common.loading": "載入中…",
 };
@@ -1219,6 +1267,22 @@ const ja: Messages = {
   "encoding.eucJp": "EUC-JP（日本語）",
   "encoding.eucKr": "EUC-KR（韓国語）",
   "encoding.windows1252": "Windows-1252（西欧言語）",
+  "encoding.windows1250": "Windows-1250（中欧）",
+  "encoding.windows1251": "Windows-1251（キリル文字）",
+  "encoding.windows1253": "Windows-1253（ギリシャ語）",
+  "encoding.windows1254": "Windows-1254（トルコ語）",
+  "encoding.windows1255": "Windows-1255（ヘブライ語）",
+  "encoding.windows1256": "Windows-1256（アラビア語）",
+  "encoding.windows1257": "Windows-1257（バルト語）",
+  "encoding.windows1258": "Windows-1258（ベトナム語）",
+  "encoding.iso88592": "ISO-8859-2（中欧）",
+  "encoding.iso88595": "ISO-8859-5（キリル文字）",
+  "encoding.iso88597": "ISO-8859-7（ギリシャ語）",
+  "encoding.iso885915": "ISO-8859-15（西欧、€対応）",
+  "encoding.koi8r": "KOI8-R（ロシア語）",
+  "encoding.koi8u": "KOI8-U（ウクライナ語）",
+  "encoding.windows874": "Windows-874（タイ語）",
+  "encoding.macintosh": "Macintosh（Mac Roman）",
 
   "common.loading": "読み込み中…",
 };
@@ -1501,6 +1565,22 @@ const zhCN: Messages = {
   "encoding.eucJp": "EUC-JP（日文）",
   "encoding.eucKr": "EUC-KR（韩文）",
   "encoding.windows1252": "Windows-1252（西欧语系）",
+  "encoding.windows1250": "Windows-1250（中欧）",
+  "encoding.windows1251": "Windows-1251（西里尔文）",
+  "encoding.windows1253": "Windows-1253（希腊文）",
+  "encoding.windows1254": "Windows-1254（土耳其文）",
+  "encoding.windows1255": "Windows-1255（希伯来文）",
+  "encoding.windows1256": "Windows-1256（阿拉伯文）",
+  "encoding.windows1257": "Windows-1257（波罗的海文）",
+  "encoding.windows1258": "Windows-1258（越南文）",
+  "encoding.iso88592": "ISO-8859-2（中欧）",
+  "encoding.iso88595": "ISO-8859-5（西里尔文）",
+  "encoding.iso88597": "ISO-8859-7（希腊文）",
+  "encoding.iso885915": "ISO-8859-15（西欧语系，含€）",
+  "encoding.koi8r": "KOI8-R（俄文）",
+  "encoding.koi8u": "KOI8-U（乌克兰文）",
+  "encoding.windows874": "Windows-874（泰文）",
+  "encoding.macintosh": "Macintosh（Mac Roman）",
 
   "common.loading": "加载中…",
 };
