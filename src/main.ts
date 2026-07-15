@@ -1970,6 +1970,57 @@ function encodingMenuItems(
   return items;
 }
 
+/**
+ * Which doc a completed streaming convert/replace operation (issue #163)
+ * should reload — or `null` when there is none, meaning the caller shows a
+ * closed-tab notice instead of touching any doc. `guard`/`doc` are the same
+ * capture-before-IPC / validate-after-IPC pair fetchAndApplyReload/
+ * fetchAndApplyReopen use (asyncguard.ts's captureIdentity/validateIdentity,
+ * issue #159); `path` is the file the operation actually ran against,
+ * captured alongside `guard` before the operation started — runStreamConvert
+ * and showStreamReplace both take the path as a plain argument rather than
+ * re-reading `doc.path` later, so it stays available even once `doc` itself
+ * might say otherwise.
+ *
+ * "apply"/"edited" (asyncguard.ts's verdicts): `doc` itself is still open —
+ * return it unchanged. Both are treated the same here, not routed through a
+ * confirm dialog the way runNormalizeFlow's own "edited" is
+ * (normalizeGuardOutcome below): a streaming convert/replace's only entry
+ * points (showEncodingMenu's convertFileToEncoding item, the "stream_replace"
+ * menu case) both gate on `doc.truncated`, and a truncated preview's CM6
+ * read-only compartment makes user edits impossible — so a revision bump
+ * here can only be another reload/reopen/external-change landing on the same
+ * doc while the (typically long-running) operation was in flight, never a
+ * keystroke. reloadFromDisk's own fetchAndApplyReload guard re-validates
+ * identity a second time around its own openDocument await and defers to
+ * reevaluateReload's dirty-confirm if that ever turns up something to
+ * confirm, so nothing here needs to re-derive that decision.
+ *
+ * "closed": the tab closed while the operation ran. Unlike reload/reopen's
+ * own "closed" (nothing left to apply to — those operations target the
+ * buffer that closed with the tab), a streaming convert/replace's target is
+ * the FILE ON DISK, not the closed doc's buffer: the operation already
+ * succeeded and wrote to `path` regardless of what happened to the tab. If
+ * `path` has since been reopened into a fresh tab (closedtabs.ts's Reopen
+ * Closed Tab, or the user manually reopening it — `tabs.findByPath`), that
+ * tab's buffer is exactly as stale as the closed doc's would have been: it
+ * still shows whatever the file held before this operation wrote to it, and
+ * needs the same reload the original doc would have gotten. A reopened tab
+ * for the same path can only have been opened against the file's
+ * pre-operation bytes — the write lands atomically right before the
+ * operation's own blocking result dialog, which leaves no interactive
+ * window for a reopen to observe a half-written file — so it is itself
+ * still truncated/read-only/clean at this point, same reasoning as the
+ * apply/edited branch above; reloadFromDisk's precondition ("caller already
+ * resolved discarding") is trivially satisfied, not silently skipped. No tab
+ * at all for `path` anymore: `null`, so the caller only notifies that the
+ * operation completed rather than touching a doc that doesn't exist.
+ */
+function streamCompletionTarget(guard: GuardIdentity, doc: Doc, path: string): Doc | null {
+  const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+  return verdict === "closed" ? tabs.findByPath(path) : doc;
+}
+
 function showEncodingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
@@ -2088,14 +2139,28 @@ function showEncodingMenu(anchor: HTMLElement): void {
             checked: e.value === doc.encoding && e.withBom === doc.withBom,
             action: () => {
               if (!doc.path) return;
-              void runStreamConvert(doc.path, doc.encoding, e, () => {
-                // Set *before* reloadFromDisk (inside runStreamConvert's
-                // onConverted callback), since reloadFromDisk reopens with
-                // whatever doc.encoding already holds — it must already be
-                // the new encoding, not the file's old one.
-                doc.encoding = e.value;
-                doc.withBom = e.withBom;
-                void reloadFromDisk(doc);
+              const path = doc.path;
+              // Captured before runStreamConvert's own await chain starts
+              // (issue #163): the tab can close — or close and have a
+              // fresh tab reopened onto the same path — while the
+              // (potentially long-running) conversion itself runs. See
+              // streamCompletionTarget's doc comment.
+              const guard = captureIdentity(doc);
+              void runStreamConvert(path, doc.encoding, e, () => {
+                const target = streamCompletionTarget(guard, doc, path);
+                if (!target) {
+                  void messageDialog(t("streamConvert.completedTabClosedMessage"), {
+                    title: t("streamConvert.title", basename(path)),
+                    kind: "info",
+                  });
+                  return;
+                }
+                // Set *before* reloadFromDisk, since reloadFromDisk reopens
+                // with whatever target.encoding already holds — it must
+                // already be the new encoding, not the file's old one.
+                target.encoding = e.value;
+                target.withBom = e.withBom;
+                void reloadFromDisk(target);
               });
             },
           })),
@@ -2681,7 +2746,21 @@ void listen<string>("plume://menu", (event) => {
         break;
       }
       if (doc.path) {
-        showStreamReplace(doc.path, doc.encoding, () => void reloadFromDisk(doc));
+        const path = doc.path;
+        // Same capture-before-IPC guard as the streamConvert flow above
+        // (issue #163) — see streamCompletionTarget's doc comment.
+        const guard = captureIdentity(doc);
+        showStreamReplace(path, doc.encoding, () => {
+          const target = streamCompletionTarget(guard, doc, path);
+          if (!target) {
+            void messageDialog(t("streamReplace.completedTabClosedMessage"), {
+              title: t("streamReplace.title", basename(path)),
+              kind: "info",
+            });
+            return;
+          }
+          void reloadFromDisk(target);
+        });
       }
       break;
     }

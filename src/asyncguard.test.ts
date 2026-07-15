@@ -928,3 +928,284 @@ describe("issue #158 — runNormalizeFlow's own confirm/IPC awaits race a tab sw
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// main.ts-shaped simulation for the streaming convert/replace completion
+// callbacks' own capture-before-IPC / validate-after-IPC guard (issue #163).
+// Same technique as the reload/reopen and normalize harnesses above (main.ts
+// has no *.test.ts of its own — see the reload/reopen harness's header
+// comment): mirrors main.ts's streamCompletionTarget and its two call sites
+// (showEncodingMenu's convertFileToEncoding item, the "stream_replace" menu
+// case) closely enough to reproduce the race, wired to the real
+// captureIdentity/validateIdentity (this module).
+//
+// Unlike reload/reopen (whose target is always the SAME doc the operation
+// captured) and normalize (whose target is the shared editor surface), a
+// streaming convert/replace operation's target is a PATH ON DISK: a tab
+// closing mid-operation doesn't necessarily mean there's nothing left to
+// refresh — a fresh tab may have been reopened onto that same path while the
+// (typically long-running) operation ran. StreamTabsState below models
+// `tabs.docs`/`tabs.findByPath` as a plain array plus a lookup, precisely so
+// a wrongful apply to the original (closed, detached) doc instead of the
+// reopened one is visible: it mutates/reloads an object no longer reachable
+// from `tabs.docs` at all, while the reopened doc — the one actually still
+// on screen — is left showing stale content.
+
+interface StreamDocState {
+  id: number;
+  path: string;
+  revision: number;
+  encoding: string;
+  withBom: boolean;
+}
+
+interface StreamTabsState {
+  docs: StreamDocState[];
+}
+
+function makeStreamDoc(overrides: Partial<StreamDocState> = {}): StreamDocState {
+  return { id: 1, path: "/big.txt", revision: 0, encoding: "UTF-8", withBom: false, ...overrides };
+}
+
+/** Mirrors tabs.ts's findByPath. */
+function findByPathSim(tabs: StreamTabsState, path: string): StreamDocState | null {
+  return tabs.docs.find((d) => d.path === path) ?? null;
+}
+
+/** Mirrors main.ts's streamCompletionTarget (issue #163): "apply"/"edited"
+ *  return `doc` itself unchanged (both treated the same — see main.ts's own
+ *  doc comment for why a streaming op's target can never actually be
+ *  edited); "closed" looks up whatever tab is currently showing the same
+ *  path, or null if none. */
+function streamCompletionTargetSim(
+  tabs: StreamTabsState,
+  guard: GuardIdentity,
+  doc: StreamDocState,
+  path: string,
+): StreamDocState | null {
+  const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+  return verdict === "closed" ? findByPathSim(tabs, path) : doc;
+}
+
+interface StreamDeps {
+  reloadFromDisk: (doc: StreamDocState) => void;
+  notifyClosed: () => void;
+}
+
+/** Mirrors the streamConvert call site's completion callback (issue #163):
+ *  `guard`/`path` captured before runStreamConvert's own internal awaits
+ *  (the busy overlay, the streaming IPC call, the blocking result dialog)
+ *  start; re-validated once its onConverted fires. */
+function streamConvertCompletionSim(
+  tabs: StreamTabsState,
+  guard: GuardIdentity,
+  doc: StreamDocState,
+  path: string,
+  target: { value: string; withBom: boolean },
+  deps: StreamDeps,
+): void {
+  const resolved = streamCompletionTargetSim(tabs, guard, doc, path);
+  if (!resolved) {
+    deps.notifyClosed();
+    return;
+  }
+  // Set *before* reloadFromDisk, same ordering main.ts's real call site
+  // uses — reloadFromDisk reopens with whatever resolved.encoding already
+  // holds.
+  resolved.encoding = target.value;
+  resolved.withBom = target.withBom;
+  deps.reloadFromDisk(resolved);
+}
+
+/** Mirrors the "stream_replace" call site's completion callback (issue
+ *  #163) — same shape, minus the encoding mutation (a replace never changes
+ *  encoding). */
+function streamReplaceCompletionSim(
+  tabs: StreamTabsState,
+  guard: GuardIdentity,
+  doc: StreamDocState,
+  path: string,
+  deps: StreamDeps,
+): void {
+  const resolved = streamCompletionTargetSim(tabs, guard, doc, path);
+  if (!resolved) {
+    deps.notifyClosed();
+    return;
+  }
+  deps.reloadFromDisk(resolved);
+}
+
+describe("issue #163 — streaming convert/replace completion callbacks race a tab close", () => {
+  describe("streamConvert", () => {
+    it("tab closed before completion, same path reopened into a fresh tab: the fresh (reopened) tab is reloaded, not the closed doc", () => {
+      const closedDoc = makeStreamDoc({ id: 1, encoding: "UTF-8", withBom: false });
+      const tabs: StreamTabsState = { docs: [closedDoc] };
+      const guard = captureIdentity(closedDoc);
+
+      // Tab closes mid-conversion (tabs.ts close()'s splice, simulated),
+      // then the same path is reopened into a DIFFERENT doc object —
+      // closedtabs.ts's Reopen Closed Tab, or the user manually reopening
+      // it. A fresh id, same path.
+      tabs.docs = tabs.docs.filter((d) => d !== closedDoc);
+      const reopenedDoc = makeStreamDoc({ id: 2, encoding: "UTF-8", withBom: false });
+      tabs.docs.push(reopenedDoc);
+
+      const reloadCalls: StreamDocState[] = [];
+      streamConvertCompletionSim(
+        tabs,
+        guard,
+        closedDoc,
+        "/big.txt",
+        { value: "Big5", withBom: true },
+        {
+          reloadFromDisk: (d) => reloadCalls.push(d),
+          notifyClosed: () => {
+            throw new Error("must not notify — a live tab exists for this path");
+          },
+        },
+      );
+
+      expect(reloadCalls).toEqual([reopenedDoc]);
+      expect(reopenedDoc.encoding).toBe("Big5");
+      expect(reopenedDoc.withBom).toBe(true);
+      // The detached doc the callback originally closed over is left
+      // completely untouched — proves the mutation landed on the live tab,
+      // not a stale reference nothing displays anymore.
+      expect(closedDoc.encoding).toBe("UTF-8");
+      expect(closedDoc.withBom).toBe(false);
+    });
+
+    it("tab closed before completion, no tab reopened for the path: a completion notice fires and zero docs are mutated or reloaded", () => {
+      const closedDoc = makeStreamDoc({ id: 1, encoding: "UTF-8", withBom: false });
+      const tabs: StreamTabsState = { docs: [] }; // closed, nothing else open anywhere
+      const guard = captureIdentity(closedDoc);
+
+      const reloadCalls: StreamDocState[] = [];
+      let notifyCalls = 0;
+      streamConvertCompletionSim(
+        tabs,
+        guard,
+        closedDoc,
+        "/big.txt",
+        { value: "Big5", withBom: true },
+        {
+          reloadFromDisk: (d) => reloadCalls.push(d),
+          notifyClosed: () => {
+            notifyCalls += 1;
+          },
+        },
+      );
+
+      expect(reloadCalls).toEqual([]);
+      expect(notifyCalls).toBe(1);
+      expect(closedDoc.encoding).toBe("UTF-8"); // untouched
+      expect(closedDoc.withBom).toBe(false);
+    });
+
+    it("control — tab never closed: reloads the original doc, unchanged from pre-#163 behavior", () => {
+      const doc = makeStreamDoc({ id: 1, encoding: "UTF-8", withBom: false });
+      const tabs: StreamTabsState = { docs: [doc] };
+      const guard = captureIdentity(doc);
+
+      const reloadCalls: StreamDocState[] = [];
+      streamConvertCompletionSim(
+        tabs,
+        guard,
+        doc,
+        "/big.txt",
+        { value: "Big5", withBom: true },
+        {
+          reloadFromDisk: (d) => reloadCalls.push(d),
+          notifyClosed: () => {
+            throw new Error("must not notify — tab is still open");
+          },
+        },
+      );
+
+      expect(reloadCalls).toEqual([doc]);
+      expect(doc.encoding).toBe("Big5");
+      expect(doc.withBom).toBe(true);
+    });
+
+    it("doc still open but its revision moved during the operation (e.g. an unrelated external-change reload landed): still reloads the same doc — 'edited' is treated the same as 'apply'", () => {
+      const doc = makeStreamDoc({ id: 1, revision: 0, encoding: "UTF-8", withBom: false });
+      const tabs: StreamTabsState = { docs: [doc] };
+      const guard = captureIdentity(doc);
+      doc.revision = 1; // something else reloaded/reopened this doc while the conversion ran
+
+      const reloadCalls: StreamDocState[] = [];
+      streamConvertCompletionSim(
+        tabs,
+        guard,
+        doc,
+        "/big.txt",
+        { value: "Big5", withBom: false },
+        {
+          reloadFromDisk: (d) => reloadCalls.push(d),
+          notifyClosed: () => {
+            throw new Error("must not notify — tab is still open");
+          },
+        },
+      );
+
+      expect(reloadCalls).toEqual([doc]);
+      expect(doc.encoding).toBe("Big5");
+    });
+  });
+
+  describe("streamReplace", () => {
+    it("tab closed before completion, same path reopened into a fresh tab: the fresh (reopened) tab is reloaded, not the closed doc", () => {
+      const closedDoc = makeStreamDoc({ id: 1 });
+      const tabs: StreamTabsState = { docs: [closedDoc] };
+      const guard = captureIdentity(closedDoc);
+
+      tabs.docs = tabs.docs.filter((d) => d !== closedDoc);
+      const reopenedDoc = makeStreamDoc({ id: 2 });
+      tabs.docs.push(reopenedDoc);
+
+      const reloadCalls: StreamDocState[] = [];
+      streamReplaceCompletionSim(tabs, guard, closedDoc, "/big.txt", {
+        reloadFromDisk: (d) => reloadCalls.push(d),
+        notifyClosed: () => {
+          throw new Error("must not notify — a live tab exists for this path");
+        },
+      });
+
+      expect(reloadCalls).toEqual([reopenedDoc]);
+    });
+
+    it("tab closed before completion, no tab reopened for the path: a completion notice fires and nothing is reloaded", () => {
+      const closedDoc = makeStreamDoc({ id: 1 });
+      const tabs: StreamTabsState = { docs: [] };
+      const guard = captureIdentity(closedDoc);
+
+      const reloadCalls: StreamDocState[] = [];
+      let notifyCalls = 0;
+      streamReplaceCompletionSim(tabs, guard, closedDoc, "/big.txt", {
+        reloadFromDisk: (d) => reloadCalls.push(d),
+        notifyClosed: () => {
+          notifyCalls += 1;
+        },
+      });
+
+      expect(reloadCalls).toEqual([]);
+      expect(notifyCalls).toBe(1);
+    });
+
+    it("control — tab never closed: reloads the original doc, unchanged from pre-#163 behavior", () => {
+      const doc = makeStreamDoc({ id: 1 });
+      const tabs: StreamTabsState = { docs: [doc] };
+      const guard = captureIdentity(doc);
+
+      const reloadCalls: StreamDocState[] = [];
+      streamReplaceCompletionSim(tabs, guard, doc, "/big.txt", {
+        reloadFromDisk: (d) => reloadCalls.push(d),
+        notifyClosed: () => {
+          throw new Error("must not notify — tab is still open");
+        },
+      });
+
+      expect(reloadCalls).toEqual([doc]);
+    });
+  });
+});

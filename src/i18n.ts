@@ -253,11 +253,23 @@ export interface Messages {
   "streamReplace.executeButton": string;
   "streamReplace.replacing": string;
   "streamReplace.resultMessage": (count: number) => string;
+  // Shown instead of reloading when the tab active at the start of the
+  // replace closed before it finished and no tab for the same path was
+  // reopened in the meantime (issue #163) — the file itself was already
+  // updated (this always fires after streamReplace.resultMessage's own
+  // unconditional success notice), there is just no live preview left to
+  // refresh.
+  "streamReplace.completedTabClosedMessage": string;
 
   "streamConvert.title": (file: string) => string;
   "streamConvert.converting": (encoding: string) => string;
   "streamConvert.resultMessage": (encoding: string) => string;
   "streamConvert.failedMessage": string;
+  // Same "operation succeeded, but the tab that started it is gone and
+  // nothing reopened onto that path" case as
+  // streamReplace.completedTabClosedMessage above, for the convert flow
+  // (issue #163).
+  "streamConvert.completedTabClosedMessage": string;
 
   "dialog.pagingTitle": string;
   "dialog.fileChangedTitle": string;
@@ -608,11 +620,15 @@ const en: Messages = {
   "streamReplace.replacing": "Replacing…",
   "streamReplace.resultMessage": (count) =>
     `${count} replacement${count === 1 ? "" : "s"} made.`,
+  "streamReplace.completedTabClosedMessage":
+    "The file was updated, but its tab was already closed — the preview wasn't refreshed.",
 
   "streamConvert.title": (file) => `Convert Encoding — ${file}`,
   "streamConvert.converting": (encoding) => `Converting to ${encoding}…`,
   "streamConvert.resultMessage": (encoding) => `File converted to ${encoding}.`,
   "streamConvert.failedMessage": "Conversion failed unexpectedly.",
+  "streamConvert.completedTabClosedMessage":
+    "The file was converted, but its tab was already closed — the preview wasn't refreshed.",
 
   "dialog.pagingTitle": "Paging",
   "dialog.fileChangedTitle": "File changed on disk",
@@ -940,11 +956,13 @@ const zhTW: Messages = {
   "streamReplace.executeButton": "全部取代",
   "streamReplace.replacing": "取代中…",
   "streamReplace.resultMessage": (count) => `已取代 ${count} 處。`,
+  "streamReplace.completedTabClosedMessage": "檔案已更新，但其分頁已關閉——預覽未重新整理。",
 
   "streamConvert.title": (file) => `轉換編碼 — ${file}`,
   "streamConvert.converting": (encoding) => `正在轉換為 ${encoding}…`,
   "streamConvert.resultMessage": (encoding) => `檔案已轉換為 ${encoding}。`,
   "streamConvert.failedMessage": "轉換發生非預期的失敗。",
+  "streamConvert.completedTabClosedMessage": "檔案已轉換，但其分頁已關閉——預覽未重新整理。",
 
   "dialog.pagingTitle": "翻頁",
   "dialog.fileChangedTitle": "檔案已在磁碟上異動",
@@ -1270,11 +1288,15 @@ const ja: Messages = {
   "streamReplace.executeButton": "すべて置換",
   "streamReplace.replacing": "置換中…",
   "streamReplace.resultMessage": (count) => `${count} 件を置換しました。`,
+  "streamReplace.completedTabClosedMessage":
+    "ファイルは更新されましたが、タブはすでに閉じられていたためプレビューは更新されませんでした。",
 
   "streamConvert.title": (file) => `エンコード変換 — ${file}`,
   "streamConvert.converting": (encoding) => `${encoding} に変換中…`,
   "streamConvert.resultMessage": (encoding) => `ファイルを ${encoding} に変換しました。`,
   "streamConvert.failedMessage": "変換が予期せず失敗しました。",
+  "streamConvert.completedTabClosedMessage":
+    "ファイルは変換されましたが、タブはすでに閉じられていたためプレビューは更新されませんでした。",
 
   "dialog.pagingTitle": "ページング",
   "dialog.fileChangedTitle": "ファイルがディスク上で変更されました",
@@ -1598,11 +1620,13 @@ const zhCN: Messages = {
   "streamReplace.executeButton": "全部替换",
   "streamReplace.replacing": "替换中…",
   "streamReplace.resultMessage": (count) => `已替换 ${count} 处。`,
+  "streamReplace.completedTabClosedMessage": "文件已更新，但其标签页已关闭——预览未刷新。",
 
   "streamConvert.title": (file) => `转换编码 — ${file}`,
   "streamConvert.converting": (encoding) => `正在转换为 ${encoding}…`,
   "streamConvert.resultMessage": (encoding) => `文件已转换为 ${encoding}。`,
   "streamConvert.failedMessage": "转换发生意外失败。",
+  "streamConvert.completedTabClosedMessage": "文件已转换，但其标签页已关闭——预览未刷新。",
 
   "dialog.pagingTitle": "翻页",
   "dialog.fileChangedTitle": "文件已在磁盘上更改",
