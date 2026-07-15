@@ -255,7 +255,9 @@ user decision recorded in this file.
   instruction, completed 2026-07-11. v0.3 cycle: four parallel tracks
   approved 2026-07-11 — see ROADMAP.md §v0.3. v0.4 cycle: planned
   2026-07-14 under an explicit user delegation of cycle planning and
-  merges — user reviews post-merge; see ROADMAP.md §v0.4.)*
+  merges — user reviews post-merge; see ROADMAP.md §v0.4. v0.5 cycle:
+  planned 2026-07-15 under the same delegation model, adversarially
+  reviewed before start; see ROADMAP.md §v0.5.)*
 - **Work:** normal feature PRs under the existing Definition of Done.
   One coherent item per PR; danger domains get the full treatment
   (§5-S1 discipline even without an incident).
