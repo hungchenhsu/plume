@@ -59,6 +59,7 @@ import {
   type SessionData,
   type SessionFile,
 } from "./ipc";
+import { captureIdentity, validateIdentity } from "./asyncguard";
 import { dropBackup } from "./backup";
 import { showBatchConvert } from "./batchconvert";
 import {
@@ -1228,14 +1229,35 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
   await withLock(doc, "reload", () => fetchAndApplyReload(doc));
 }
 
-/** Fetch doc.path fresh and unconditionally apply it — reloadFromDisk's
- *  own behavior once the lock is confirmed free, factored out so
- *  reevaluateReload (the drained-pending-reload path) can share the fetch
- *  shape while gating the apply differently. */
+/** Fetch doc.path fresh and apply it once the lock is confirmed free —
+ *  reloadFromDisk's own behavior, factored out so reevaluateReload (the
+ *  drained-pending-reload path) can share the fetch shape while gating
+ *  the apply differently.
+ *
+ *  Captures doc's identity before the openDocument await and validates it
+ *  after (issue #159): that IPC round trip is itself an await gap the
+ *  user can type in — or close the tab during — same hazard
+ *  reevaluateReload already guards against for the *drained* reload path
+ *  via its own dirty-recheck-after-fetch; this is the direct,
+ *  non-deferred entry's own version of that protection. A closed tab
+ *  (asyncguard.ts's "closed" verdict) discards the result outright — no
+ *  tab left to apply it to. A same-tab edit ("edited") routes through
+ *  reevaluateReload itself rather than re-deriving the same dirty-confirm
+ *  dialog a second way — its fingerprint check also means a same-tab edit
+ *  racing a reload that turns out to be a spurious wake (nothing actually
+ *  different on disk) resolves as a silent no-op instead of an
+ *  unnecessary prompt. */
 async function fetchAndApplyReload(doc: Doc): Promise<void> {
   if (!doc.path) return;
+  const guard = captureIdentity(doc);
   try {
     const opened = await openDocument(doc.path, doc.encoding);
+    const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+    if (verdict === "closed") return;
+    if (verdict === "edited") {
+      await reevaluateReload(doc);
+      return;
+    }
     applyOpenedForReload(doc, opened);
   } catch {
     // The file may be mid-replace or deleted; keep the buffer as-is.
@@ -1246,6 +1268,12 @@ async function fetchAndApplyReload(doc: Doc): Promise<void> {
  * Drained pending reload (issue #124's drainLock, once whatever held the
  * lock — a save, or another reload — releases it): re-validate against
  * disk instead of blindly applying the reload that was requested earlier.
+ * Also reached directly (not via a drain) from fetchAndApplyReload's own
+ * guard, when a same-tab edit races the *direct*, non-deferred reload's
+ * own openDocument await (issue #159's "edited" verdict — see
+ * asyncguard.ts). Both callers already hold doc's lock and have nothing
+ * trustworthy left from before their own await, so either way this always
+ * re-validates fresh rather than reusing anything captured earlier.
  * A fresh read whose fingerprint still matches doc.fingerprint (the
  * baseline the lock holder that just released already established, via a
  * successful save's own fingerprint update or a prior reload's own fetch)
@@ -1665,10 +1693,103 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
   }
 }
 
-/** Re-decode the file on disk with a user-chosen encoding. */
+/**
+ * Re-decode the file on disk with a user-chosen encoding. Defers to an
+ * in-flight save/reload instead of racing it (issue #169) — mustDefer
+ * checked at entry, same as reloadFromDisk/saveFlow, but deliberately
+ * never queues a deferred retry: unlike those two, reopen is always a
+ * direct user action, never watcher-triggered, so there's no passive
+ * "will get to it eventually" case to preserve, and blocking with a
+ * "try again" notice is simpler than adding a pendingReopenEncoding slot
+ * to savemutex.ts's drain table for one narrow, user-repeatable action.
+ */
 async function reopenWithEncoding(encoding: string): Promise<void> {
   const doc = tabs.active;
   if (!doc?.path) return;
+  if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+    await notifyReopenBusy(doc);
+    return;
+  }
+  if (doc.dirty) {
+    const discard = await confirmDialog(t("dialog.reopenMessage", doc.title), {
+      title: t("dialog.unsavedChangesTitle"),
+      kind: "warning",
+      okLabel: t("dialog.reopen"),
+    });
+    if (!discard) return;
+    // The confirm dialog above is itself an await gap: a watcher-
+    // triggered reload (or a save) could have taken the per-doc lock
+    // while it was up. withLock below sets doc.saveReloadInFlight
+    // unconditionally, so this must be re-checked right before acquiring
+    // rather than trusting the entry check above still holds — otherwise
+    // this would silently clobber whatever's mid-flight instead of
+    // deferring to it (same hazard the entry check exists for).
+    if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+      await notifyReopenBusy(doc);
+      return;
+    }
+  }
+  await withLock(doc, "reload", () => fetchAndApplyReopen(doc, encoding));
+}
+
+/** reopenWithEncoding's busy notice (issue #169) — shown instead of
+ *  queueing whenever a save or reload already holds the per-doc lock. */
+async function notifyReopenBusy(doc: Doc): Promise<void> {
+  await messageDialog(t("dialog.reopenBusyMessage", doc.title), {
+    title: t("dialog.reopenBusyTitle"),
+    kind: "warning",
+  });
+}
+
+/** reopenWithEncoding's body once the lock is confirmed held — mirrors
+ *  fetchAndApplyReload's capture/validate shape (issue #159): the
+ *  openDocument IPC round trip is an await gap the user can type in, or
+ *  close the tab during, exactly like reloadFromDisk's own. A closed tab
+ *  (asyncguard.ts's "closed" verdict) discards the result outright; a
+ *  same-tab edit ("edited") routes through reevaluateReopen rather than a
+ *  silent unconditional apply. */
+async function fetchAndApplyReopen(doc: Doc, encoding: string): Promise<void> {
+  const path = doc.path;
+  if (!path) return;
+  const guard = captureIdentity(doc);
+  try {
+    const opened = await openDocument(path, encoding);
+    const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+    if (verdict === "closed") return;
+    if (verdict === "edited") {
+      await reevaluateReopen(doc, encoding);
+      return;
+    }
+    applyOpenedForReopen(doc, opened);
+  } catch (error) {
+    await messageDialog(String(error), {
+      title: t("dialog.reopenFailedTitle"),
+      kind: "error",
+    });
+  }
+}
+
+/**
+ * Reached when fetchAndApplyReopen's guard finds doc's revision moved
+ * during the openDocument await — the user typed something new after
+ * already consenting (or not having needed to, if doc was clean at entry)
+ * to discard whatever the buffer held. Unlike reevaluateReload there's no
+ * "did disk actually change" question to short-circuit on first — a
+ * reopen with a different encoding is something the user explicitly asked
+ * for regardless of disk state — so this only ever re-asks the SAME
+ * discard-confirm reopenWithEncoding's own entry already shows, against
+ * doc's CURRENT dirty state rather than the one observed at entry. On
+ * consent (or if doc turned back out clean by the time this runs), applies
+ * a SECOND fresh read — not the one fetchAndApplyReopen already fetched —
+ * since the disk and the buffer may have moved again while any dialog
+ * here was open (same reasoning as reevaluateReload's own post-consent
+ * re-fetch). No try/catch of its own: fetchAndApplyReopen's already wraps
+ * this call, and reopen's errors are meant to surface to the user (unlike
+ * reloadFromDisk's silent swallow) via that same catch.
+ */
+async function reevaluateReopen(doc: Doc, encoding: string): Promise<void> {
+  const path = doc.path;
+  if (!path) return;
   if (doc.dirty) {
     const discard = await confirmDialog(t("dialog.reopenMessage", doc.title), {
       title: t("dialog.unsavedChangesTitle"),
@@ -1677,55 +1798,63 @@ async function reopenWithEncoding(encoding: string): Promise<void> {
     });
     if (!discard) return;
   }
-  try {
-    const opened = await openDocument(doc.path, encoding);
-    doc.encoding = opened.encoding;
-    doc.withBom = opened.hadBom;
-    doc.lineEnding = opened.lineEnding;
-    doc.malformed = opened.malformed;
-    doc.dirty = false;
-    // Same stale-backup reasoning as reloadFromDisk (issue #115): by this
-    // point the user either wasn't dirty or just confirmed the discard
-    // dialog above, so the buffer's previous content — and whatever backup
-    // covered it — is gone for good.
-    dropBackup(doc);
-    // Same fresh-baseline reasoning as reloadFromDisk (issue #112).
-    doc.revision = nextRevision++;
-    doc.fingerprint = opened.fingerprint;
-    // Same reasoning as applyOpenedForReload (issue #96 (2/3)): a new
-    // explicit-encoding decode is a new baseline for the drift check too.
-    doc.byteDriftChecked = false;
-    doc.truncated = opened.truncated;
-    doc.totalSize = opened.totalSize;
-    doc.chunkOffset = 0;
-    doc.nextChunkOffset = opened.nextOffset;
-    doc.prevChunkOffsets = [];
-    doc.windowChunks = opened.truncated
-      ? [
-          {
-            chars: opened.content.length,
-            bytes: opened.nextOffset ?? opened.totalSize,
-          },
-        ]
-      : [];
-    // A changed encoding can flip UTF-16 support on/off (see pagingSupported)
-    // and, symmetrically with reloadFromDisk, restarts the window at offset
-    // 0 anyway, so any prior index is discarded rather than re-validated.
-    doc.lineIndex = null;
-    doc.windowStartLine = opened.truncated ? 1 : null;
-    // Same in-flight-chunk-request invalidation as reloadFromDisk (issue
-    // #120) — this doc's chunk window was just reset from scratch too.
-    doc.chunkGeneration += 1;
-    doc.chunkLoadInFlight = false;
-    doc.buffer = editor.newBuffer(opened.content, opened.truncated);
-    showActive();
-    persistSession();
-  } catch (error) {
-    await messageDialog(String(error), {
-      title: t("dialog.reopenFailedTitle"),
-      kind: "error",
-    });
-  }
+  applyOpenedForReopen(doc, await openDocument(path, encoding));
+}
+
+/** Shared state mutation once a freshly-opened `opened` (decoded with a
+ *  user-chosen encoding) has been decided as safe to apply — mirrors
+ *  applyOpenedForReload almost field-for-field; the only substantive
+ *  difference is that the encoding comes from the user's menu choice
+ *  rather than doc.encoding, and a successful reopen calls persistSession
+ *  (encoding is session-persisted; a plain reload never changes it, so
+ *  applyOpenedForReload has no matching call). Conditionally
+ *  shows/renders exactly like applyOpenedForReload (issue #159): the
+ *  active tab may have changed out from under this doc while its own IPC
+ *  was in flight, so this must not force-focus the editor for a doc
+ *  that's no longer on screen. */
+function applyOpenedForReopen(doc: Doc, opened: OpenedDocument): void {
+  doc.encoding = opened.encoding;
+  doc.withBom = opened.hadBom;
+  doc.lineEnding = opened.lineEnding;
+  doc.malformed = opened.malformed;
+  doc.dirty = false;
+  // Same stale-backup reasoning as reloadFromDisk (issue #115): by this
+  // point the user either wasn't dirty or explicitly confirmed discarding
+  // (initially, or again via reevaluateReopen), so the buffer's previous
+  // content — and whatever backup covered it — is gone for good.
+  dropBackup(doc);
+  // Same fresh-baseline reasoning as reloadFromDisk (issue #112).
+  doc.revision = nextRevision++;
+  doc.fingerprint = opened.fingerprint;
+  // Same reasoning as applyOpenedForReload (issue #96 (2/3)): a new
+  // explicit-encoding decode is a new baseline for the drift check too.
+  doc.byteDriftChecked = false;
+  doc.truncated = opened.truncated;
+  doc.totalSize = opened.totalSize;
+  doc.chunkOffset = 0;
+  doc.nextChunkOffset = opened.nextOffset;
+  doc.prevChunkOffsets = [];
+  doc.windowChunks = opened.truncated
+    ? [
+        {
+          chars: opened.content.length,
+          bytes: opened.nextOffset ?? opened.totalSize,
+        },
+      ]
+    : [];
+  // A changed encoding can flip UTF-16 support on/off (see pagingSupported)
+  // and, symmetrically with reloadFromDisk, restarts the window at offset
+  // 0 anyway, so any prior index is discarded rather than re-validated.
+  doc.lineIndex = null;
+  doc.windowStartLine = opened.truncated ? 1 : null;
+  // Same in-flight-chunk-request invalidation as reloadFromDisk (issue
+  // #120) — this doc's chunk window was just reset from scratch too.
+  doc.chunkGeneration += 1;
+  doc.chunkLoadInFlight = false;
+  doc.buffer = editor.newBuffer(opened.content, opened.truncated);
+  if (tabs.activeId === doc.id) showActive();
+  else tabs.render();
+  persistSession();
 }
 
 function setLineEnding(lineEnding: string): void {
