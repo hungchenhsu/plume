@@ -384,6 +384,15 @@ export function syncReadOnlyMenu(checked: boolean, enabled: boolean): Promise<vo
   return invoke<void>("sync_read_only_menu", { checked, enabled });
 }
 
+/** Enable/disable the File > Reopen Closed Tab item as the session-local
+ *  closed-tabs stack becomes non-empty/empty (see main.ts's
+ *  `syncReopenClosedTabState`, called after every push/pop). The item is
+ *  built disabled — the stack is always empty at launch. Best-effort like
+ *  `syncReadOnlyMenu` (see menu.rs `sync_reopen_closed_tab_menu`). */
+export function syncReopenClosedTabMenu(enabled: boolean): Promise<void> {
+  return invoke<void>("sync_reopen_closed_tab_menu", { enabled });
+}
+
 /** Relabel the native menu's custom items (File/Edit/View submenus, and
  *  every `with_id` item inside them) to `locale`'s labels. Called whenever
  *  the resolved locale changes (Preferences dialog, or the "System"

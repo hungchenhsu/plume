@@ -49,6 +49,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "タブを閉じる",
         "关闭标签页",
     ),
+    (
+        "reopen_closed_tab",
+        "Reopen Closed Tab",
+        "重新開啟已關閉的分頁",
+        "閉じたタブを再度開く",
+        "重新打开关闭的标签页",
+    ),
     ("print", "Print…", "列印…", "印刷…", "打印…"),
     (
         "preferences",
@@ -391,6 +398,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?,
         )
+        .item(
+            // Built disabled: the closed-tabs stack (ROADMAP.md v0.5
+            // Track C) is session-local and always empty at launch;
+            // sync_reopen_closed_tab_menu enables the item once the
+            // frontend records the first closed tab.
+            &MenuItemBuilder::with_id("reopen_closed_tab", l("reopen_closed_tab"))
+                .accelerator("CmdOrCtrl+Shift+T")
+                .enabled(false)
+                .build(app)?,
+        )
         .separator()
         .item(
             // CmdOrCtrl+P belongs to quick open (modern editor convention).
@@ -728,6 +745,34 @@ pub fn sync_read_only_menu<R: Runtime>(
     Ok(())
 }
 
+/// Enable or disable the File > Reopen Closed Tab item (ROADMAP.md v0.5
+/// Track C). The item is built disabled — the closed-tabs stack is
+/// session-local, never persisted, and therefore always empty at launch —
+/// and this flips it as the frontend's stack becomes non-empty/empty
+/// (main.ts's `syncReopenClosedTabState`, called after every push/pop).
+/// Unlike `sync_read_only_menu`'s CheckMenuItem this is a plain MenuItem,
+/// so the lookup goes through `as_menuitem` (the `retitle_menu` pattern)
+/// and there is no checked state to sync.
+#[tauri::command]
+pub fn sync_reopen_closed_tab_menu<R: Runtime>(
+    app: AppHandle<R>,
+    enabled: bool,
+) -> Result<(), String> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(item) = menu
+        .get("file")
+        .and_then(|item| item.as_submenu().cloned())
+        .and_then(|file| file.get("reopen_closed_tab"))
+        .and_then(|item| item.as_menuitem().cloned())
+    else {
+        return Ok(());
+    };
+    item.set_enabled(enabled).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Relabel every custom (`with_id`) menu entry to `locale`'s labels
 /// ("en" | "zh-TW" | "ja" | "zh-CN", already resolved — never "system"; see
 /// `resolve_lang` and the frontend's `src/i18n.ts` `effectiveLocale`).
@@ -753,6 +798,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "save",
             "save_as",
             "close_tab",
+            "reopen_closed_tab",
             "print",
             "preferences",
         ] {
@@ -934,6 +980,17 @@ mod tests {
     #[test]
     fn label_returns_the_zh_cn_entry_for_zh_cn() {
         assert_eq!(label("open", "zh-CN"), "打开…");
+    }
+
+    // ROADMAP.md v0.5 Track C reopen closed tab: the File menu's new
+    // "reopen_closed_tab" item id, pinned across all four languages — same
+    // rationale as read_only's dedicated test below.
+    #[test]
+    fn label_returns_the_correct_reopen_closed_tab_text_for_every_language() {
+        assert_eq!(label("reopen_closed_tab", "en"), "Reopen Closed Tab");
+        assert_eq!(label("reopen_closed_tab", "zh-TW"), "重新開啟已關閉的分頁");
+        assert_eq!(label("reopen_closed_tab", "ja"), "閉じたタブを再度開く");
+        assert_eq!(label("reopen_closed_tab", "zh-CN"), "重新打开关闭的标签页");
     }
 
     // ROADMAP.md v0.4 Track C per-tab read-only mode: the View menu's new
