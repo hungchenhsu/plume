@@ -42,7 +42,27 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-15)
+## 2. Current state (2026-07-16)
+
+- **v0.5 feature cycle complete** (2026-07-15→16, PRs #156–#196 range):
+  planned and executed autonomously under the user's 2026-07-15
+  delegation (same model as v0.4), adversarially reviewed before start
+  (AGREE-WITH-CHANGES, all adjudicated). All five tracks delivered —
+  **debt & robustness** (the whole bug queue: #96 in three stages
+  including streamreplace byte-passthrough with an
+  ISO-2022-JP-shift-state P1 caught and killed in review, lazy
+  save-time byte-drift consent, batch drift flags; #124 save/reload
+  mutex; #128/#130 TOCTOU + scan-error twins; #134 preempt; #136 trim
+  gate; a chunk-paging property fuzz), **replace in files**
+  (line-level byte-preserving backend + panel UI + shared search
+  history), **encoding breadth** (11→27 picker choices with invariant
+  tests, grouped pickers, detection-boundary docs), **comfort
+  stretch** (reopen closed tab, tab context menu, goto line:column),
+  **outward** (README install/accuracy pass under the positioning red
+  lines). Every danger item passed adversarial review; issues
+  #96/#124/#128/#130/#134/#136 closed, follow-ups filed
+  (#165/#169/#175/#176/#178/#182). Tests at cycle end: 423 Rust + 763
+  vitest (cycle start: 333/572). Tagged **v0.5.0-alpha.1**.
 
 - **v0.2 feature cycle complete** (PRs #34–#50): full visual refresh on
   design tokens, built-in themes, UI i18n (zh-TW first), all six Tier-1

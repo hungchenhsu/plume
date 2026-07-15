@@ -1335,9 +1335,15 @@ byte-preservation machinery)
   handling" over "guarantees", and the .dmg architecture hint.
   Screenshots left as an owner TODO comment (agents must not launch
   the GUI). 64→91 lines, zero competitor mentions.
-- [ ] Cycle close-out: version 0.5.0 bumped consistently, tag
+- [x] Cycle close-out: version 0.5.0 bumped consistently, tag
   v0.5.0-alpha.1, zh-TW release notes, prerelease published (publishing
-  pre-releases is delegated; final releases remain user-gated)
+  pre-releases is delegated; final releases remain user-gated).
+  Version bumped across tauri.conf.json/package.json/Cargo.toml plus
+  both lockfiles; DIRECTION §2 updated to the v0.5 completion state
+  in the same PR. Cycle totals: 21 items across five tracks, every
+  danger item adversarially reviewed (one REJECT caught a P1 before
+  it could ship), six issues closed, six follow-ups filed, tests
+  333/572 → 423/763.
 
 ## Explicit non-goals
 
