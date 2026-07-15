@@ -10,6 +10,10 @@ mod fsguard;
 // test`, so the whole file is gated here rather than per-item.
 #[cfg(test)]
 mod fuzz_roundtrip;
+// Fuzz-only content for the large-file chunk-paging subsystem (chunk.rs /
+// lineindex.rs) -- same rationale as fuzz_roundtrip above.
+#[cfg(test)]
+mod fuzz_paging;
 mod hexdump;
 mod linebreak;
 mod lineindex;
