@@ -22,6 +22,17 @@ export interface Messages {
   "tabs.closeAria": (title: string) => string;
   "tabs.newTabAria": string;
 
+  // Tab-strip right-click menu (ROADMAP.md Track C "Tab context menu");
+  // see main.ts's showTabContextMenu. Reveal has two platform-variant
+  // labels rather than one neutral string — chosen to match each OS's own
+  // familiar terminology (macOS Finder / Windows File Explorer), same as
+  // this app already picks a platform-appropriate default line ending.
+  "tabs.closeOthers": string;
+  "tabs.closeTabsToRight": string;
+  "tabs.copyPath": string;
+  "tabs.revealInFinder": string;
+  "tabs.revealInExplorer": string;
+
   "statusbar.noFile": string;
   "statusbar.cursor": (line: number, column: number) => string;
   "statusbar.encodingWithBom": (encoding: string) => string;
@@ -354,6 +365,12 @@ const en: Messages = {
 
   "tabs.closeAria": (title) => `Close ${title}`,
   "tabs.newTabAria": "New tab",
+
+  "tabs.closeOthers": "Close Others",
+  "tabs.closeTabsToRight": "Close Tabs to the Right",
+  "tabs.copyPath": "Copy Path",
+  "tabs.revealInFinder": "Reveal in Finder",
+  "tabs.revealInExplorer": "Reveal in File Explorer",
 
   "statusbar.noFile": "No file",
   "statusbar.cursor": (line, column) => `Ln ${line}, Col ${column}`,
@@ -694,6 +711,12 @@ const zhTW: Messages = {
   "tabs.closeAria": (title) => `關閉 ${title}`,
   "tabs.newTabAria": "新增分頁",
 
+  "tabs.closeOthers": "關閉其他分頁",
+  "tabs.closeTabsToRight": "關閉右側分頁",
+  "tabs.copyPath": "複製路徑",
+  "tabs.revealInFinder": "在 Finder 中顯示",
+  "tabs.revealInExplorer": "在檔案總管中顯示",
+
   "statusbar.noFile": "無檔案",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 欄`,
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
@@ -1002,6 +1025,12 @@ const ja: Messages = {
 
   "tabs.closeAria": (title) => `${title} を閉じる`,
   "tabs.newTabAria": "新しいタブ",
+
+  "tabs.closeOthers": "他のタブを閉じる",
+  "tabs.closeTabsToRight": "右側のタブを閉じる",
+  "tabs.copyPath": "パスをコピー",
+  "tabs.revealInFinder": "Finderで表示",
+  "tabs.revealInExplorer": "エクスプローラーで表示",
 
   "statusbar.noFile": "ファイルなし",
   "statusbar.cursor": (line, column) => `行 ${line}、列 ${column}`,
@@ -1328,6 +1357,12 @@ const zhCN: Messages = {
 
   "tabs.closeAria": (title) => `关闭 ${title}`,
   "tabs.newTabAria": "新建标签页",
+
+  "tabs.closeOthers": "关闭其他标签页",
+  "tabs.closeTabsToRight": "关闭右侧标签页",
+  "tabs.copyPath": "复制路径",
+  "tabs.revealInFinder": "在 Finder 中显示",
+  "tabs.revealInExplorer": "在文件资源管理器中显示",
 
   "statusbar.noFile": "无文件",
   "statusbar.cursor": (line, column) => `第 ${line} 行，第 ${column} 列`,

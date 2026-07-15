@@ -7,6 +7,7 @@ import {
   open as openDialog,
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   characterBeforeCursor,
   contentOf,
@@ -132,7 +133,14 @@ import {
   updateSuspiciousChars,
   updateTextStats,
 } from "./statusbar";
-import { isEffectivelyReadOnly, TabStore, type Doc } from "./tabs";
+import {
+  closeSequentially,
+  idsOtherThan,
+  idsToTheRightOf,
+  isEffectivelyReadOnly,
+  TabStore,
+  type Doc,
+} from "./tabs";
 
 const defaultLineEnding = navigator.userAgent.includes("Windows")
   ? "CRLF"
@@ -156,6 +164,7 @@ const tabs = new TabStore(document.querySelector<HTMLElement>("#tabbar")!, {
   // replays on next launch — persist immediately, same timing as every
   // other order-affecting tab operation (activate/closeTab/openFile).
   onReorder: () => persistSession(),
+  onContextMenu: (id, tab) => showTabContextMenu(id, tab),
 });
 
 // ---- Word/char/line count status-bar segment (ROADMAP.md v0.4 Track C).
@@ -1921,6 +1930,81 @@ function showLineEndingMenu(anchor: HTMLElement): void {
       label: t("menu.lineEndingCr"),
       checked: doc.lineEnding === "CR",
       action: () => setLineEnding("CR"),
+    },
+  ]);
+}
+
+/** Tab-strip right-click menu (ROADMAP.md Track C "Tab context menu"):
+ *  Close Others and Close Tabs to the Right operate on the id set
+ *  snapshotted at click time (tabs.ts's idsOtherThan/idsToTheRightOf) and
+ *  close each target exactly the way a manual close does — including the
+ *  dirty-doc confirm dialog — one at a time; closeSequentially stops the
+ *  moment any one of them is cancelled, leaving the rest of that batch
+ *  untouched, same as if the user had cancelled a manual close partway
+ *  through closing several tabs by hand. Both are disabled when their
+ *  target set is empty (nothing to close), mirroring how the File > Reopen
+ *  Closed Tab item is disabled while its own stack is empty.
+ *
+ *  Copy Path and Reveal in Finder/Explorer need a real file on disk, so
+ *  both are disabled for an untitled tab (doc.path === null). Reveal goes
+ *  through the already-bundled opener plugin's revealItemInDir — the
+ *  `opener:default` permission set already in capabilities/default.json
+ *  documents allow-reveal-item-in-dir as included (see
+ *  src-tauri/gen/schemas/desktop-schema.json), so no capability change was
+ *  needed. Copy Path uses the standard navigator.clipboard Web API rather
+ *  than a new Tauri clipboard-plugin dependency, per CLAUDE.md's "no new
+ *  runtime dependencies without strong justification" — this repo has no
+ *  clipboard usage to date. The reveal label is chosen per platform the
+ *  same way defaultLineEnding picks CRLF vs LF above: everything that
+ *  isn't Windows is treated as the macOS/Finder case, matching this app's
+ *  Tier 1 platform set (ARCHITECTURE.md).
+ *
+ *  Both actions are best-effort: a failed clipboard write or a file that
+ *  vanished before Reveal could run isn't data-loss-risk the way the
+ *  save/decode paths this app treats as [danger] are, so neither surfaces
+ *  its own error dialog (mirrors syncReopenClosedTabState's IPC calls). */
+function showTabContextMenu(id: number, anchor: HTMLElement): void {
+  const doc = tabs.get(id);
+  if (!doc) return;
+  const path = doc.path;
+  const others = idsOtherThan(tabs.docs, id);
+  const toRight = idsToTheRightOf(tabs.docs, id);
+  const isWindows = navigator.userAgent.includes("Windows");
+
+  showMenu(anchor, [
+    {
+      label: t("tabs.closeOthers"),
+      disabled: others.length === 0,
+      action: () =>
+        void closeSequentially(others, closeTab, (i) => tabs.get(i) !== null),
+    },
+    {
+      label: t("tabs.closeTabsToRight"),
+      disabled: toRight.length === 0,
+      action: () =>
+        void closeSequentially(toRight, closeTab, (i) => tabs.get(i) !== null),
+    },
+    {
+      label: t("tabs.copyPath"),
+      disabled: path === null,
+      action: () => {
+        if (path) {
+          void navigator.clipboard.writeText(path).catch(() => {
+            // Best-effort; see doc comment above.
+          });
+        }
+      },
+    },
+    {
+      label: isWindows ? t("tabs.revealInExplorer") : t("tabs.revealInFinder"),
+      disabled: path === null,
+      action: () => {
+        if (path) {
+          void revealItemInDir(path).catch(() => {
+            // Best-effort; see doc comment above.
+          });
+        }
+      },
     },
   ]);
 }

@@ -1284,9 +1284,24 @@ byte-preservation machinery)
   MenuItem (`sync_reopen_closed_tab_menu`, disabled while the stack
   is empty), LABELS across four locales with the pinned-translation
   test. 725 vitest (+11) + 423 Rust (+1).
-- [ ] Tab context menu: Close Others / Close to the Right / Copy Path /
+- [x] Tab context menu: Close Others / Close to the Right / Copy Path /
   Reveal in Finder(Explorer) via the already-bundled opener plugin
-  (zero new dependencies; path items disabled for untitled tabs)
+  (zero new dependencies; path items disabled for untitled tabs).
+  Batch closes snapshot the target id set at click time and await
+  each through the existing closeTab flow — a cancelled confirm
+  (detected via stillOpen, closeTab doesn't throw) stops the chain;
+  empty target sets disable their items (the Reopen Closed Tab
+  precedent). Copy Path uses navigator.clipboard (this codebase's
+  first clipboard use — zero new dependencies); reveal labels are
+  platform-variant (Finder vs 檔案總管) via the existing userAgent
+  convention; opener's default capability already includes
+  allow-reveal-item-in-dir, so no capability change. Necessary
+  drive-by: showMenu now picks its opening direction from available
+  space — the previous always-above placement (fine for status-bar
+  anchors) would have rendered a top-anchored tab menu almost
+  entirely off-window; existing callers are unaffected (their
+  above-space always wins). i18n across four locales. 746 vitest
+  (+21).
 - [ ] Go to line supports line:column (column positioned within the
   loaded window in large-file mode)
 
