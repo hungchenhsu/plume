@@ -314,6 +314,15 @@ export interface Messages {
   ) => string;
   "dialog.normalizeUnrepresentableConfirm": string;
   "dialog.normalizeFailedTitle": string;
+  /** Shown instead of applying the result (issue #158) when the document
+   *  changed — a same-tab edit racing one of `runNormalizeFlow`'s own
+   *  await gaps (see asyncguard.ts's "edited" verdict) — while a confirm
+   *  dialog or the representability IPC round trip was in flight. Not
+   *  shown for a tab switch or the tab closing during the same window:
+   *  those are silent, same reasoning as `mojibake.staleContentTitle`/
+   *  `mojibake.staleContentMessage`, whose wording this mirrors. */
+  "dialog.normalizeStaleTitle": string;
+  "dialog.normalizeStaleMessage": string;
   /** Lazy byte-drift detection (issue #96 (2/3)) [danger]: the one-time,
    *  informed-consent dialog shown before a document's first save this
    *  session when src-tauri/src/bytedrift.rs's `check_byte_drift` finds
@@ -667,6 +676,9 @@ const en: Messages = {
     `Normalize anyway?`,
   "dialog.normalizeUnrepresentableConfirm": "Normalize Anyway",
   "dialog.normalizeFailedTitle": "Normalize failed",
+  "dialog.normalizeStaleTitle": "Normalize not applied",
+  "dialog.normalizeStaleMessage":
+    "The document changed while Normalize was being prepared, so it wasn't applied — your edits are safe. Run Normalize again if you still want to.",
   "dialog.byteDriftTitle": "Byte drift warning",
   "dialog.byteDriftMessage": (encoding) =>
     `This file contains ${encoding} byte sequences that can't be preserved exactly. ` +
@@ -985,6 +997,9 @@ const zhTW: Messages = {
     `以 ${encoding} 儲存將在正規化後遺失 ${count} 個字元：${samples.join("、")}${truncated ? " 等" : ""}。仍要正規化嗎？`,
   "dialog.normalizeUnrepresentableConfirm": "仍要正規化",
   "dialog.normalizeFailedTitle": "正規化失敗",
+  "dialog.normalizeStaleTitle": "未套用正規化",
+  "dialog.normalizeStaleMessage":
+    "正規化準備期間文件內容已變更，因此未套用——你的編輯內容已保留。如仍需要，請重新執行正規化。",
   "dialog.byteDriftTitle": "位元組漂移警告",
   "dialog.byteDriftMessage": (encoding) =>
     `此檔案含有 ${encoding} 中無法逐位元組保留的位元組序列，儲存將把它們正規化為標準形式——` +
@@ -1319,6 +1334,9 @@ const ja: Messages = {
     `${truncated ? " など" : ""}。それでも正規化しますか？`,
   "dialog.normalizeUnrepresentableConfirm": "このまま正規化",
   "dialog.normalizeFailedTitle": "正規化に失敗しました",
+  "dialog.normalizeStaleTitle": "正規化は適用されませんでした",
+  "dialog.normalizeStaleMessage":
+    "正規化の準備中にドキュメントの内容が変更されたため、適用されませんでした（編集内容は保持されています）。必要であれば、もう一度正規化を実行してください。",
   "dialog.byteDriftTitle": "バイトドリフトの警告",
   "dialog.byteDriftMessage": (encoding) =>
     `このファイルには、正確に保持できない ${encoding} のバイト列が含まれています。保存すると` +
@@ -1635,6 +1653,9 @@ const zhCN: Messages = {
     `以 ${encoding} 保存将在规范化后丢失 ${count} 个字符：${samples.join("、")}${truncated ? " 等" : ""}。仍要规范化吗？`,
   "dialog.normalizeUnrepresentableConfirm": "仍要规范化",
   "dialog.normalizeFailedTitle": "规范化失败",
+  "dialog.normalizeStaleTitle": "未应用规范化",
+  "dialog.normalizeStaleMessage":
+    "规范化准备期间文档内容已变更，因此未应用——你的编辑内容已保留。如仍需要，请重新执行规范化。",
   "dialog.byteDriftTitle": "字节漂移警告",
   "dialog.byteDriftMessage": (encoding) =>
     `此文件包含无法逐字节保留的 ${encoding} 字节序列，保存将把它们规范化为标准形式——` +
