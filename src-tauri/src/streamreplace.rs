@@ -43,10 +43,107 @@
 //! this module for a second caller. Only the search/replace-specific
 //! looping and carry semantics (`run_replace_loop`, `replace_pass`) stay
 //! here.
+//!
+//! ## Read-chunk byte-passthrough (issue #96, part 1/3)
+//!
+//! `encoding_rs`'s decode mapping for several legacy multi-byte encodings
+//! (Big5, Shift_JIS and GBK among them) is not injective — more than one
+//! on-disk byte sequence can decode to the same character, while `encode`
+//! always emits only that character's single canonical byte sequence (see
+//! `encoding.rs`'s round-trip contract doc comment). A naive whole-file
+//! decode -> replace -> re-encode therefore risks silently canonicalizing
+//! bytes the user never asked to touch, anywhere in the file, even when
+//! the actual search matched only once. `run_replace_loop` narrows that
+//! blast radius to read-chunk granularity: it copies a chunk's *raw*
+//! bytes straight to the output — bypassing re-encoding, and therefore
+//! bypassing any canonicalization, entirely — whenever the encoding is
+//! stateless (ISO-2022-JP is excluded outright — see below) and all of
+//! the following hold for that chunk:
+//!
+//! 1. **No match involvement**: the chunk's work buffer (this round's
+//!    decoded text, plus anything carried in from the previous round)
+//!    contains zero matches, and `replace_pass` leaves nothing unresolved
+//!    to carry into the next round.
+//! 2. **No carry-in**: the previous round didn't carry any unresolved
+//!    match-candidate text into this round's work buffer.
+//! 3. **No decoder pending on either edge**: this round's decode didn't
+//!    consume any bytes the streaming `Decoder` had buffered internally
+//!    from the *previous* chunk (entry pending), and this round's decode
+//!    didn't itself leave an incomplete trailing character buffered for
+//!    the *next* chunk (exit pending). Both directions matter — either
+//!    one means this round's raw bytes alone no longer correspond 1:1 to
+//!    this round's decoded text, so writing them verbatim would drop or
+//!    duplicate bytes relative to the neighboring chunk.
+//!
+//! `encoding_rs`'s `Decoder` doesn't expose its internal pending-bytes
+//! state directly, so condition 3 is checked with a self-sufficiency
+//! probe (`chunk_is_decode_self_sufficient`) instead: decode this round's
+//! raw bytes alone, from scratch, forced to finalize (`last: true`), and
+//! require the result to match this round's real (streaming) decoded text
+//! exactly, with no malformed sequences either. See that function's doc
+//! comment for why this is a conservative (never-*unsafe*, only
+//! potentially over-cautious) proxy. It costs one extra decode per chunk,
+//! so — per its call site in `run_replace_loop` — it only ever runs after
+//! the cheap conditions 1 and 2 already hold.
+//!
+//! Chunk 0 is unconditionally excluded from passthrough whenever a BOM
+//! was written (`bom_len > 0`): `run_replace_loop` re-reads the file from
+//! offset 0, so chunk 0's raw bytes still physically contain the BOM that
+//! `stream_replace_in_file` already wrote once, verbatim, before the loop
+//! started (see that function's own BOM doc comment) — passing chunk 0's
+//! raw bytes through as well would duplicate it.
+//!
+//! **Stateful encodings are excluded from passthrough entirely.**
+//! ISO-2022-JP — the one encoding in encoding_rs whose *encoder* carries
+//! state across calls (a shift-mode flag deciding whether the next call
+//! needs an escape sequence) — is reachable here via `encoding.rs`'s
+//! chardetng auto-detection even though the frontend's own encoding
+//! picker never offers it, and it always takes the full re-encode path.
+//! The reason is subtle enough to spell out: conditions 1–3 above are
+//! *text-level and decoder-level* guarantees, and even keeping the
+//! shared encoder running every round (see the next paragraph) cannot
+//! make passthrough safe for it. A passed-through chunk's raw bytes
+//! carry their own trailing shift state, while the shared encoder's
+//! state after encoding that same chunk's *text* is whatever its own
+//! (discarded) output ended in — and the two can diverge: e.g. a raw
+//! tail of `ESC(J` + letters ends the *file* in Roman mode, while the
+//! decoded text (plain letters) leaves the *encoder* in ASCII mode. The
+//! next chunk to be re-encoded then splices encoder-mode bytes onto a
+//! file that is in a different mode, and the result can decode cleanly
+//! into silently different text (an ASCII-mode `0x5C` backslash read in
+//! Roman mode is "¥") — worse than the canonicalization this feature
+//! exists to avoid. Re-encode output, by contrast, is shift-state
+//! self-consistent end to end, so ISO-2022-JP simply keeps the exact
+//! pre-passthrough behavior. See
+//! `iso_2022_jp_is_excluded_from_passthrough_keeping_content_correct`,
+//! the red-to-green regression built on exactly that construction.
+//!
+//! Every chunk is still *decoded* and *encoded* exactly as before,
+//! regardless of the passthrough decision — only which byte buffer
+//! actually gets written to `tmp` differs, and the encoder's return value
+//! is still checked for `had_unmappable` every round. For the stateless
+//! encodings passthrough actually applies to, the encoder state argument
+//! is moot by definition; keeping the encode call unconditional anyway
+//! preserves the unmappable-abort safety net's every-round coverage and
+//! keeps the loop's shape identical on both paths.
+//!
+//! Scope, deliberately: this is chunk-granularity preservation, not
+//! match-granularity. A chunk that contains an actual match is still
+//! re-encoded in full, including any non-injective byte pair elsewhere in
+//! that *same* chunk (see
+//! `matching_chunk_still_canonicalizes_non_injective_pair_in_same_chunk`).
+//! Narrowing further — so only the matched span itself is ever re-encoded
+//! and every other byte in a matching chunk is preserved too — is left
+//! for future work; issue #96 tracks it. `StreamReplaceReport`'s
+//! `unmatched_region_reencoded` flag discloses whether a run swept any
+//! zero-match chunk into re-encoding anyway (carry/pending-entangled with
+//! a neighboring match, or chunk 0 excluded under a BOM) — a coarse,
+//! honest signal reserved for a future informed-consent UI (issue #96
+//! parts 2/3); no frontend reads it yet.
 
 use crate::fsguard::Fingerprint;
 use crate::streamcodec::{decode_chunk, encode_chunk, read_chunk, CHUNK_BYTES};
-use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
+use encoding_rs::{Encoding, ISO_2022_JP, UTF_16BE, UTF_16LE};
 use serde::Serialize;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -56,6 +153,20 @@ use std::path::Path;
 pub struct StreamReplaceReport {
     pub replacements: u64,
     pub bytes_written: u64,
+    /// True when at least one chunk containing zero search matches was
+    /// still re-encoded rather than copied byte-identical to the output —
+    /// i.e. some region the user did not ask to change may have had its
+    /// on-disk byte representation canonicalized by one of `encoding_rs`'s
+    /// non-injective legacy encoding mappings (see the module doc comment
+    /// and issue #96). This can happen when a zero-match chunk is
+    /// carry/decoder-pending-entangled with a neighboring chunk, or when
+    /// it's chunk 0 of a file with a BOM. `false` means every re-encoded
+    /// byte lies within a chunk that itself contained at least one actual
+    /// match — the expected, minimal-scope case — and is always `false`
+    /// when `replacements == 0` (the file is never touched at all then).
+    /// Exposed for a future informed-consent UI (issue #96 parts 2/3); no
+    /// frontend currently reads this field.
+    pub unmatched_region_reencoded: bool,
 }
 
 /// Result of one [`replace_pass`] over a work buffer.
@@ -205,12 +316,115 @@ fn replace_pass(
     }
 }
 
-/// Run the streaming decode -> replace -> encode loop, writing encoded
-/// bytes to `tmp` as they're produced. `search`/`replace` have already
-/// been validated by the caller (non-empty search, both representable in
-/// `enc`). Returns `(replacements, bytes_written)`, where `bytes_written`
-/// covers only what this function wrote — not any BOM prefix the caller
-/// wrote to `tmp` beforehand.
+/// Result of streaming a whole file through [`run_replace_loop`]: the
+/// total replacement count, total bytes written (excluding any BOM prefix
+/// the caller wrote to `tmp` beforehand), and whether any zero-match chunk
+/// still had to be re-encoded rather than passed through byte-identical
+/// (see the module doc comment's three passthrough conditions, and
+/// [`StreamReplaceReport::unmatched_region_reencoded`], which this feeds
+/// directly).
+struct LoopOutcome {
+    replacements: u64,
+    bytes_written: u64,
+    unmatched_region_reencoded: bool,
+}
+
+/// Whether `raw` — this round's exact, unmodified source bytes — can be
+/// proven to decode in complete isolation from its neighboring chunks:
+/// decoding it from scratch with a brand-new decoder, forced to finalize
+/// (`last: true`), reproduces `decoded_text` (this round's actual
+/// contribution, already produced by the real streaming `decoder` shared
+/// across the whole [`run_replace_loop`] call) character-for-character,
+/// with no malformed sequences reported either.
+///
+/// This is the cheapest available proxy for the fact that `encoding_rs`'s
+/// streaming `Decoder` doesn't expose its internal pending-bytes state
+/// (see the module doc comment). It catches both directions condition 3
+/// needs, and it is conservative (can produce false negatives — an
+/// unnecessary skip of an actually-safe chunk — but never a false
+/// positive that would corrupt output):
+///
+/// - **Exit pending** (this round's raw bytes end with an incomplete
+///   trailing character, deferred by the real decoder to combine with the
+///   *next* chunk): forcing `last: true` on those same bytes here, in
+///   isolation, always makes `encoding_rs` treat that incomplete tail as a
+///   malformed sequence — this is deterministic per its own decode
+///   algorithm, not a coincidence to rely on. `had_errors` is then `true`,
+///   so this function returns `false` regardless of what the resulting
+///   text looks like.
+/// - **Entry pending** (this round's real decoded text *starts* with a
+///   character completed using bytes the *previous* chunk's raw buffer
+///   physically holds — bytes this round's `raw` never contains):
+///   decoding `raw` alone starts cold, with no such prefix available. For
+///   every encoding this module ever reaches (UTF-16 is rejected before
+///   any of this runs), a byte sequence's role — lead vs. trail, valid
+///   continuation vs. not — depends on where decoding starts, so a cold
+///   start almost always either hits a malformed sequence at the very
+///   first byte (caught the same way as above) or resynchronizes at a
+///   different byte alignment than the real decode did. A misaligned
+///   decode reproducing the *exact same* resulting string as the
+///   correctly-aligned real decode, across however much of the chunk
+///   follows, is not ruled out by construction, but is not achievable for
+///   any of the encodings this module supports without deliberately
+///   engineering the entire rest of the chunk byte-for-byte around the
+///   coincidence — not something a real file can do by accident, and
+///   conditions 1/2 already limit how much of the chunk this even applies
+///   to. A false negative here — an entangled chunk that this happens to
+///   still call self-sufficient — is not possible for a *different*
+///   reason worth spelling out: if it happened, chunk K's raw bytes would
+///   be written verbatim as if they were the whole of a character whose
+///   completing bytes actually live in chunk K-1, but chunk K-1 has its
+///   own, independent, fully deterministic exit-pending check (the first
+///   bullet above) — so the pending bytes it drops from *its* own
+///   decoded text are never separately written by K-1 either, since K-1's
+///   own passthrough eligibility is decided the same way. The one thing
+///   that would make this genuinely unsafe — chunk K-1 believing it
+///   safely passed through the pending bytes while chunk K also silently
+///   absorbed a misaligned reinterpretation of them — can't occur because
+///   K-1's check is deterministic, not probabilistic.
+///
+/// A fresh decoder is constructed with [`Encoding::new_decoder_without_bom_handling`]
+/// rather than the `_with_bom_removal` constructor `run_replace_loop`'s
+/// own shared `decoder` uses: for every non-UTF-8/UTF-16 encoding this
+/// module reaches, `encoding_rs`'s BOM-removal mode is already a no-op
+/// (confirmed against its `BomHandling::Remove` source — it only ever
+/// special-cases UTF-8/UTF-16BE/UTF-16LE), and for UTF-8, chunk 0 with a
+/// real BOM is already excluded from ever reaching this function by the
+/// `bom_len` check in `run_replace_loop`, while chunk 0 without a BOM (or
+/// any later chunk) never needs BOM stripping either. So the two
+/// constructors are behaviorally identical at every call site this
+/// function is actually reached from; `without_bom_handling` is simply
+/// simpler and additionally avoids a fresh, from-scratch decoder
+/// mistaking genuine mid-file content that happens to start with a
+/// BOM-like byte sequence (e.g. literal U+FEFF re-encoded to UTF-8's `EF
+/// BB BF`) for a BOM — which would only ever cost a conservative false
+/// negative here too, never a false positive, but is simplest to just not
+/// have to reason about.
+///
+/// Scope precondition: everything above establishes that `raw` and this
+/// round's decoded text correspond 1:1 in isolation — which equals "safe
+/// to write `raw` verbatim" only for *stateless* encodings, where a byte
+/// span's meaning never depends on preceding output. For a stateful
+/// encoding (ISO-2022-JP), a chunk can pass this check and still be
+/// unsafe to pass through, because its raw bytes' trailing *shift state*
+/// must additionally agree with the shared encoder's state — a
+/// file-level, cross-chunk property this per-chunk probe cannot see (see
+/// the module doc comment's stateful-exclusion section). That's why
+/// `run_replace_loop` gates passthrough on `enc != ISO_2022_JP` *before*
+/// this check ever runs: under that gate, self-sufficiency here is
+/// exactly segment-correctness.
+fn chunk_is_decode_self_sufficient(enc: &'static Encoding, raw: &[u8], decoded_text: &str) -> bool {
+    let mut fresh = enc.new_decoder_without_bom_handling();
+    let (fresh_text, had_errors) = decode_chunk(&mut fresh, raw, true);
+    !had_errors && fresh_text == decoded_text
+}
+
+/// Run the streaming decode -> replace -> encode loop, writing bytes to
+/// `tmp` as they're produced. `search`/`replace` have already been
+/// validated by the caller (non-empty search, both representable in
+/// `enc`). `bom_len` is the length of the BOM prefix (0 if none) the
+/// caller already wrote to `tmp` before calling this — see the module doc
+/// comment for why it unconditionally excludes chunk 0 from passthrough.
 ///
 /// The `carry` variable is the text-level companion to the `Decoder`'s own
 /// internal byte-level carry: the decoder already handles a multi-byte
@@ -225,6 +439,16 @@ fn replace_pass(
 /// fixed-length tail). A match is never missed for falling near or across
 /// a chunk seam (`match_spanning_chunk_boundary_is_found`,
 /// `match_fully_inside_chunk_near_seam_is_found`).
+///
+/// Every round still decodes and encodes exactly as before; only the
+/// *write* differs — this round's raw bytes are written verbatim, in
+/// place of the encoder's own output, exactly when the encoding is
+/// stateless (not ISO-2022-JP — see the module doc comment's
+/// stateful-exclusion section), all three passthrough conditions from
+/// the module doc comment hold, and this isn't chunk 0 of a BOM-prefixed
+/// file. See `chunk_is_decode_self_sufficient` for condition 3 and the
+/// module doc comment for why the encoder still runs unconditionally
+/// either way.
 fn run_replace_loop(
     source: &mut std::fs::File,
     tmp: &mut std::fs::File,
@@ -232,13 +456,25 @@ fn run_replace_loop(
     search: &str,
     replace: &str,
     case_sensitive: bool,
-) -> Result<(u64, u64), String> {
+    bom_len: usize,
+) -> Result<LoopOutcome, String> {
     let mut decoder = enc.new_decoder_with_bom_removal();
     let mut encoder = enc.new_encoder();
     let mut carry = String::new();
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut replacements = 0u64;
     let mut bytes_written = 0u64;
+    let mut unmatched_region_reencoded = false;
+    let mut is_first_chunk = true;
+    // Passthrough is only sound for stateless encodings: ISO-2022-JP (the
+    // one stateful encoder in encoding_rs) is excluded outright, because a
+    // passed-through chunk's raw bytes carry their own trailing shift
+    // state, which need not agree with the shared encoder's state after
+    // encoding that same chunk's text -- a later re-encoded chunk would
+    // then splice bytes onto a mode the file isn't actually in, silently
+    // corrupting content (see the module doc comment and
+    // `iso_2022_jp_is_excluded_from_passthrough_keeping_content_correct`).
+    let stateless_encoding = enc != ISO_2022_JP;
 
     loop {
         let n = read_chunk(source, &mut buf).map_err(|e| format!("Failed to read: {e}"))?;
@@ -251,10 +487,27 @@ fn run_replace_loop(
             ));
         }
 
+        let carry_in_was_empty = carry.is_empty();
         let work = carry + &decoded_text;
         let pass = replace_pass(&work, search, replace, case_sensitive, is_last);
         replacements += pass.count;
+        let no_match_and_no_carry_out = pass.count == 0 && pass.carry_from == work.len();
 
+        // Condition 3 (decoder self-sufficiency) is the only expensive
+        // check, so it only runs once the cheap ones (the stateless
+        // gate, conditions 1/2, and the BOM exclusion) already hold —
+        // see the module doc comment.
+        let bom_excludes_this_chunk = is_first_chunk && bom_len > 0;
+        let eligible_for_passthrough = stateless_encoding
+            && !bom_excludes_this_chunk
+            && no_match_and_no_carry_out
+            && carry_in_was_empty
+            && chunk_is_decode_self_sufficient(enc, &buf[..n], &decoded_text);
+
+        // Always encode — even when the output is about to be discarded
+        // in favor of the raw bytes below — to keep the encoder's own
+        // internal state (and the unmappable safety net) covering every
+        // round unconditionally; see the module doc comment.
         let (out_bytes, had_unmappable) = encode_chunk(&mut encoder, &pass.out, is_last);
         if had_unmappable {
             return Err(format!(
@@ -262,11 +515,22 @@ fn run_replace_loop(
                 enc.name()
             ));
         }
-        tmp.write_all(&out_bytes)
-            .map_err(|e| format!("Failed to write temp file: {e}"))?;
-        bytes_written += out_bytes.len() as u64;
+
+        if eligible_for_passthrough {
+            tmp.write_all(&buf[..n])
+                .map_err(|e| format!("Failed to write temp file: {e}"))?;
+            bytes_written += n as u64;
+        } else {
+            if pass.count == 0 {
+                unmatched_region_reencoded = true;
+            }
+            tmp.write_all(&out_bytes)
+                .map_err(|e| format!("Failed to write temp file: {e}"))?;
+            bytes_written += out_bytes.len() as u64;
+        }
 
         carry = work[pass.carry_from..].to_string();
+        is_first_chunk = false;
 
         if is_last {
             debug_assert!(
@@ -277,7 +541,11 @@ fn run_replace_loop(
         }
     }
 
-    Ok((replacements, bytes_written))
+    Ok(LoopOutcome {
+        replacements,
+        bytes_written,
+        unmatched_region_reencoded,
+    })
 }
 
 /// Captured once at the start of a long streaming operation and re-checked
@@ -349,11 +617,13 @@ fn verify_unchanged(path: &Path, original: &Fingerprint) -> Result<(), String> {
 ///    byte-identical, though: several legacy encodings (Big5, Shift_JIS
 ///    and GBK among them — see `encoding::encode`'s round-trip contract
 ///    note and issue #96 for the full analysis) are not injective, so an
-///    unreplaced byte sequence can
-///    still come back out re-encoded to a different, canonical byte
-///    sequence for the same character. This whole-file decode -> replace
-///    -> re-encode was never scoped to leave non-matching bytes
-///    untouched — see the module doc.
+///    unreplaced byte sequence can still come back out re-encoded to a
+///    different, canonical byte sequence for the same character *within a
+///    chunk that itself contains a match* — see
+///    `matching_chunk_still_canonicalizes_non_injective_pair_in_same_chunk`.
+///    A chunk with no match involvement at all is instead copied through
+///    byte-for-byte untouched — see the module doc comment's three
+///    passthrough conditions and `StreamReplaceReport::unmatched_region_reencoded`.
 /// 6. Before that commit, the file at `path` is re-stat'd and compared
 ///    against the [`Fingerprint`] captured right after the source was
 ///    opened: if its size, mtime, or (Unix) inode identity no longer
@@ -420,6 +690,7 @@ pub fn stream_replace_in_file(
         return Ok(StreamReplaceReport {
             replacements: 0,
             bytes_written: 0,
+            unmatched_region_reencoded: false,
         });
     }
 
@@ -469,10 +740,15 @@ pub fn stream_replace_in_file(
         &search,
         &replace,
         case_sensitive,
+        bom_len,
     );
 
     match outcome {
-        Ok((replacements, loop_bytes)) if replacements > 0 => {
+        Ok(LoopOutcome {
+            replacements,
+            bytes_written: loop_bytes,
+            unmatched_region_reencoded,
+        }) if replacements > 0 => {
             if let Err(e) = tmp_file.sync_all() {
                 drop(tmp_file);
                 let _ = std::fs::remove_file(&tmp_path);
@@ -493,6 +769,7 @@ pub fn stream_replace_in_file(
             Ok(StreamReplaceReport {
                 replacements,
                 bytes_written: bom_len as u64 + loop_bytes,
+                unmatched_region_reencoded,
             })
         }
         Ok(_) => {
@@ -501,6 +778,7 @@ pub fn stream_replace_in_file(
             Ok(StreamReplaceReport {
                 replacements: 0,
                 bytes_written: 0,
+                unmatched_region_reencoded: false,
             })
         }
         Err(e) => {
@@ -1182,5 +1460,535 @@ mod tests {
 
         assert!(verify_unchanged(&file, &fingerprint).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #96 (1/3): read-chunk byte-passthrough regression fixtures.
+    // These reference only the existing public `stream_replace_in_file`
+    // API (no new symbols), so they compile and run red against the
+    // pre-fix code: the whole file is decode -> replace -> re-encoded
+    // regardless of where the match falls, silently canonicalizing any
+    // non-injective legacy byte pair anywhere in the file.
+    // ------------------------------------------------------------------
+
+    /// Core red-to-green regression: a chunk containing zero search
+    /// matches must reach the output byte-for-byte identical to the
+    /// source, even when it contains one of `encoding_rs`'s known
+    /// non-injective Big5 byte pairs (`8E 69`, which decodes cleanly to
+    /// "箸" but Big5's own encoder always re-emits "箸" as the different,
+    /// canonical pair `BA E6` -- issue #96's direct verification). Before
+    /// the fix, this command re-encodes the entire file regardless of
+    /// where the match falls, so chunk 2 here would silently canonicalize.
+    ///
+    /// The fixture spans exactly two read chunks (`CHUNK_BYTES`): chunk 1
+    /// is ASCII filler containing the one match, chunk 2 is ASCII filler
+    /// with the `8E 69` pair spliced into its middle -- comfortably clear
+    /// of both chunk ends, so it can never be split across a seam. The
+    /// match and its same-length replacement keep chunk 1's re-encoded
+    /// length identical to its source length, so chunk 2 lands at the same
+    /// `CHUNK_BYTES` offset in both the original and the output, keeping
+    /// the byte-for-byte comparison direct.
+    #[test]
+    fn nonmatching_chunk_with_non_injective_big5_pair_stays_byte_identical() {
+        let dir = fixture_dir("big5-passthrough-nonmatching-chunk");
+        let file = dir.join("big.txt");
+
+        let pair_bytes: [u8; 2] = [0x8E, 0x69];
+        let (decoded_pair, pair_malformed) =
+            encoding_rs::BIG5.decode_without_bom_handling(&pair_bytes);
+        assert!(!pair_malformed);
+        assert_eq!(decoded_pair, "箸");
+        let (reencoded_pair, pair_unmappable) =
+            crate::encoding::encode(&decoded_pair, "Big5", false).unwrap();
+        assert!(!pair_unmappable);
+        assert_eq!(
+            reencoded_pair,
+            vec![0xBA, 0xE6],
+            "8E 69 must still canonicalize to BA E6 in this encoding_rs \
+             version, or this test's premise no longer holds"
+        );
+
+        let (marker_bytes, marker_unmappable) =
+            crate::encoding::encode("甲乙丙", "Big5", false).unwrap();
+        assert!(!marker_unmappable);
+        let (replacement_bytes, replacement_unmappable) =
+            crate::encoding::encode("丁戊己", "Big5", false).unwrap();
+        assert!(!replacement_unmappable);
+        assert_eq!(
+            marker_bytes.len(),
+            replacement_bytes.len(),
+            "keep chunk 2's offset fixed at exactly CHUNK_BYTES"
+        );
+
+        let head_len = CHUNK_BYTES / 2;
+        let tail_len = CHUNK_BYTES - head_len - marker_bytes.len();
+        let mut chunk1 = Vec::with_capacity(CHUNK_BYTES);
+        chunk1.extend(std::iter::repeat_n(b'x', head_len));
+        chunk1.extend_from_slice(&marker_bytes);
+        chunk1.extend(std::iter::repeat_n(b'x', tail_len));
+        assert_eq!(chunk1.len(), CHUNK_BYTES);
+
+        let chunk2_head = 2048usize;
+        let chunk2_tail = 2048usize;
+        let mut chunk2 = Vec::with_capacity(chunk2_head + pair_bytes.len() + chunk2_tail);
+        chunk2.extend(std::iter::repeat_n(b'y', chunk2_head));
+        chunk2.extend_from_slice(&pair_bytes);
+        chunk2.extend(std::iter::repeat_n(b'y', chunk2_tail));
+        assert!(chunk2.len() < CHUNK_BYTES);
+
+        let mut bytes = Vec::with_capacity(chunk1.len() + chunk2.len());
+        bytes.extend_from_slice(&chunk1);
+        bytes.extend_from_slice(&chunk2);
+
+        let (_, fixture_malformed) = encoding_rs::BIG5.decode_without_bom_handling(&bytes);
+        assert!(!fixture_malformed, "fixture must be well-formed Big5");
+        std::fs::write(&file, &bytes).unwrap();
+
+        let report = stream_replace_in_file(
+            file.to_string_lossy().into_owned(),
+            "甲乙丙".to_string(),
+            "丁戊己".to_string(),
+            "Big5".to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(report.replacements, 1);
+        assert!(
+            !report.unmatched_region_reencoded,
+            "chunk 2 has no match and must be reported as passed through, \
+             not re-encoded"
+        );
+        let on_disk = std::fs::read(&file).unwrap();
+        assert_eq!(on_disk.len(), bytes.len());
+
+        let mut expected_chunk1 = Vec::with_capacity(CHUNK_BYTES);
+        expected_chunk1.extend(std::iter::repeat_n(b'x', head_len));
+        expected_chunk1.extend_from_slice(&replacement_bytes);
+        expected_chunk1.extend(std::iter::repeat_n(b'x', tail_len));
+        assert_eq!(
+            &on_disk[..CHUNK_BYTES],
+            &expected_chunk1[..],
+            "matched chunk 1 must reflect the replacement"
+        );
+
+        // The crux of the fix: chunk 2 -- unmatched, containing the known
+        // non-injective Big5 pair -- must be byte-for-byte identical to
+        // the original. Before the fix this becomes BA E6.
+        assert_eq!(
+            &on_disk[CHUNK_BYTES..],
+            &chunk2[..],
+            "unmatched chunk 2 (containing Big5 8E 69) must be \
+             byte-identical to the original"
+        );
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Contract pin for the fix's deliberate scope limit: a chunk that
+    /// *does* contain a match is still fully re-encoded, including any
+    /// non-injective byte pair elsewhere in that same chunk -- passthrough
+    /// only ever applies at chunk granularity to a chunk with zero match
+    /// involvement (see the module doc comment). Match-level (rather than
+    /// chunk-level) byte preservation is explicitly left as future work
+    /// (issue #96).
+    #[test]
+    fn matching_chunk_still_canonicalizes_non_injective_pair_in_same_chunk() {
+        let dir = fixture_dir("big5-same-chunk-canonicalizes");
+        let file = dir.join("doc.txt");
+
+        let pair_bytes: [u8; 2] = [0x8E, 0x69]; // 箸, canonicalizes to BA E6
+        let (marker_bytes, marker_unmappable) =
+            crate::encoding::encode("甲乙丙", "Big5", false).unwrap();
+        assert!(!marker_unmappable);
+        let (replacement_bytes, replacement_unmappable) =
+            crate::encoding::encode("丁戊己", "Big5", false).unwrap();
+        assert!(!replacement_unmappable);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&pair_bytes);
+        bytes.extend_from_slice(b"filler ");
+        bytes.extend_from_slice(&marker_bytes);
+        bytes.extend_from_slice(b" more filler");
+
+        let (_, fixture_malformed) = encoding_rs::BIG5.decode_without_bom_handling(&bytes);
+        assert!(!fixture_malformed);
+        std::fs::write(&file, &bytes).unwrap();
+
+        let report = stream_replace_in_file(
+            file.to_string_lossy().into_owned(),
+            "甲乙丙".to_string(),
+            "丁戊己".to_string(),
+            "Big5".to_string(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(report.replacements, 1);
+        assert!(
+            !report.unmatched_region_reencoded,
+            "the only chunk that exists contains the match itself, so \
+             nothing *unmatched* was swept into re-encoding"
+        );
+
+        let on_disk = std::fs::read(&file).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[0xBA, 0xE6]); // canonicalized
+        expected.extend_from_slice(b"filler ");
+        expected.extend_from_slice(&replacement_bytes);
+        expected.extend_from_slice(b" more filler");
+        assert_eq!(
+            on_disk, expected,
+            "the whole matching chunk -- including the non-injective pair \
+             -- is re-encoded and canonicalized; this is the accepted, \
+             documented scope limit, not a bug"
+        );
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Adversarial-style regression for the decoder-pending condition: a
+    /// known non-injective Big5 pair (`8E 69`) deliberately split so its
+    /// lead byte is the very last byte of chunk 1's raw read and its trail
+    /// byte is the very first byte of chunk 2's raw read. Neither chunk
+    /// may passthrough (chunk 1 has decoder exit-pending, chunk 2 has
+    /// decoder entry-pending), so both must fall back to normal
+    /// re-encoding, and the result must match a whole-buffer decode ->
+    /// replace -> re-encode oracle exactly: the split pair still
+    /// canonicalizes to `BA E6` no matter which side of the seam it's
+    /// read from. This is the case passthrough must never attempt, however
+    /// tempting a naive "no match in either chunk" check might look.
+    #[test]
+    fn non_injective_pair_split_across_chunk_seam_falls_back_to_reencoding() {
+        let dir = fixture_dir("big5-split-pair-seam");
+        let file = dir.join("doc.txt");
+
+        let (marker_bytes, marker_unmappable) =
+            crate::encoding::encode("甲乙丙", "Big5", false).unwrap();
+        assert!(!marker_unmappable);
+        let (replacement_bytes, replacement_unmappable) =
+            crate::encoding::encode("丁戊己", "Big5", false).unwrap();
+        assert!(!replacement_unmappable);
+        assert_eq!(marker_bytes.len(), replacement_bytes.len());
+
+        // Chunk 1 (exactly CHUNK_BYTES): filler + one match, comfortably
+        // clear of the seam, filler again, then a lone Big5 lead byte
+        // (0x8E) as literally the chunk's last byte -- an incomplete
+        // character sitting right at the chunk-read boundary.
+        let head_len = CHUNK_BYTES / 2;
+        let tail_len = CHUNK_BYTES - head_len - marker_bytes.len() - 1;
+        let mut bytes = Vec::with_capacity(CHUNK_BYTES + 4096);
+        bytes.extend(std::iter::repeat_n(b'x', head_len));
+        bytes.extend_from_slice(&marker_bytes);
+        bytes.extend(std::iter::repeat_n(b'x', tail_len));
+        bytes.push(0x8E);
+        assert_eq!(bytes.len(), CHUNK_BYTES);
+        // Chunk 2: the pair's trail byte first, completing 箸 across the
+        // seam, then plain filler, no match -- short of a full chunk so
+        // it reads as the final round.
+        bytes.push(0x69);
+        bytes.extend(std::iter::repeat_n(b'y', 4096));
+
+        let (_, fixture_malformed) = encoding_rs::BIG5.decode_without_bom_handling(&bytes);
+        assert!(!fixture_malformed, "fixture must be well-formed Big5");
+        std::fs::write(&file, &bytes).unwrap();
+
+        let decoded_before = crate::encoding::decode_with(&bytes, "Big5").unwrap();
+        assert!(!decoded_before.malformed);
+        let expected_content = decoded_before.content.replace("甲乙丙", "丁戊己");
+        let (expected_bytes, expected_unmappable) =
+            crate::encoding::encode(&expected_content, "Big5", false).unwrap();
+        assert!(!expected_unmappable);
+        assert_ne!(
+            expected_bytes, bytes,
+            "the fixture's split pair must actually canonicalize on a \
+             full re-encode, or this test doesn't exercise anything"
+        );
+
+        let report = stream_replace_in_file(
+            file.to_string_lossy().into_owned(),
+            "甲乙丙".to_string(),
+            "丁戊己".to_string(),
+            "Big5".to_string(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(report.replacements, 1);
+
+        let on_disk = std::fs::read(&file).unwrap();
+        assert_eq!(
+            on_disk, expected_bytes,
+            "a character split exactly across the chunk-read seam must \
+             still canonicalize via re-encoding on both sides -- \
+             passthrough must never attempt this"
+        );
+        assert!(
+            on_disk.windows(2).any(|w| w == [0xBA, 0xE6]),
+            "the split pair must have been canonicalized to BA E6 \
+             somewhere in the output"
+        );
+        assert!(
+            !on_disk.windows(2).any(|w| w == [0x8E, 0x69]),
+            "the original split-pair bytes must not survive verbatim"
+        );
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Adversarial-review finding: `run_replace_loop` re-reads the file
+    /// from offset 0, so chunk 0's raw bytes still physically include the
+    /// BOM even though the BOM was already written once by
+    /// `stream_replace_in_file` itself before the loop starts. If chunk 0
+    /// were otherwise passthrough-eligible (no match, no carry,
+    /// self-sufficient decode -- exactly what a BOM-prefixed file whose
+    /// only match falls in a later chunk produces), naively passing its
+    /// raw bytes through would duplicate the BOM. `bom_len > 0` must
+    /// unconditionally exclude chunk 0 from passthrough regardless of the
+    /// other conditions.
+    #[test]
+    fn bom_not_duplicated_when_first_chunk_has_no_match() {
+        let dir = fixture_dir("bom-first-chunk-passthrough-excluded");
+        let file = dir.join("doc.txt");
+
+        let bom = [0xEFu8, 0xBBu8, 0xBFu8];
+        let head_len = CHUNK_BYTES - bom.len();
+        let mut bytes = Vec::with_capacity(CHUNK_BYTES + 4096);
+        bytes.extend_from_slice(&bom);
+        bytes.extend(std::iter::repeat_n(b'a', head_len));
+        assert_eq!(
+            bytes.len(),
+            CHUNK_BYTES,
+            "chunk 0 must be exactly one full read chunk, entirely \
+             match-free"
+        );
+        bytes.extend_from_slice(b"MARKER");
+        bytes.extend(std::iter::repeat_n(b'b', 1024));
+
+        std::fs::write(&file, &bytes).unwrap();
+
+        let report = stream_replace_in_file(
+            file.to_string_lossy().into_owned(),
+            "MARKER".to_string(),
+            "TOKEN!".to_string(), // same length: keeps the length math simple
+            "UTF-8".to_string(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(report.replacements, 1);
+
+        let on_disk = std::fs::read(&file).unwrap();
+        assert_eq!(&on_disk[..3], &bom, "exactly one BOM must open the file");
+        assert_ne!(
+            &on_disk[3..6],
+            &bom,
+            "the BOM must not be written a second time right after itself"
+        );
+        assert_eq!(
+            on_disk.len(),
+            bytes.len(),
+            "no extra BOM bytes may have snuck in (MARKER -> TOKEN! is \
+             length-preserving)"
+        );
+
+        let decoded = crate::encoding::decode_auto(&on_disk);
+        assert_eq!(decoded.encoding, "UTF-8");
+        assert!(decoded.had_bom);
+        assert!(
+            decoded.content.starts_with('a'),
+            "no stray leading BOM character in the decoded text"
+        );
+        assert!(decoded.content.contains("TOKEN!"));
+        assert!(!decoded.content.contains("MARKER"));
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Direct, fast unit coverage for the passthrough-eligibility helper
+    /// itself, using all three of issue #96's directly-verified
+    /// non-injective byte pairs (the large fixture tests above, for CI
+    /// cost reasons, only exercise the full `stream_replace_in_file`
+    /// pipeline for Big5). Each pair, decoded in complete isolation
+    /// exactly as a lone, self-contained chunk would be, must be judged
+    /// self-sufficient — and each pair's re-encoding must independently
+    /// be confirmed to canonicalize to a *different* byte sequence, or
+    /// this test (and the risk it documents) would be exercising nothing.
+    #[test]
+    fn chunk_is_decode_self_sufficient_for_all_three_known_non_injective_pairs() {
+        let cases: &[(&'static Encoding, &[u8], &str, &[u8])] = &[
+            (encoding_rs::BIG5, &[0x8E, 0x69], "箸", &[0xBA, 0xE6]),
+            (encoding_rs::SHIFT_JIS, &[0x87, 0x90], "≒", &[0x81, 0xE0]),
+            (encoding_rs::GBK, &[0xA2, 0xE3], "€", &[0x80]),
+        ];
+        for (enc, raw, expected_char, expected_reencoded) in cases {
+            let mut decoder = enc.new_decoder_with_bom_removal();
+            let (decoded_text, had_errors) = decode_chunk(&mut decoder, raw, true);
+            assert!(!had_errors, "{}: must decode cleanly", enc.name());
+            assert_eq!(decoded_text, *expected_char, "{}", enc.name());
+
+            assert!(
+                chunk_is_decode_self_sufficient(enc, raw, &decoded_text),
+                "{}: an isolated, complete, non-split pair must be judged \
+                 self-sufficient",
+                enc.name()
+            );
+
+            let mut encoder = enc.new_encoder();
+            let (reencoded, had_unmappable) = encode_chunk(&mut encoder, &decoded_text, true);
+            assert!(!had_unmappable, "{}", enc.name());
+            assert_eq!(
+                &reencoded[..],
+                *expected_reencoded,
+                "{}: must still canonicalize on re-encode, or this test's \
+                 premise no longer holds",
+                enc.name()
+            );
+            assert_ne!(
+                &reencoded[..],
+                *raw,
+                "{}: confirms passthrough is actually load-bearing here",
+                enc.name()
+            );
+        }
+    }
+
+    /// Adversarial-review P1 regression (stateful-encoder shift-state
+    /// mismatch): passthrough writes a chunk's *raw bytes*, whose trailing
+    /// shift state (for ISO-2022-JP, the one stateful encoder in
+    /// encoding_rs) can differ from the shared `Encoder`'s own state after
+    /// encoding that same chunk's text -- so a later re-encoded chunk's
+    /// bytes splice onto a mode the decoder isn't actually in at that
+    /// point in the file.
+    ///
+    /// Construction note: the review's original sketch put a trailing
+    /// `ESC(B` after a kanji (raw tail: ASCII mode; encoder after "...亜":
+    /// JIS mode) with the next chunk opening on another escape -- but
+    /// encoding_rs (per the WHATWG spec's output-flag rule, verified in
+    /// its `iso_2022_jp.rs` source) treats an escape sequence immediately
+    /// following another escape sequence as malformed, so that exact file
+    /// can't exist as a clean fixture. The same root divergence has a
+    /// fully well-formed variant via the *Roman* (`ESC(J`) mode instead:
+    /// chunk 1 (exactly CHUNK_BYTES; no match; self-sufficient -- cold
+    /// and streaming decodes agree) is ASCII filler whose tail switches
+    /// to Roman mode for its last few 'a's. Roman-mode 'a' decodes as
+    /// plain "a", so chunk 1's *decoded text* is pure ASCII and the
+    /// shared encoder (which never enters Roman mode on its own) ends
+    /// chunk 1 in *ASCII* mode -- while the raw bytes end in *Roman*
+    /// mode. Chunk 2's decoded text starts with a backslash (`ESC(B \`
+    /// in the raw file) and contains the match; the encoder, believing
+    /// itself in ASCII mode, emits `\` as a bare `0x5C` with no mode
+    /// switch. Spliced after chunk 1's raw bytes, that `0x5C` sits in
+    /// Roman mode -- where it decodes, cleanly (`had_errors: false`), as
+    /// "¥" (U+00A5). Silent corruption of content the user never
+    /// touched. Red before ISO-2022-JP was excluded from passthrough;
+    /// green after (it always takes the full re-encode path, whose
+    /// output is shift-state self-consistent end to end -- exactly the
+    /// pre-passthrough behavior).
+    #[test]
+    fn iso_2022_jp_is_excluded_from_passthrough_keeping_content_correct() {
+        let dir = fixture_dir("iso2022jp-stateful-excluded");
+        let file = dir.join("doc.txt");
+
+        let esc_roman: [u8; 3] = [0x1B, 0x28, 0x4A]; // ESC ( J -> Roman mode
+        let esc_ascii: [u8; 3] = [0x1B, 0x28, 0x42]; // ESC ( B -> ASCII mode
+
+        // Chunk 1: exactly CHUNK_BYTES of what decodes to pure 'a'
+        // filler, but whose raw tail is `ESC(J` + 8 Roman-mode 'a's --
+        // leaving the raw byte stream in Roman mode while the decoded
+        // text gives the encoder no reason to leave ASCII mode.
+        let roman_tail_len = 8usize;
+        let filler_len = CHUNK_BYTES - esc_roman.len() - roman_tail_len;
+        let mut bytes = Vec::with_capacity(CHUNK_BYTES + 4096);
+        bytes.extend(std::iter::repeat_n(b'a', filler_len));
+        bytes.extend_from_slice(&esc_roman);
+        bytes.extend(std::iter::repeat_n(b'a', roman_tail_len));
+        assert_eq!(bytes.len(), CHUNK_BYTES);
+
+        // Chunk 2: back to ASCII mode, then a backslash -- the character
+        // whose byte (0x5C) means "\" in ASCII mode but "¥" in Roman
+        // mode -- then the match.
+        bytes.extend_from_slice(&esc_ascii);
+        bytes.push(b'\\');
+        bytes.extend_from_slice(b"MARKER");
+        bytes.extend(std::iter::repeat_n(b'b', 1024));
+
+        let (decoded_fixture, fixture_malformed) =
+            encoding_rs::ISO_2022_JP.decode_without_bom_handling(&bytes);
+        assert!(
+            !fixture_malformed,
+            "fixture must be well-formed ISO-2022-JP"
+        );
+        assert_eq!(decoded_fixture.matches('\\').count(), 1);
+        assert_eq!(decoded_fixture.matches('¥').count(), 0);
+        assert_eq!(decoded_fixture.matches("MARKER").count(), 1);
+        let expected_content = decoded_fixture.replace("MARKER", "TOKEN!");
+
+        std::fs::write(&file, &bytes).unwrap();
+
+        let report = stream_replace_in_file(
+            file.to_string_lossy().into_owned(),
+            "MARKER".to_string(),
+            "TOKEN!".to_string(),
+            "ISO-2022-JP".to_string(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(report.replacements, 1);
+
+        let on_disk = std::fs::read(&file).unwrap();
+        let decoded_after = crate::encoding::decode_with(&on_disk, "ISO-2022-JP").unwrap();
+        assert!(!decoded_after.malformed);
+        assert!(
+            !decoded_after.content.contains('¥'),
+            "the shift-state-mismatch corruption signature (an ASCII-mode \
+             0x5C landing in raw Roman mode) must not appear"
+        );
+        assert_eq!(
+            decoded_after.content, expected_content,
+            "stateful ISO-2022-JP content must survive intact -- raw-tail \
+             shift state and encoder shift state must never be spliced"
+        );
+        assert!(
+            report.unmatched_region_reencoded,
+            "chunk 1 has no match but must be honestly reported as \
+             re-encoded (stateful encoding, passthrough never applies)"
+        );
+
+        assert_no_leftover_tmp(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The self-sufficiency check must not itself become a false-positive
+    /// hazard: a byte sequence that's genuinely malformed on its own (not
+    /// merely incomplete pending a neighbor) must be judged
+    /// not-self-sufficient too, since `chunk_is_decode_self_sufficient` is
+    /// only ever reached (via `run_replace_loop`'s short-circuit) after
+    /// the real streaming decode of the same bytes already reported no
+    /// errors -- but pinning the helper's own behavior directly, rather
+    /// than only inferring it, keeps this contract honest in isolation.
+    #[test]
+    fn chunk_is_decode_self_sufficient_rejects_malformed_raw_bytes() {
+        // 0x80 is below Big5's lead-byte floor and not a valid trail byte.
+        assert!(!chunk_is_decode_self_sufficient(
+            encoding_rs::BIG5,
+            &[0x80],
+            "",
+        ));
+    }
+
+    /// And the mirror case: a lone, genuinely incomplete lead byte (no
+    /// trail byte at all in `raw`) must also be rejected -- this is
+    /// exactly condition 3's exit-pending case, pinned directly against
+    /// the helper rather than only through the large split-seam fixture
+    /// above.
+    #[test]
+    fn chunk_is_decode_self_sufficient_rejects_lone_incomplete_lead_byte() {
+        assert!(!chunk_is_decode_self_sufficient(
+            encoding_rs::BIG5,
+            &[0x8E],
+            "",
+        ));
     }
 }
