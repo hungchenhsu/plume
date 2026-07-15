@@ -1314,10 +1314,27 @@ byte-preservation machinery)
   across four locales. 763 vitest (+17).
 
 **Track H — outward & close-out**
-- [ ] README: add an Install section (GitHub Releases pointer +
+- [x] README: add an Install section (GitHub Releases pointer +
   unsigned-build caveats for macOS/Windows) and an accuracy pass over
   existing content; no naming-heavy outward material while D1 is
-  undecided; positioning red lines checked per DIRECTION §5-S13
+  undecided; positioning red lines checked per DIRECTION §5-S13.
+  Install section covers per-platform assets (with the Apple
+  Silicon/Intel .dmg distinction), honest Gatekeeper/SmartScreen
+  first-open steps, and a one-liner that signing/auto-update are on
+  the roadmap. The accuracy pass replaced the stale "v0.1 MVP" status
+  with an 8-bullet capability overview (kept deliberately
+  changelog-free), fixed the missing Mixed line-ending mention, and
+  fixed the Development quick-start that omitted the fresh-clone
+  `npm run build` step (contradicting CLAUDE.md/CONTRIBUTING/
+  dev-setup — a new contributor following it would have hit the
+  `tauri::generate_context!` failure). Adversarial wording review
+  (AGREE-WITH-CHANGES): red lines and factual claims held; its four
+  precision notes landed — "26 curated encodings" (the picker's 27
+  entries include the UTF-8/BOM pair), detection vs conversion scope
+  split with a pointer to docs/encoding-detection.md, "byte-fidelity
+  handling" over "guarantees", and the .dmg architecture hint.
+  Screenshots left as an owner TODO comment (agents must not launch
+  the GUI). 64→91 lines, zero competitor mentions.
 - [ ] Cycle close-out: version 0.5.0 bumped consistently, tag
   v0.5.0-alpha.1, zh-TW release notes, prerelease published (publishing
   pre-releases is delegated; final releases remain user-gated)
