@@ -1,7 +1,7 @@
 // Find-in-files panel: pick a folder, type a query, click a result to jump.
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { t } from "./i18n";
-import { searchInFolder, type SearchMatch } from "./ipc";
+import { searchInFolder, type SearchMatch, type SearchScanError } from "./ipc";
 
 let lastFolder: string | null = null;
 
@@ -59,6 +59,18 @@ export function showFindInFiles(
   status.className = "fif-status";
   panel.appendChild(status);
 
+  // Issue #130: a folder/entry the walk couldn't read means `matches`
+  // below may be missing whatever that path contained. This must stay
+  // visible above the results list — not buried where it might go
+  // unnoticed — and use <details>/<summary> so the path list is
+  // inspectable without cluttering the common (no errors) case. Mirrors
+  // batchconvert.ts's identical disclosure for issue #116, styled with
+  // this panel's own `.fif-*` classes rather than the batch panel's.
+  const scanErrorsEl = document.createElement("div");
+  scanErrorsEl.className = "fif-scan-errors-container";
+  scanErrorsEl.hidden = true;
+  panel.appendChild(scanErrorsEl);
+
   const list = document.createElement("ul");
   list.className = "fif-list";
   panel.appendChild(list);
@@ -103,6 +115,42 @@ export function showFindInFiles(
     }
   };
 
+  // Issue #130: renders the "N items could not be searched" disclosure
+  // above the results list, or hides the block entirely when the walk was
+  // exhaustive (the common case) — same behavior as batchconvert.ts's
+  // renderScanErrors for issue #116.
+  const renderScanErrors = (scanErrors: SearchScanError[]): void => {
+    scanErrorsEl.replaceChildren();
+    if (scanErrors.length === 0) {
+      scanErrorsEl.hidden = true;
+      return;
+    }
+    scanErrorsEl.hidden = false;
+    const details = document.createElement("details");
+    details.className = "fif-scan-errors";
+    const summaryEl = document.createElement("summary");
+    summaryEl.textContent = t("findInFiles.scanErrorsSummary", scanErrors.length);
+    details.appendChild(summaryEl);
+    const errorList = document.createElement("div");
+    errorList.className = "fif-scan-errors-list";
+    for (const scanError of scanErrors) {
+      const row = document.createElement("div");
+      row.className = "fif-scan-errors-row";
+      const pathEl = document.createElement("span");
+      pathEl.className = "fif-scan-errors-path";
+      pathEl.textContent = basename(scanError.path);
+      pathEl.title = scanError.path;
+      const messageEl = document.createElement("span");
+      messageEl.className = "fif-scan-errors-message";
+      messageEl.textContent = scanError.message;
+      row.appendChild(pathEl);
+      row.appendChild(messageEl);
+      errorList.appendChild(row);
+    }
+    details.appendChild(errorList);
+    scanErrorsEl.appendChild(details);
+  };
+
   let searching = false;
   const runSearch = async (): Promise<void> => {
     if (searching) return;
@@ -111,6 +159,8 @@ export function showFindInFiles(
     searching = true;
     status.textContent = t("findInFiles.searching");
     list.replaceChildren();
+    scanErrorsEl.hidden = true;
+    scanErrorsEl.replaceChildren();
     try {
       const results = await searchInFolder(
         lastFolder,
@@ -126,6 +176,7 @@ export function showFindInFiles(
         results.filesScanned,
       );
       renderMatches(results.matches);
+      renderScanErrors(results.scanErrors);
     } catch (error) {
       status.textContent = String(error);
     } finally {

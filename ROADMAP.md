@@ -1034,9 +1034,23 @@ surface for incoming contributors.
   10485761), regression test grows the file through a second handle
   after the check and asserts the read stops at the take-limit
   sentinel. Adversarial review AGREE (349 Rust tests).
-- [ ] #130: find-in-files collect_files records unreadable
+- [x] #130: find-in-files collect_files records unreadable
   directories/entries as scan errors surfaced in the panel (#116's
-  pattern) instead of silently skipping subtrees
+  pattern) instead of silently skipping subtrees. `ScanError` and
+  `SearchResults.scan_errors` on the Rust side (deliberately its own
+  struct, not an import from batch.rs — the two walkers stay
+  independent, as before); an unreadable root now fails the whole
+  search closed (`Err`) instead of returning a zero-result report,
+  the worst-case misread ("the string is gone") being exactly what
+  #130 exists to prevent; mid-walk failures are recorded and the walk
+  continues. Panel shows a collapsible "N items could not be
+  searched" disclosure above the results (`fif-scan-errors*` classes
+  following the file's own naming convention, styles mirroring the
+  batch panel's), i18n across en/zh-TW/ja/zh-CN.
+  Failing-test-first: field added returning an empty vec, three new
+  Rust tests failed (nonexistent root, chmod-000 subdir, no-execute
+  parent), then the real logic turned them green with the readable
+  sibling still scanned. 352 Rust + 603 vitest.
 - [ ] #96 (1/3): streaming replace read-chunk byte-passthrough — a
   chunk with no match involvement, no decoder pending on either edge,
   and no carry in/out is copied byte-identical (the BOM-bearing first

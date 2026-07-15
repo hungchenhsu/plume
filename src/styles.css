@@ -528,6 +528,54 @@ select:focus-visible {
   min-height: 16px;
 }
 
+/* Issue #130 incomplete-scan disclosure — mirrors
+   .batchconvert-scan-errors* (issue #116) with this panel's own `.fif-`
+   prefix, kept as a separate ruleset rather than a shared class so the two
+   panels' presentation can evolve independently. */
+.fif-scan-errors-container {
+  padding: 0 12px 6px;
+}
+
+.fif-scan-errors {
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.fif-scan-errors summary {
+  font-size: var(--font-ui-sm);
+  color: var(--warning);
+  cursor: pointer;
+}
+
+.fif-scan-errors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.fif-scan-errors-row {
+  display: grid;
+  grid-template-columns: minmax(80px, auto) 1fr;
+  gap: 10px;
+  font-size: var(--font-ui-xs);
+}
+
+.fif-scan-errors-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  color: var(--fg-muted);
+}
+
+.fif-scan-errors-message {
+  color: var(--fg-faint);
+}
+
 .fif-list {
   margin: 0;
   padding: 4px;

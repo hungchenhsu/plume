@@ -392,10 +392,26 @@ export interface SearchMatch {
   preview: string;
 }
 
+export interface SearchScanError {
+  /** The directory that couldn't be listed, or the specific entry whose
+   *  metadata couldn't be read. */
+  path: string;
+  /** OS error text, e.g. "Permission denied (os error 13)". */
+  message: string;
+}
+
 export interface SearchResults {
   matches: SearchMatch[];
   truncated: boolean;
   filesScanned: number;
+  /** Directories or entries the search could not read — each one means
+   *  `matches` above may be missing whatever matches that path contained.
+   *  Empty means the walk completed exhaustively; a non-empty list must
+   *  never be treated as "no matches there" (issue #130, mirroring
+   *  BatchScanReport.scanErrors for issue #116). The root folder itself
+   *  failing to open is a harder failure than this — `searchInFolder`
+   *  rejects outright instead of returning an empty-looking result. */
+  scanErrors: SearchScanError[];
 }
 
 export function searchInFolder(
