@@ -23,8 +23,14 @@
 //! `encoding::encode` (Big5, Shift_JIS, GBK; see issue #96), a file that
 //! already contains non-canonical bytes fails that identity check and
 //! gets silently rewritten with canonicalized bytes even under
-//! `"keep"` + `"keep"`, with nothing in the report distinguishing that
-//! from a real conversion.
+//! `"keep"` + `"keep"`. Issue #96 (3/3) closes the "nothing in the report
+//! distinguishing that from a real conversion" half of this: every
+//! `alreadyTarget` `BatchEntry` now carries a `byte_drift` flag, computed by
+//! rebuilding the same pipeline `convert_one` would run (`rebuild_output_bytes`,
+//! shared by both) against the scan's own decoded bytes and comparing to the
+//! original — see `BatchEntry::byte_drift`'s doc comment for the exact
+//! no-op/skip rules. This is scan-time visibility only; `convert_one`'s own
+//! behavior (silently canonicalize, still succeed) is unchanged.
 //!
 //! Folder walking mirrors `search.rs`'s find-in-files traversal (same
 //! `SKIP_DIRS`, same dotdir/symlink skip rules) so batch conversion never
@@ -102,6 +108,32 @@ pub struct BatchEntry {
     /// entries, since a malformed multi-byte sequence elsewhere in the
     /// file doesn't prevent detecting `\r`/`\n` bytes.
     pub line_ending: String,
+    /// Issue #96 (3/3): true when this is an `alreadyTarget` entry (both
+    /// axes already match what was asked for — a "no-op" conversion) whose
+    /// bytes would nonetheless change if executed, because re-encoding
+    /// canonicalizes a non-injective legacy byte sequence (Big5, Shift_JIS,
+    /// GBK — see `encoding.rs`'s "Round-trip contract" module doc). This is
+    /// the "keep" + "keep" caveat from this module's own doc comment made
+    /// visible in the report, computed by rebuilding the exact
+    /// `commit_conversion` pipeline against the scan's already-decoded
+    /// bytes and comparing to the original (see [`rebuild_output_bytes`]).
+    ///
+    /// Deliberately narrower than "any file whose bytes might drift":
+    /// always `false` for every status other than `alreadyTarget`, because
+    /// a `convertible`/`lossy` entry's bytes are *expected* to change — the
+    /// user explicitly asked for a different encoding or line ending, so a
+    /// drift verdict there would carry no signal (batch's semantics differ
+    /// from `bytedrift.rs`'s save-path check here: that check's target is
+    /// always the *unchanged* save pipeline, so any drift it finds is
+    /// inherently unrequested; batch's target is whatever the user picked,
+    /// so only the no-op case is). Also `false` (skipped, not computed)
+    /// when the file's own on-disk line ending is `"Mixed"` — same
+    /// precedent as `bytedrift.rs`'s `SKIP_MIXED_LINE_ENDING`: a rebuild
+    /// can only re-apply one pure line-ending style, so it can never
+    /// reproduce a mixed-style file and any verdict on it would conflate
+    /// line-ending unification with encoding canonicalization.
+    /// `undecodable`/`tooLarge` entries never reach a decode at all.
+    pub byte_drift: bool,
 }
 
 /// A directory or entry the walk could not read at all — recorded instead
@@ -285,12 +317,14 @@ fn open_for_classification(path: &Path) -> Result<std::fs::File, BatchEntry> {
         detected: String::new(),
         status: STATUS_UNDECODABLE.to_string(),
         line_ending: String::new(),
+        byte_drift: false,
     })?;
     let meta = file.metadata().map_err(|_| BatchEntry {
         path: path_str.clone(),
         detected: String::new(),
         status: STATUS_UNDECODABLE.to_string(),
         line_ending: String::new(),
+        byte_drift: false,
     })?;
     // Fast path only (see doc comment above): lets an already-oversized
     // file fail before attempting any read at all.
@@ -300,6 +334,7 @@ fn open_for_classification(path: &Path) -> Result<std::fs::File, BatchEntry> {
             detected: String::new(),
             status: STATUS_TOO_LARGE.to_string(),
             line_ending: String::new(),
+            byte_drift: false,
         });
     }
     Ok(file)
@@ -345,6 +380,7 @@ fn classify_file(
             detected: String::new(),
             status: STATUS_UNDECODABLE.to_string(),
             line_ending: String::new(),
+            byte_drift: false,
         };
     };
     // Grew past the cap between the fast-path check and this read: the
@@ -356,6 +392,7 @@ fn classify_file(
             detected: String::new(),
             status: STATUS_TOO_LARGE.to_string(),
             line_ending: String::new(),
+            byte_drift: false,
         };
     }
 
@@ -374,6 +411,7 @@ fn classify_file(
             detected: decoded.encoding,
             status: STATUS_UNDECODABLE.to_string(),
             line_ending: detected_line_ending,
+            byte_drift: false,
         };
     }
 
@@ -391,11 +429,26 @@ fn classify_file(
         target_line_ending == "keep" || detected_line_ending == target_line_ending;
 
     if encoding_axis_unchanged && line_ending_axis_unchanged {
+        // Issue #96 (3/3): this is the "keep" + "keep" no-op case — nothing
+        // on either axis was asked to change — so a byte-drift verdict is
+        // meaningful here (see `BatchEntry::byte_drift`'s doc comment).
+        // Skipped (never `true`) for a Mixed on-disk line ending: same
+        // precedent as `bytedrift.rs`'s `SKIP_MIXED_LINE_ENDING`, since
+        // `rebuild_output_bytes` can only re-apply one pure style.
+        let byte_drift = detected_line_ending != "Mixed"
+            && rebuild_output_bytes(&decoded, target, target_with_bom, target_line_ending)
+                .expect(
+                    "a no-op target is always the file's own already-valid encoding, which \
+                     always round-trips and never rejects its own decoded text as unmappable",
+                )
+                .0
+                != bytes;
         return BatchEntry {
             path: path_str,
             detected: decoded.encoding,
             status: STATUS_ALREADY_TARGET.to_string(),
             line_ending: detected_line_ending,
+            byte_drift,
         };
     }
 
@@ -423,6 +476,10 @@ fn classify_file(
         detected: decoded.encoding,
         status: status.to_string(),
         line_ending: detected_line_ending,
+        // Not a no-op: the user explicitly asked for this axis to change,
+        // so any byte change here is requested, not drift (see
+        // `BatchEntry::byte_drift`'s doc comment).
+        byte_drift: false,
     }
 }
 
@@ -616,6 +673,49 @@ fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConver
     Ok((bytes, fingerprint))
 }
 
+/// Rebuild the exact output bytes the batch pipeline would write for a file
+/// already decoded via [`encoding::decode_auto`]: selects the line-ending
+/// axis (`line_ending`, `"keep"` leaves `decoded.content` exactly as
+/// decoded — *not* passed through `encoding::normalize_to_lf` the way
+/// `lib.rs::open_document` does for the editor buffer) then encodes to the
+/// resolved target axis (`target`/`with_bom`, `target: None` keeps the
+/// file's own detected encoding and BOM state, mirroring `classify_file`'s
+/// own resolution). Shared by [`commit_conversion`] (the real execute path)
+/// and `classify_file`'s byte-drift probe (issue #96 3/3) so a scan-time
+/// drift verdict can never quietly diverge from what execute actually
+/// writes — both call sites decode independently (scan and execute never
+/// trust each other's snapshot) but funnel through this one transform.
+fn rebuild_output_bytes(
+    decoded: &encoding::DecodedText,
+    target: Option<&'static Encoding>,
+    with_bom: bool,
+    line_ending: &str,
+) -> Result<(Vec<u8>, bool), String> {
+    let content = if line_ending == "keep" {
+        std::borrow::Cow::Borrowed(decoded.content.as_str())
+    } else {
+        std::borrow::Cow::Owned(encoding::apply_line_ending(
+            &encoding::normalize_to_lf(&decoded.content),
+            line_ending,
+        ))
+    };
+
+    let (target_encoding, target_with_bom) = match target {
+        Some(t) => (t, with_bom),
+        None => (
+            // `decoded.encoding` is the name of the encoding that just
+            // successfully decoded these bytes, which always round-trips
+            // through `Encoding::for_label` (same guarantee
+            // `classify_file` relies on for its own target).
+            Encoding::for_label(decoded.encoding.as_bytes())
+                .expect("decode_auto's reported encoding always round-trips"),
+            decoded.had_bom,
+        ),
+    };
+
+    encoding::encode(&content, target_encoding.name(), target_with_bom)
+}
+
 /// Decode `bytes` (already read from `path` — see [`read_for_conversion`]),
 /// re-encode to `target`/`with_bom` (`target: None` keeps the file's own
 /// detected encoding and BOM state), optionally unifying line endings to
@@ -662,27 +762,8 @@ fn commit_conversion(
         };
     }
 
-    let content = if line_ending == "keep" {
-        decoded.content
-    } else {
-        encoding::apply_line_ending(&encoding::normalize_to_lf(&decoded.content), line_ending)
-    };
-
-    let (target_encoding, target_with_bom) = match target {
-        Some(t) => (t, with_bom),
-        None => (
-            // `decoded.encoding` is the name of the encoding that just
-            // successfully decoded these bytes, which always round-trips
-            // through `Encoding::for_label` (same guarantee
-            // `classify_file` relies on for its own target).
-            Encoding::for_label(decoded.encoding.as_bytes())
-                .expect("decode_auto's reported encoding always round-trips"),
-            decoded.had_bom,
-        ),
-    };
-
     let (out_bytes, unmappable) =
-        match encoding::encode(&content, target_encoding.name(), target_with_bom) {
+        match rebuild_output_bytes(&decoded, target, with_bom, line_ending) {
             Ok(result) => result,
             Err(e) => {
                 return BatchConvertResult {
@@ -1264,6 +1345,155 @@ mod tests {
         for entry in &report.entries {
             assert_eq!(entry.status, STATUS_ALREADY_TARGET, "{entry:?}");
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Issue #96 (3/3), failing-test-first: `BatchEntry::byte_drift`.
+    // Same non-injective Big5 pair as `encoding.rs`'s
+    // `big5_non_canonical_bytes_are_canonicalized_on_encode` and
+    // `bytedrift.rs`'s own tests (0x8E 0x69 decodes cleanly to "箸", but
+    // re-encoding "箸" always produces its canonical form BA E6). Appended
+    // to a long, chardetng-reliable Big5 sample (`BIG5_TEXT_A`) at a clean
+    // character boundary (right after its own trailing `\n`) so detection
+    // stays confidently "Big5" — a bare 2-byte fixture has no statistical
+    // signal for auto-detection to key off (this module's own comment on
+    // `BIG5_TEXT_A` explains why short CJK samples are ambiguous).
+
+    /// (1) Core case: Big5 -> Big5, line ending "keep" — nothing on either
+    /// axis is asked to change, so this is the no-op `alreadyTarget` case
+    /// `byte_drift` exists to catch. Red before `classify_file`'s
+    /// `alreadyTarget` branch called `rebuild_output_bytes` (it returned
+    /// the stub `byte_drift: false` unconditionally).
+    #[test]
+    fn same_encoding_no_op_with_non_injective_pair_reports_byte_drift() {
+        let dir = fixture_dir("byte-drift-non-injective");
+        let (mut bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!unmappable);
+        bytes.extend_from_slice(&[0x8E, 0x69]);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(
+            Path::new(&path),
+            Encoding::for_label(b"Big5"),
+            false,
+            "keep",
+        );
+        assert_eq!(result.status, STATUS_ALREADY_TARGET, "{result:?}");
+        assert!(result.byte_drift, "{result:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// (2) An ordinary, canonical Big5 file (no non-injective bytes) must
+    /// not false-positive: the no-op case is real, but there is nothing to
+    /// drift.
+    #[test]
+    fn same_encoding_no_op_with_clean_bytes_reports_no_byte_drift() {
+        let dir = fixture_dir("byte-drift-clean");
+        let (bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!unmappable);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(
+            Path::new(&path),
+            Encoding::for_label(b"Big5"),
+            false,
+            "keep",
+        );
+        assert_eq!(result.status, STATUS_ALREADY_TARGET, "{result:?}");
+        assert!(!result.byte_drift, "{result:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// (3) Big5 -> UTF-8: the encoding axis is explicitly asked to change,
+    /// so this is `convertible`, not `alreadyTarget` — any byte change
+    /// (including this same non-injective pair's canonicalization) is
+    /// requested, not drift, and must stay unflagged.
+    #[test]
+    fn non_injective_pair_converting_to_a_different_encoding_is_not_flagged() {
+        let dir = fixture_dir("byte-drift-cross-encoding");
+        let (mut bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!unmappable);
+        bytes.extend_from_slice(&[0x8E, 0x69]);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(
+            Path::new(&path),
+            Encoding::for_label(b"UTF-8"),
+            false,
+            "keep",
+        );
+        assert_eq!(result.status, STATUS_CONVERTIBLE, "{result:?}");
+        assert!(!result.byte_drift, "{result:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// (4) Big5 -> Big5 (encoding axis unchanged) but LF -> CRLF (line
+    /// ending explicitly asked to change): not a no-op either, so
+    /// `byte_drift` must stay `false` even with the same non-injective
+    /// pair present — bytes changing here is what the user asked for.
+    #[test]
+    fn non_injective_pair_with_a_requested_line_ending_change_is_not_flagged() {
+        let dir = fixture_dir("byte-drift-line-ending-change");
+        let (mut bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!unmappable);
+        bytes.extend_from_slice(&[0x8E, 0x69]);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(
+            Path::new(&path),
+            Encoding::for_label(b"Big5"),
+            false,
+            "CRLF",
+        );
+        assert_eq!(result.status, STATUS_CONVERTIBLE, "{result:?}");
+        assert!(!result.byte_drift, "{result:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// (5) A Mixed on-disk line ending with `line_ending: "keep"` still
+    /// classifies `alreadyTarget` ("keep" never disagrees with any
+    /// detected style), but `rebuild_output_bytes` can only re-apply one
+    /// pure style, so it can never reproduce a mixed file — same
+    /// unreproducible-pipeline precedent as `bytedrift.rs`'s
+    /// `SKIP_MIXED_LINE_ENDING`. `byte_drift` must stay `false` (skipped,
+    /// not computed) rather than attempt a meaningless verdict.
+    #[test]
+    fn mixed_line_ending_no_op_skips_byte_drift() {
+        let dir = fixture_dir("byte-drift-mixed");
+        let text = format!("{}second line ends CRLF\r\n", BIG5_TEXT_A);
+        assert_eq!(
+            encoding::detect_line_ending(&text),
+            "Mixed",
+            "fixture must actually mix line-ending styles"
+        );
+        let (bytes, unmappable) = encoding::encode(&text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(
+            Path::new(&path),
+            Encoding::for_label(b"Big5"),
+            false,
+            "keep",
+        );
+        assert_eq!(result.status, STATUS_ALREADY_TARGET, "{result:?}");
+        assert_eq!(result.line_ending, "Mixed");
+        assert!(!result.byte_drift, "{result:?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

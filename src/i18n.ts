@@ -156,12 +156,15 @@ export interface Messages {
     lossy: number,
     undecodable: number,
     tooLarge: number,
+    byteDrift: number,
   ) => string;
   "batchConvert.statusConvertible": string;
   "batchConvert.statusAlreadyTarget": string;
   "batchConvert.statusLossy": string;
   "batchConvert.statusUndecodable": string;
   "batchConvert.statusTooLarge": string;
+  "batchConvert.byteDriftBadge": string;
+  "batchConvert.byteDriftTooltip": string;
   "batchConvert.lineEndingMixed": string;
   "batchConvert.includeFileLabel": string;
   "batchConvert.convertButton": (count: number) => string;
@@ -407,14 +410,19 @@ const en: Messages = {
   "batchConvert.scanButton": "Scan (dry run)",
   "batchConvert.scanning": "Scanning…",
   "batchConvert.noResults": "No matching files found.",
-  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge, byteDrift) =>
     `${convertible} convertible, ${alreadyTarget} already this encoding, ` +
-    `${lossy} would lose data, ${undecodable} undecodable, ${tooLarge} too large`,
+    `${lossy} would lose data, ${undecodable} undecodable, ${tooLarge} too large, ` +
+    `${byteDrift} would drift on re-save`,
   "batchConvert.statusConvertible": "Convertible",
   "batchConvert.statusAlreadyTarget": "Already this encoding",
   "batchConvert.statusLossy": "Would lose data",
   "batchConvert.statusUndecodable": "Undecodable",
   "batchConvert.statusTooLarge": "Too large",
+  "batchConvert.byteDriftBadge": "byte drift",
+  "batchConvert.byteDriftTooltip":
+    "Text unchanged, but re-encoding would still change these bytes — a non-canonical " +
+    "legacy byte sequence would be normalized.",
   "batchConvert.lineEndingMixed": "Mixed",
   "batchConvert.includeFileLabel": "Include this file",
   "batchConvert.convertButton": (count) => `Convert ${count} file${count === 1 ? "" : "s"}`,
@@ -671,14 +679,17 @@ const zhTW: Messages = {
   "batchConvert.scanButton": "掃描（僅預覽）",
   "batchConvert.scanning": "掃描中…",
   "batchConvert.noResults": "找不到符合的檔案。",
-  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge, byteDrift) =>
     `可轉換 ${convertible}、已是目標編碼 ${alreadyTarget}、會遺失資料 ${lossy}、` +
-    `無法解碼 ${undecodable}、檔案過大 ${tooLarge}`,
+    `無法解碼 ${undecodable}、檔案過大 ${tooLarge}、會位元組漂移 ${byteDrift}`,
   "batchConvert.statusConvertible": "可轉換",
   "batchConvert.statusAlreadyTarget": "已是目標編碼",
   "batchConvert.statusLossy": "會遺失資料",
   "batchConvert.statusUndecodable": "無法解碼",
   "batchConvert.statusTooLarge": "檔案過大",
+  "batchConvert.byteDriftBadge": "位元組漂移",
+  "batchConvert.byteDriftTooltip":
+    "文字不會改變，但重新編碼後這些位元組仍會改變——非標準的舊版位元組序列會被正規化。",
   "batchConvert.lineEndingMixed": "混合換行",
   "batchConvert.includeFileLabel": "包含此檔案",
   "batchConvert.convertButton": (count) => `轉換 ${count} 個檔案`,
@@ -920,14 +931,19 @@ const ja: Messages = {
   "batchConvert.scanButton": "スキャン（プレビューのみ）",
   "batchConvert.scanning": "スキャン中…",
   "batchConvert.noResults": "一致するファイルが見つかりません。",
-  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge, byteDrift) =>
     `変換可能 ${convertible} 件、既にこのエンコーディング ${alreadyTarget} 件、` +
-    `データ損失あり ${lossy} 件、デコード不可 ${undecodable} 件、サイズ超過 ${tooLarge} 件`,
+    `データ損失あり ${lossy} 件、デコード不可 ${undecodable} 件、サイズ超過 ${tooLarge} 件、` +
+    `バイトドリフトあり ${byteDrift} 件`,
   "batchConvert.statusConvertible": "変換可能",
   "batchConvert.statusAlreadyTarget": "既にこのエンコーディング",
   "batchConvert.statusLossy": "データ損失あり",
   "batchConvert.statusUndecodable": "デコード不可",
   "batchConvert.statusTooLarge": "サイズ超過",
+  "batchConvert.byteDriftBadge": "バイトドリフト",
+  "batchConvert.byteDriftTooltip":
+    "テキストは変わりませんが、再エンコードするとこれらのバイト列は変わります——" +
+    "非正規のレガシーバイト列が正規化されます。",
   "batchConvert.lineEndingMixed": "混在",
   "batchConvert.includeFileLabel": "このファイルを含める",
   "batchConvert.convertButton": (count) => `${count} 件のファイルを変換`,
@@ -1178,14 +1194,17 @@ const zhCN: Messages = {
   "batchConvert.scanButton": "扫描（仅预览）",
   "batchConvert.scanning": "扫描中…",
   "batchConvert.noResults": "未找到匹配的文件。",
-  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge) =>
+  "batchConvert.summary": (convertible, alreadyTarget, lossy, undecodable, tooLarge, byteDrift) =>
     `可转换 ${convertible}、已是目标编码 ${alreadyTarget}、会丢失数据 ${lossy}、` +
-    `无法解码 ${undecodable}、文件过大 ${tooLarge}`,
+    `无法解码 ${undecodable}、文件过大 ${tooLarge}、会字节漂移 ${byteDrift}`,
   "batchConvert.statusConvertible": "可转换",
   "batchConvert.statusAlreadyTarget": "已是目标编码",
   "batchConvert.statusLossy": "会丢失数据",
   "batchConvert.statusUndecodable": "无法解码",
   "batchConvert.statusTooLarge": "文件过大",
+  "batchConvert.byteDriftBadge": "字节漂移",
+  "batchConvert.byteDriftTooltip":
+    "文本不会改变，但重新编码后这些字节仍会改变——非规范的旧版字节序列会被规范化。",
   "batchConvert.lineEndingMixed": "混合换行",
   "batchConvert.includeFileLabel": "包含此文件",
   "batchConvert.convertButton": (count) => `转换 ${count} 个文件`,

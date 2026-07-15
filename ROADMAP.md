@@ -1110,9 +1110,30 @@ surface for incoming contributors.
   check for the whole session on a transient file lock). i18n across
   en/zh-TW/ja/zh-CN. Failing-test-first both rounds (stub → 7 of 10
   red; review fixes → 4 more red-then-green). 372 Rust + 616 vitest.
-- [ ] #96 (3/3): batch conversion dry-run report gains a per-file
+- [x] #96 (3/3): batch conversion dry-run report gains a per-file
   byte-drift flag (a same-encoding "no-op" conversion that would still
-  canonicalize bytes becomes visible before execute) [danger]
+  canonicalize bytes becomes visible before execute) [danger].
+  `BatchEntry.byte_drift`, computed only for alreadyTarget (no-op)
+  files — the one case where the user expects bytes to stay put — via
+  a new `rebuild_output_bytes()` extracted verbatim from
+  `commit_conversion` so scan and execute can never disagree
+  (adversarial review verified the extraction bit-for-bit and that
+  execute never consumes the flag). The no-op test reuses batch's own
+  alreadyTarget predicate including the BOM axis; Mixed-line-ending
+  files skip per the (2/3) ruling, and the line-ending axis can't
+  false-positive (a pure-LE no-op file round-trips exactly; any
+  residue classifies as Mixed and is skipped). Since alreadyTarget
+  rows are never checkable for execute, the badge is honest
+  diagnostics ("would drift on re-save"), not an action warning —
+  wording verified in review. Panel badge mirrors the malformed
+  badge, drift count joins the summary line, i18n across four
+  locales. Review AGREE; its one observation — a keep-encoding
+  line-ending-only conversion still silently canonicalizes legacy
+  bytes on convertible files, the deliberately-out-of-scope other
+  half — is filed as #176. The (1/3) report field with no UI consumer
+  yet is filed as #175. Failing-test-first via stubs on both sides
+  (real red runs). 377 Rust + 622 vitest. #96 closed — all three
+  stages landed.
 
 **Track S — replace in files** (the new capability, built on Track R's
 byte-preservation machinery)

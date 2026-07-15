@@ -582,6 +582,18 @@ export interface BatchEntry {
   /** The file's own detected line ending: "LF" | "CRLF" | "Mixed". Empty
    *  for `tooLarge` or a file whose bytes couldn't be read at all. */
   lineEnding: string;
+  /** Issue #96 (3/3): true when this `alreadyTarget` entry (a same-encoding,
+   *  same-line-ending "no-op" — nothing on either axis was asked to change)
+   *  would still have its bytes canonicalized if converted, because
+   *  `encoding_rs`'s decode mapping for a handful of legacy encodings
+   *  (Big5, Shift_JIS, GBK) isn't injective — see `src-tauri/src/batch.rs`'s
+   *  `BatchEntry::byte_drift` doc comment for the exact rules. Always
+   *  `false` for every other status: a `convertible`/`lossy` entry's bytes
+   *  are *expected* to change (the user explicitly asked for a different
+   *  encoding or line ending), so drift there carries no signal. Also
+   *  `false` (skipped, not computed) when the file's own on-disk line
+   *  ending is "Mixed" — a rebuild can't reproduce a mixed-style file. */
+  byteDrift: boolean;
 }
 
 export interface BatchScanError {
