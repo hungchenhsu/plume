@@ -1302,8 +1302,16 @@ byte-preservation machinery)
   entirely off-window; existing callers are unaffected (their
   above-space always wins). i18n across four locales. 746 vitest
   (+21).
-- [ ] Go to line supports line:column (column positioned within the
-  loaded window in large-file mode)
+- [x] Go to line supports line:column (column positioned within the
+  loaded window in large-file mode). `parseGoToInput` (goto.ts, pure,
+  exported) accepts a bare line or `line:column` with an exact
+  grammar (`123:` equals `123`; `:45`, garbage, zero/negative, or
+  overflow are invalid rather than leniently truncated); both parts
+  1-based in UTF-16 code units, matching the status bar's Ln/Col
+  convention. `editor.goToLine` gains an optional clamped column;
+  the large-file goto positions the column within the reloaded
+  window. Input switches numeric→text (colons), placeholder updated
+  across four locales. 763 vitest (+17).
 
 **Track H — outward & close-out**
 - [ ] README: add an Install section (GitHub Releases pointer +

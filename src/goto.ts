@@ -1,7 +1,46 @@
-// Minimal "Go to Line" prompt.
+// Minimal "Go to Line" prompt. Accepts either a bare line number ("123")
+// or "line:column" ("123:45") — see parseGoToInput below for the exact
+// grammar this input box accepts.
 import { t } from "./i18n";
 
-export function showGoToLine(onGo: (line: number) => void): void {
+/** Parsed result of a Go to Line input. `column` is `null` when the input
+ *  named only a line (a bare "123", or "123:" with an empty column) —
+ *  callers treat that the same as the pre-existing line-only behavior
+ *  (jump to line start). Both `line` and `column` are 1-based, matching
+ *  statusbar.ts's Ln/Col display (see editor.ts's `updateListener`:
+ *  `head - line.from + 1` computes the same 1-based column from a 0-based
+ *  offset into the line). */
+export interface GoToTarget {
+  line: number;
+  column: number | null;
+}
+
+// Line is required; an optional ":column" suffix may be a bare trailing
+// colon (empty column, e.g. "123:") or a colon followed by digits
+// ("123:45"). A colon with no leading line ("`:45`"), empty input, or any
+// non-digit character anywhere simply fails to match.
+const GOTO_INPUT_PATTERN = /^(\d+)(?::(\d+)?)?$/;
+
+/** Parse a Go to Line input box value into a target, or `null` if the
+ *  input is invalid: empty, non-numeric, a bare ":column" with no line, a
+ *  zero or negative line/column, or a number so large it overflows to
+ *  `Infinity`. Surrounding whitespace is trimmed first; anything else the
+ *  regex doesn't recognize (stray characters, extra colons) is invalid
+ *  rather than leniently truncated. */
+export function parseGoToInput(value: string): GoToTarget | null {
+  const match = GOTO_INPUT_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const line = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(line) || line <= 0) return null;
+  if (match[2] === undefined) return { line, column: null };
+  const column = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(column) || column <= 0) return null;
+  return { line, column };
+}
+
+export function showGoToLine(
+  onGo: (line: number, column: number | null) => void,
+): void {
   if (document.querySelector(".goto-overlay")) return;
 
   const overlay = document.createElement("div");
@@ -11,7 +50,9 @@ export function showGoToLine(onGo: (line: number) => void): void {
 
   const input = document.createElement("input");
   input.type = "text";
-  input.inputMode = "numeric";
+  // Not "numeric": the "line:column" syntax needs a colon, which numeric
+  // virtual keyboards on mobile/tablet WebViews typically don't offer.
+  input.inputMode = "text";
   input.placeholder = t("goto.placeholder");
   panel.appendChild(input);
 
@@ -29,9 +70,9 @@ export function showGoToLine(onGo: (line: number) => void): void {
       close();
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const line = Number.parseInt(input.value, 10);
+      const target = parseGoToInput(input.value);
       close();
-      if (Number.isFinite(line) && line > 0) onGo(line);
+      if (target) onGo(target.line, target.column);
     }
   });
 

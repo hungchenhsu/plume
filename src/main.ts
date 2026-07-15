@@ -922,7 +922,9 @@ async function ensureLineIndex(doc: Doc, myGeneration: number): Promise<LineInde
  * Large-file go-to-line: jump straight to `targetLine1` (1-based) via the
  * line-offset index, replacing the loaded window with a single fresh chunk
  * starting at that line — mirroring pageChunk's own single-chunk window
- * reset. Deliberately does *not* check whether the target already falls
+ * reset. `column` (1-based, optional) positions the cursor within that
+ * first line of the freshly loaded window — see the clamp comment at its
+ * one use below. Deliberately does *not* check whether the target already falls
  * inside the currently loaded window first (it always reloads): tracking
  * "how many lines does the loaded window currently span" would need line
  * counts threaded through chunkwindow.ts's WindowChunk bookkeeping (append
@@ -942,7 +944,11 @@ async function ensureLineIndex(doc: Doc, myGeneration: number): Promise<LineInde
  * no-opping on it, same as pageChunk — see chunkguard.ts's
  * preemptChunkLoad (issue #134).
  */
-async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
+async function gotoLargeFileLine(
+  doc: Doc,
+  targetLine1: number,
+  column?: number,
+): Promise<void> {
   if (!doc.path) return;
   // See pageChunk's preempt comment (issue #134).
   if (doc.chunkLoadInFlight) preemptChunkLoad(doc);
@@ -986,7 +992,22 @@ async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
         bytes: (chunkData.nextOffset ?? chunkData.totalSize) - chunkData.offset,
       },
     ];
-    doc.buffer = editor.newBuffer(chunkData.content, true);
+    // The "lineStart" request above means chunkData.content's first line
+    // *is* the target line, still within this single freshly loaded
+    // window — column (1-based, UTF-16 code units, same as editor.ts's
+    // goToLine) becomes a same-unit cursor offset from the buffer start,
+    // clamped to that first line's own length so it can't spill onto the
+    // chunk's second line (mirrors goToLine's own clamp for the
+    // small-file path; no cross-chunk column math needed).
+    const firstLineLength = (() => {
+      const eol = chunkData.content.indexOf("\n");
+      return eol === -1 ? chunkData.content.length : eol;
+    })();
+    const cursor =
+      column === undefined
+        ? 0
+        : Math.max(0, Math.min(column - 1, firstLineLength));
+    doc.buffer = editor.newBuffer(chunkData.content, true, cursor);
     doc.windowStartLine = target0 + 1;
     showActive();
   } catch (error) {
@@ -1004,15 +1025,17 @@ async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
 /** Mod+L / Edit > Go to Line: within the loaded window for a regular
  *  document (or a large-file doc whose paging is unsupported, e.g.
  *  UTF-16 — see pagingSupported), just move the cursor; otherwise jump via
- *  the line-offset index. */
-function handleGotoLine(line: number): void {
+ *  the line-offset index. `column` (1-based; null when the user's input
+ *  named only a line — see goto.ts's `parseGoToInput`) is forwarded
+ *  either way. */
+function handleGotoLine(line: number, column: number | null): void {
   const doc = tabs.active;
   if (!doc) return;
   if (!pagingSupported(doc)) {
-    editor.goToLine(line);
+    editor.goToLine(line, column ?? undefined);
     return;
   }
-  void gotoLargeFileLine(doc, line);
+  void gotoLargeFileLine(doc, line, column ?? undefined);
 }
 
 /** Refresh the gutter's bookmark dots for whatever's currently on screen.
@@ -2289,7 +2312,7 @@ void listen<string>("plume://menu", (event) => {
       });
       break;
     case "goto_line":
-      showGoToLine((line) => handleGotoLine(line));
+      showGoToLine((line, column) => handleGotoLine(line, column));
       break;
     case "toggle_bookmark":
       toggleBookmarkFlow();
