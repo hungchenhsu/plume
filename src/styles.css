@@ -470,6 +470,7 @@ select:focus-visible {
   flex-direction: column;
   width: 620px;
   max-width: 92vw;
+  max-height: 86vh;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -611,6 +612,234 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--editor-font-family, ui-monospace, monospace);
+}
+
+/* Replace-in-files (ROADMAP.md v0.5 Track S) — a second control row plus a
+   dry-run preview/results view layered onto the panel above. Kept as its
+   own `.fif-replace-*`/`.fif-replace-item-*` rulesets (mirroring
+   batchconvert.ts's `.batchconvert-*` treatment) rather than reusing
+   batchconvert's classes directly, so the two panels' presentation can
+   keep evolving independently — same rationale as the scan-errors
+   disclosure comment above. */
+.fif-replace-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 0 12px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Regex-mode-only reminder that replacement text is inserted literally
+   ($1 backreferences never expand — replaceinfiles.rs v1 NoExpand scope).
+   Full-width line under the input+button pair; [hidden] wins over the
+   flex display so toggling works without inline styles. Same quiet
+   treatment as .streamreplace-hint. */
+.fif-replace-regex-hint {
+  flex-basis: 100%;
+  font-size: var(--font-ui-xs);
+  color: var(--fg-faint);
+}
+
+.fif-replace-regex-hint[hidden] {
+  display: none;
+}
+
+.fif-replace-row input[type="text"] {
+  flex: 1;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: var(--font-ui);
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.fif-replace-button {
+  padding: 5px 12px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  font-weight: 500;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fif-replace-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fif-replace-summary {
+  padding: 0 12px 6px;
+  font-size: var(--font-ui-sm);
+  color: var(--fg-muted);
+}
+
+/* Appended to the summary line when the scan hit its entry cap: whole
+   files may be missing from the preview (critic P2). Warning-toned like
+   the scan-errors disclosure — this too means "the report you are about
+   to act on may be incomplete". */
+.fif-replace-truncated {
+  color: var(--warning);
+}
+
+/* Post-execute failure classification (changed_since_scan / lossy_blocked
+   / io_error / …) — danger-toned, unlike the warning-toned scan-errors
+   disclosure above, since this reports an action that already ran rather
+   than an incompleteness warning ahead of one. Always expanded (no
+   <details>): this is the direct outcome of what the user just did. */
+.fif-replace-failures-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 6px;
+}
+
+.fif-replace-failures-heading {
+  font-size: var(--font-ui-sm);
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.fif-replace-failures-group {
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.fif-replace-failures-group-label {
+  font-size: var(--font-ui-sm);
+  color: var(--danger);
+}
+
+.fif-replace-failures-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.fif-replace-failures-row {
+  display: grid;
+  grid-template-columns: minmax(80px, auto) 1fr;
+  gap: 10px;
+  font-size: var(--font-ui-xs);
+}
+
+.fif-replace-failures-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  color: var(--fg-muted);
+}
+
+.fif-replace-failures-message {
+  color: var(--fg-faint);
+}
+
+/* Per-file preview rows — rendered into the same `<ul class="fif-list">`
+   plain find's `.fif-item` rows use (never simultaneously; see
+   findinfiles.ts's renderPreviewRows), so `.fif-list`'s own
+   max-height/overflow/padding apply here unchanged and only the row
+   markup differs. */
+.fif-replace-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-ui-sm);
+}
+
+.fif-replace-item-checkbox {
+  display: flex;
+  align-items: center;
+}
+
+.fif-replace-item-checkbox input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.fif-replace-item-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fif-replace-item-count {
+  color: var(--fg-faint);
+  font-size: var(--font-ui-xs);
+  white-space: nowrap;
+}
+
+.fif-replace-item-encoding {
+  color: var(--fg-faint);
+  font-size: var(--font-ui-xs);
+  font-family: var(--editor-font-family, ui-monospace, monospace);
+  white-space: nowrap;
+}
+
+/* A skipped (oversized/malformed/unreadable) row: greyed out, never
+   checkable — the count cell takes over the encoding column too, mirroring
+   batchconvert.ts's `.batchconvert-row-failed .batchconvert-row-detected`
+   extend-to-fill treatment, since there is no separate encoding to show. */
+.fif-replace-item-skipped {
+  opacity: 0.55;
+}
+
+.fif-replace-item-skipped .fif-replace-item-count {
+  grid-column: 3 / -1;
+  white-space: normal;
+}
+
+.fif-replace-item-lossy-badge {
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: var(--font-ui-xs);
+  font-weight: 400;
+  color: var(--warning);
+  white-space: nowrap;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+}
+
+.fif-replace-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.fif-replace-execute {
+  padding: 6px 14px;
+  font: inherit;
+  font-size: var(--font-ui-sm);
+  font-weight: 500;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.fif-replace-execute:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--bg-surface);
+  color: var(--fg-faint);
+  border-color: var(--border);
 }
 
 .hexview-overlay {
