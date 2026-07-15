@@ -2,6 +2,7 @@
 //! `serde(default)` so settings added later still load old files cleanly.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tauri::{AppHandle, Runtime};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -88,6 +89,42 @@ impl Default for Preferences {
 /// (the View menu checkbox needs the persisted state at build time).
 pub fn current<R: Runtime>(app: &AppHandle<R>) -> Preferences {
     crate::store::read_json(app, "preferences.json").unwrap_or_default()
+}
+
+/// Lowercase extension of `path`'s file name, or `None` when there is none
+/// — no dot, a dotfile (leading dot, no other dot, e.g. ".gitignore"), or a
+/// trailing dot. The Rust-side mirror of the frontend's `extensionOf`
+/// (`src/extensionEncodings.ts`), which the Preferences dialog and
+/// `open_document`'s caller already rely on for the same decision.
+fn extension_of(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let dot = name.rfind('.')?;
+    if dot == 0 || dot == name.len() - 1 {
+        return None;
+    }
+    Some(name[dot + 1..].to_lowercase())
+}
+
+/// The encoding `extension_encodings` maps `path`'s extension to, or `None`
+/// when the path has no usable extension or no entry matches. This
+/// per-file lookup is the Rust-side counterpart of the frontend's
+/// `lookupExtensionEncoding`, used by any command that walks a whole
+/// folder (`replaceinfiles.rs`, `search.rs`) and therefore, unlike
+/// `open_document`, can't have the frontend resolve a single hint ahead of
+/// time — each file under the walk can have a different extension.
+/// Case-insensitive on both sides: a table saved by the current frontend
+/// is already normalized lowercase (`normalizeTable` in
+/// `extensionEncodings.ts`), but this stays defensive against a
+/// hand-edited or older-format `preferences.json`.
+pub fn extension_encoding_for(
+    extension_encodings: &[(String, String)],
+    path: &Path,
+) -> Option<String> {
+    let ext = extension_of(path)?;
+    extension_encodings
+        .iter()
+        .find(|(entry_ext, _)| entry_ext.eq_ignore_ascii_case(&ext))
+        .map(|(_, encoding)| encoding.clone())
 }
 
 #[tauri::command]
@@ -375,5 +412,76 @@ mod tests {
             let back: Preferences = serde_json::from_slice(&json).unwrap();
             assert_eq!(back.theme, theme);
         }
+    }
+
+    // --- issue #178: Rust-side extension -> encoding lookup, mirroring the
+    // frontend's `extensionOf`/`lookupExtensionEncoding`
+    // (`extensionEncodings.test.ts`) case for case, since
+    // `scan_replace_in_folder`/`execute_replace_in_folder`/
+    // `search_in_folder` walk many files in one call and so, unlike
+    // `open_document`, can't have the frontend resolve a single hint ahead
+    // of time.
+
+    #[test]
+    fn extension_of_extracts_lowercase_extension() {
+        assert_eq!(
+            extension_of(Path::new("/tmp/notes.TXT")).as_deref(),
+            Some("txt")
+        );
+        assert_eq!(
+            extension_of(Path::new("archive.tar.gz")).as_deref(),
+            Some("gz"),
+            "only the last dot segment counts"
+        );
+    }
+
+    #[test]
+    fn extension_of_none_for_dotfile_trailing_dot_and_no_dot() {
+        assert_eq!(extension_of(Path::new("/tmp/Makefile")), None);
+        assert_eq!(
+            extension_of(Path::new("/tmp/.gitignore")),
+            None,
+            "a dotfile's leading dot is not an extension marker"
+        );
+        assert_eq!(
+            extension_of(Path::new("/tmp/trailing.")),
+            None,
+            "a trailing dot has no extension after it"
+        );
+    }
+
+    #[test]
+    fn extension_encoding_for_finds_case_insensitive_match() {
+        let table = vec![
+            ("txt".to_string(), "Big5".to_string()),
+            ("log".to_string(), "UTF-8".to_string()),
+        ];
+        assert_eq!(
+            extension_encoding_for(&table, Path::new("/tmp/a.txt")).as_deref(),
+            Some("Big5")
+        );
+        assert_eq!(
+            extension_encoding_for(&table, Path::new("/tmp/A.TXT")).as_deref(),
+            Some("Big5"),
+            "extension matching is case-insensitive"
+        );
+        assert_eq!(
+            extension_encoding_for(&table, Path::new("/logs/app.log")).as_deref(),
+            Some("UTF-8")
+        );
+    }
+
+    #[test]
+    fn extension_encoding_for_none_when_unmapped_or_extensionless() {
+        let table = vec![("txt".to_string(), "Big5".to_string())];
+        assert_eq!(
+            extension_encoding_for(&table, Path::new("/tmp/a.csv")),
+            None
+        );
+        assert_eq!(
+            extension_encoding_for(&table, Path::new("/tmp/Makefile")),
+            None
+        );
+        assert_eq!(extension_encoding_for(&[], Path::new("/tmp/a.txt")), None);
     }
 }

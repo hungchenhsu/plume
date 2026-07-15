@@ -90,8 +90,12 @@
 //!
 //! [`scan_one_file`]'s counting and lossy-prediction logic is
 //! encoding-route-*independent*: it always works from the fully decoded
-//! text (`encoding::decode_auto`), never raw bytes, because a dry run
-//! writes nothing and has no byte-preservation obligation to honor.
+//! text (`encoding::decode_auto_with_extension` — issue #178: honoring the
+//! same per-extension preference `open_document` does, looked up per file
+//! from the table via `prefs::extension_encoding_for` since one scan call
+//! can walk files of many different extensions), never raw bytes, because
+//! a dry run writes nothing and has no byte-preservation obligation to
+//! honor.
 //!
 //! ## Trust mechanisms (this is the highest-risk domain in the app: a
 //! folder-wide destructive rewrite over user files)
@@ -159,6 +163,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Runtime};
 
 /// Directory names never descended into — matches `search.rs::SKIP_DIRS`
 /// (and `batch.rs`'s own identical copy).
@@ -419,8 +424,9 @@ fn split_terminator(segment: &[u8]) -> (&[u8], &[u8]) {
 /// `encoding_name` — see the module doc's "lossy two-phase gate" section
 /// for why probing `replacement` alone (rather than reconstructing a whole
 /// matched line) is sufficient. Unknown encoding names never occur here in
-/// practice (`encoding_name` always comes from `encoding::decode_auto`'s
-/// own report, which always round-trips), but returns `false` rather than
+/// practice (`encoding_name` always comes from
+/// `encoding::decode_auto_with_extension`'s own report, which always
+/// round-trips), but returns `false` rather than
 /// panicking if one ever did — a scan-time prediction has no user-facing
 /// way to surface an error mid-report.
 fn replacement_is_lossy(encoding_name: &str, replacement: &str) -> bool {
@@ -450,11 +456,20 @@ fn skipped_entry(path: String, reason: String) -> ReplaceScanEntry {
 /// Scan one file: `None` means it was successfully searched and had zero
 /// matches (omitted from the report — see [`ReplaceScanEntry`]'s doc
 /// comment); `Some` covers both an actual match and a skip.
+///
+/// `extension_encodings` is the same per-extension preference table
+/// `open_document` honors via `extension_encoding` (issue #178) — this
+/// module looks each file's own extension up in it directly
+/// (`prefs::extension_encoding_for`) rather than receiving one
+/// already-resolved hint per call, because a single folder walk can visit
+/// files with many different extensions where `open_document` only ever
+/// opens one.
 fn scan_one_file(
     path: &Path,
     matcher: &regex::Regex,
     replacement: &str,
     lossy_cache: &mut HashMap<String, bool>,
+    extension_encodings: &[(String, String)],
 ) -> Option<ReplaceScanEntry> {
     let path_str = path.to_string_lossy().into_owned();
 
@@ -484,7 +499,8 @@ fn scan_one_file(
         ));
     }
 
-    let decoded = encoding::decode_auto(&bytes);
+    let ext_hint = crate::prefs::extension_encoding_for(extension_encodings, path);
+    let decoded = encoding::decode_auto_with_extension(&bytes, ext_hint.as_deref());
     if decoded.malformed {
         return Some(ReplaceScanEntry {
             path: path_str,
@@ -533,13 +549,20 @@ fn scan_one_file(
 /// identical fail-closed convention; once the walk is underway, a
 /// subdirectory or entry that can't be read is recorded in
 /// `ReplaceScanReport::scan_errors` instead of silently vanishing.
-#[tauri::command(async)]
-pub fn scan_replace_in_folder(
+///
+/// Pure, app-independent core behind the [`scan_replace_in_folder`] command
+/// (issue #178): kept separate so tests can drive it directly with an
+/// explicit `extension_encodings` table instead of needing a live Tauri
+/// `AppHandle` — mirrors `store.rs`'s `write_json_to_path`/`write_json`
+/// split (a path- or table-taking pure function, tested directly; a thin
+/// `AppHandle`-resolving command wrapper, not separately unit-tested).
+pub fn scan_replace_in_folder_with_extensions(
     folder: String,
     query: String,
     case_sensitive: bool,
     use_regex: bool,
     replacement: String,
+    extension_encodings: &[(String, String)],
 ) -> Result<ReplaceScanReport, String> {
     if query.is_empty() {
         return Ok(ReplaceScanReport {
@@ -564,7 +587,13 @@ pub fn scan_replace_in_folder(
             truncated = true;
             break;
         }
-        if let Some(entry) = scan_one_file(path, &matcher, &replacement, &mut lossy_cache) {
+        if let Some(entry) = scan_one_file(
+            path,
+            &matcher,
+            &replacement,
+            &mut lossy_cache,
+            extension_encodings,
+        ) {
             entries.push(entry);
         }
     }
@@ -573,6 +602,34 @@ pub fn scan_replace_in_folder(
         scan_errors,
         truncated,
     })
+}
+
+/// Tauri command wrapper: resolves the per-extension encoding preference
+/// table (`Preferences::extension_encodings`, `prefs::current`) from the
+/// app config directory and forwards it to
+/// [`scan_replace_in_folder_with_extensions`] — see that function's doc
+/// comment and issue #178. `app` is injected by Tauri from the invocation
+/// context, not sent by the frontend (same mechanism `prefs::
+/// load_preferences`/`recent::load_recent_files` already rely on), so no
+/// frontend call site needs to change for this to take effect.
+#[tauri::command(async)]
+pub fn scan_replace_in_folder<R: Runtime>(
+    app: AppHandle<R>,
+    folder: String,
+    query: String,
+    case_sensitive: bool,
+    use_regex: bool,
+    replacement: String,
+) -> Result<ReplaceScanReport, String> {
+    let extension_encodings = crate::prefs::current(&app).extension_encodings;
+    scan_replace_in_folder_with_extensions(
+        folder,
+        query,
+        case_sensitive,
+        use_regex,
+        replacement,
+        &extension_encodings,
+    )
 }
 
 /// ASCII-compatible stateless encodings: raw file bytes are split into line
@@ -662,7 +719,10 @@ fn whole_file_replace(
         out_text.push_str(terminator);
     }
     let (out_bytes, unmappable) = encoding::encode(&out_text, encoding.name(), decoded.had_bom)
-        .expect("decode_auto's reported encoding always round-trips through Encoding::for_label");
+        .expect(
+            "decode_auto_with_extension's reported encoding always round-trips \
+             through Encoding::for_label",
+        );
     (out_bytes, replaced_count, unmappable)
 }
 
@@ -678,12 +738,17 @@ fn err_entry(path: String, status: &str, message: String) -> ReplaceExecuteEntry
 /// Execute one target end to end. Never trusts the scan's snapshot beyond
 /// the explicit `expected_fingerprint` continuity check — content is always
 /// freshly read and freshly decoded here. See the module doc's "trust
-/// mechanisms" section for the full sequence.
+/// mechanisms" section for the full sequence. `extension_encodings` is the
+/// same per-extension preference table `scan_one_file` consults (issue
+/// #178) — looked up again here, independently, from this call's own
+/// freshly-read bytes and path, so scan and execute can never disagree
+/// about which encoding a given file's extension hint resolves to.
 fn execute_one(
     target: &ReplaceExecuteTarget,
     matcher: &regex::Regex,
     replacement: &str,
     allow_lossy: bool,
+    extension_encodings: &[(String, String)],
 ) -> ReplaceExecuteEntry {
     let path = Path::new(&target.path);
     let path_str = target.path.clone();
@@ -733,7 +798,8 @@ fn execute_one(
         );
     }
 
-    let decoded = encoding::decode_auto(&bytes);
+    let ext_hint = crate::prefs::extension_encoding_for(extension_encodings, path);
+    let decoded = encoding::decode_auto_with_extension(&bytes, ext_hint.as_deref());
     if decoded.malformed {
         return err_entry(
             path_str,
@@ -745,7 +811,7 @@ fn execute_one(
         );
     }
     let encoding = Encoding::for_label(decoded.encoding.as_bytes())
-        .expect("decode_auto's reported encoding always round-trips");
+        .expect("decode_auto_with_extension's reported encoding always round-trips");
 
     let (out_bytes, replaced_count, unmappable) = if encoding.is_ascii_compatible() {
         line_level_replace(&bytes, decoded.had_bom, encoding, matcher, replacement)
@@ -803,8 +869,46 @@ fn execute_one(
 /// failure never stops the rest of the batch. Unlike
 /// `scan_replace_in_folder`, an empty `query` is rejected outright rather
 /// than silently doing nothing — see [`build_matcher`].
+///
+/// Pure, app-independent core behind the [`execute_replace_in_folder`]
+/// command (issue #178) — see [`scan_replace_in_folder_with_extensions`]'s
+/// doc comment for why this split exists. `extension_encodings` is the
+/// same table `scan_replace_in_folder_with_extensions` was given; passing
+/// it through again here (rather than trusting anything cached from the
+/// scan) keeps `execute_one`'s own fresh read-and-decode honest end to
+/// end, the same way `expected_fingerprint` is checked again instead of
+/// trusted from the scan.
+pub fn execute_replace_in_folder_with_extensions(
+    files: Vec<ReplaceExecuteTarget>,
+    query: String,
+    case_sensitive: bool,
+    use_regex: bool,
+    replacement: String,
+    allow_lossy: bool,
+    extension_encodings: &[(String, String)],
+) -> Result<Vec<ReplaceExecuteEntry>, String> {
+    let matcher = build_matcher(&query, case_sensitive, use_regex)?;
+    Ok(files
+        .iter()
+        .map(|target| {
+            execute_one(
+                target,
+                &matcher,
+                &replacement,
+                allow_lossy,
+                extension_encodings,
+            )
+        })
+        .collect())
+}
+
+/// Tauri command wrapper: resolves the per-extension encoding preference
+/// table the same way [`scan_replace_in_folder`] does and forwards it to
+/// [`execute_replace_in_folder_with_extensions`] — see that function's doc
+/// comment and issue #178.
 #[tauri::command(async)]
-pub fn execute_replace_in_folder(
+pub fn execute_replace_in_folder<R: Runtime>(
+    app: AppHandle<R>,
     files: Vec<ReplaceExecuteTarget>,
     query: String,
     case_sensitive: bool,
@@ -812,11 +916,16 @@ pub fn execute_replace_in_folder(
     replacement: String,
     allow_lossy: bool,
 ) -> Result<Vec<ReplaceExecuteEntry>, String> {
-    let matcher = build_matcher(&query, case_sensitive, use_regex)?;
-    Ok(files
-        .iter()
-        .map(|target| execute_one(target, &matcher, &replacement, allow_lossy))
-        .collect())
+    let extension_encodings = crate::prefs::current(&app).extension_encodings;
+    execute_replace_in_folder_with_extensions(
+        files,
+        query,
+        case_sensitive,
+        use_regex,
+        replacement,
+        allow_lossy,
+        &extension_encodings,
+    )
 }
 
 #[cfg(test)]
@@ -861,13 +970,14 @@ mod tests {
         bytes.push(b'\n');
         std::fs::write(&file, &bytes).unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report.len(), 1);
@@ -905,13 +1015,14 @@ mod tests {
         let original = "unmatched café line\r\nMARKER replace me\r\nlast unmatched\r\n";
         std::fs::write(&file, original.as_bytes()).unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "REPLACED".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
@@ -935,13 +1046,14 @@ mod tests {
         let original = "unmatched café line\rMARKER replace me\rlast unmatched\r";
         std::fs::write(&file, original.as_bytes()).unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "REPLACED".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
@@ -971,13 +1083,14 @@ mod tests {
             "unmatched LF café\nMARKER one\r\nunmatched CRLF\r\nMARKER two\runmatched CR\r";
         std::fs::write(&file, original.as_bytes()).unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "X".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
@@ -1004,13 +1117,14 @@ mod tests {
         assert!(!unmappable);
         std::fs::write(&file, &bytes).unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
@@ -1069,25 +1183,27 @@ mod tests {
 
         std::fs::write(&file, &bytes).unwrap();
 
-        let scan = scan_replace_in_folder(
+        let scan = scan_replace_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
+            &[],
         )
         .unwrap();
         assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
         assert_eq!(scan.entries[0].encoding, "ISO-2022-JP");
         assert_eq!(scan.entries[0].match_count, 1);
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
@@ -1120,12 +1236,13 @@ mod tests {
         let file = dir.join("doc.txt");
         std::fs::write(&file, b"MARKER original content\n").unwrap();
 
-        let scan = scan_replace_in_folder(
+        let scan = scan_replace_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
+            &[],
         )
         .unwrap();
         assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
@@ -1140,13 +1257,14 @@ mod tests {
         let external_content = b"externally written content, much longer than the original";
         std::fs::write(&file, external_content).unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, expected_fingerprint)],
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -1180,24 +1298,26 @@ mod tests {
         // U+1F389 PARTY POPPER has no Big5 mapping.
         let lossy_replacement = "TOKEN\u{1F389}";
 
-        let scan = scan_replace_in_folder(
+        let scan = scan_replace_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "MARKER".to_string(),
             true,
             false,
             lossy_replacement.to_string(),
+            &[],
         )
         .unwrap();
         assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
         assert!(scan.entries[0].lossy, "{:?}", scan.entries[0]);
 
-        let blocked = execute_replace_in_folder(
+        let blocked = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             lossy_replacement.to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(blocked[0].status, STATUS_LOSSY_BLOCKED, "{:?}", blocked[0]);
@@ -1208,13 +1328,14 @@ mod tests {
             "a blocked lossy execute must not touch the file at all"
         );
 
-        let allowed = execute_replace_in_folder(
+        let allowed = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             lossy_replacement.to_string(),
             true,
+            &[],
         )
         .unwrap();
         assert_eq!(allowed[0].status, STATUS_OK, "{:?}", allowed[0]);
@@ -1238,13 +1359,14 @@ mod tests {
         let file = dir.join("doc.txt");
         std::fs::write(&file, b"before abc after\n").unwrap();
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "a(b)c".to_string(),
             true,
             true,
             "$1 literal".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
@@ -1277,13 +1399,14 @@ mod tests {
         // this directory -- what `atomic_write` does first -- fails.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        let result = execute_replace_in_folder(
+        let result = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "MARKER".to_string(),
             true,
             false,
             "TOKEN".to_string(),
             false,
+            &[],
         );
 
         // Restore before any assertion can panic and leave a locked
@@ -1433,12 +1556,13 @@ mod tests {
         let file = dir.join("doc.txt");
         std::fs::write(&file, b"MARKER first\rMARKER second\r").unwrap();
 
-        let scan = scan_replace_in_folder(
+        let scan = scan_replace_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "^MARKER".to_string(),
             true,
             true,
             "X".to_string(),
+            &[],
         )
         .unwrap();
         assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
@@ -1448,18 +1572,184 @@ mod tests {
              both lines, not just the first"
         );
 
-        let report = execute_replace_in_folder(
+        let report = execute_replace_in_folder_with_extensions(
             vec![target(&file, None)],
             "^MARKER".to_string(),
             true,
             true,
             "X".to_string(),
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(
             report[0].replaced_count, 2,
             "execute must agree with the scan count"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- issue #178: scan/execute must honor the per-extension encoding
+    // preference the same way `open_document` does
+    // (`encoding::decode_auto_with_extension`), instead of decoding
+    // through plain `encoding::decode_auto` -- a folder-wide walk has to
+    // look each file's own extension up in the table itself, since unlike
+    // `open_document` there is no single frontend-resolved hint to forward
+    // for a whole folder of (potentially differently-extensioned) files.
+
+    /// Failing-test-first, issue #178 requirement 1: with no hint,
+    /// chardetng misdetects this real fixture (a short Big5 sample mixed
+    /// with ASCII) as EUC-KR -- garbling "測試" while "MARKER" (pure ASCII)
+    /// still reads fine and the scan still counts a match. With the
+    /// "txt" -> "Big5" preference wired through, `scan_replace_in_folder`
+    /// must report the same encoding `open_document`
+    /// (`encoding::decode_auto_with_extension`) would for the identical
+    /// bytes and hint.
+    #[test]
+    fn scan_honors_extension_encoding_hint_and_agrees_with_open_document() {
+        let dir = fixture_dir("ext-hint-scan");
+        let file = dir.join("notes.txt");
+        let text = "測試 MARKER\n";
+        let (bytes, unmappable) = encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        std::fs::write(&file, &bytes).unwrap();
+
+        // Sanity: this fixture must actually be the kind of short sample
+        // that's ambiguous without the hint -- otherwise the test below
+        // would pass even with today's bug.
+        let baseline = encoding::decode_auto(&bytes);
+        assert_ne!(
+            baseline.encoding, "Big5",
+            "fixture precondition: chardetng must not already guess Big5 \
+             unaided, or this test doesn't exercise the hint at all"
+        );
+
+        let extension_encodings = vec![("txt".to_string(), "Big5".to_string())];
+        let scan = scan_replace_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "MARKER".to_string(),
+            true,
+            false,
+            "TOKEN".to_string(),
+            &extension_encodings,
+        )
+        .unwrap();
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].match_count, 1);
+        assert_eq!(scan.entries[0].encoding, "Big5");
+
+        let what_open_document_would_show =
+            encoding::decode_auto_with_extension(&bytes, Some("Big5"));
+        assert_eq!(
+            scan.entries[0].encoding, what_open_document_would_show.encoding,
+            "scan must agree with what open_document would choose for this file"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Failing-test-first, issue #178 requirement 2 (no regression): a
+    /// table with no entry for this file's extension -- or an empty table,
+    /// what every other test in this module passes -- must leave scan's
+    /// behavior exactly as it was before this fix, still plain
+    /// `decode_auto`.
+    #[test]
+    fn scan_without_matching_extension_entry_is_unchanged() {
+        let dir = fixture_dir("ext-hint-scan-no-match");
+        let file = dir.join("notes.txt");
+        let text = "測試 MARKER\n";
+        let (bytes, unmappable) = encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        std::fs::write(&file, &bytes).unwrap();
+        let expected = encoding::decode_auto(&bytes);
+
+        // Entry present, but for a different extension -- must not apply.
+        let extension_encodings = vec![("log".to_string(), "Big5".to_string())];
+        let scan = scan_replace_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "MARKER".to_string(),
+            true,
+            false,
+            "TOKEN".to_string(),
+            &extension_encodings,
+        )
+        .unwrap();
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].encoding, expected.encoding);
+        assert_eq!(scan.entries[0].match_count, 1);
+
+        // Empty table, matching every pre-existing test in this module.
+        let scan_empty = scan_replace_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "MARKER".to_string(),
+            true,
+            false,
+            "TOKEN".to_string(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(scan_empty.entries[0].encoding, expected.encoding);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Failing-test-first, issue #178 requirement 3: execute must honor the
+    /// same hint scan did, and the two must never disagree. Without the
+    /// hint, this fixture's matched line ("MARKER" survives, "測試" gets
+    /// garbled) gets rewritten under the *wrong* detected encoding
+    /// (EUC-KR), corrupting its own non-ASCII bytes on the very line that
+    /// matched -- exactly the harm issue #178 describes. With the hint
+    /// wired through both scan and execute, the file, reopened the way
+    /// `open_document` would (with the same hint), must decode back to the
+    /// correctly-replaced Chinese text.
+    #[test]
+    fn execute_honors_extension_encoding_hint_matching_scan_and_open_document() {
+        let dir = fixture_dir("ext-hint-execute");
+        let file = dir.join("notes.txt");
+        let text = "測試 MARKER\n";
+        let (bytes, unmappable) = encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        std::fs::write(&file, &bytes).unwrap();
+
+        let extension_encodings = vec![("txt".to_string(), "Big5".to_string())];
+
+        let scan = scan_replace_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "MARKER".to_string(),
+            true,
+            false,
+            "TOKEN".to_string(),
+            &extension_encodings,
+        )
+        .unwrap();
+        assert_eq!(scan.entries.len(), 1, "{:?}", scan.entries);
+        assert_eq!(scan.entries[0].encoding, "Big5");
+
+        let report = execute_replace_in_folder_with_extensions(
+            vec![target(&file, scan.entries[0].fingerprint)],
+            "MARKER".to_string(),
+            true,
+            false,
+            "TOKEN".to_string(),
+            false,
+            &extension_encodings,
+        )
+        .unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].status, STATUS_OK, "{:?}", report[0]);
+        assert_eq!(report[0].replaced_count, 1);
+
+        let on_disk = std::fs::read(&file).unwrap();
+        let reopened = encoding::decode_auto_with_extension(&on_disk, Some("Big5"));
+        assert!(!reopened.malformed, "{on_disk:02X?}");
+        assert_eq!(reopened.encoding, "Big5");
+        assert_eq!(
+            reopened.content, "測試 TOKEN\n",
+            "execute must have used the Big5 hint to re-encode -- the same \
+             encoding open_document would use to reopen this file -- so the \
+             untouched Chinese text on the matched line survives correctly \
+             instead of being corrupted under a misdetected encoding"
         );
 
         std::fs::remove_dir_all(&dir).ok();

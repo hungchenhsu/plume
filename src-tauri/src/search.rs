@@ -1,11 +1,16 @@
 //! Find-in-files backend. Files are decoded through the same detection
-//! pipeline as the editor, so matches are found in legacy-encoded files
-//! (Big5, Shift_JIS, …) that byte-oriented search would miss.
+//! pipeline as the editor — including the per-extension encoding
+//! preference (`Preferences::extension_encodings`, issue #178) —
+//! so matches are found in legacy-encoded files (Big5, Shift_JIS, …) that
+//! byte-oriented search would miss, and this read-only tab never disagrees
+//! with what the editor or `replaceinfiles.rs`'s Replace tab would show for
+//! the same file.
 
 use crate::encoding;
 use crate::linebreak;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Runtime};
 
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -20,7 +25,7 @@ const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_RESULTS: usize = 500;
 const MAX_PREVIEW_CHARS: usize = 200;
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchMatch {
     pub path: String,
@@ -185,12 +190,22 @@ fn search_text(text: &str, matcher: &Matcher, path: &str, out: &mut Vec<SearchMa
     }
 }
 
-#[tauri::command(async)]
-pub fn search_in_folder(
+/// Pure, app-independent core behind the [`search_in_folder`] command
+/// (issue #178): kept separate so tests can drive it directly with an
+/// explicit `extension_encodings` table instead of needing a live Tauri
+/// `AppHandle` — mirrors `replaceinfiles.rs`'s identical
+/// `scan_replace_in_folder`/`scan_replace_in_folder_with_extensions` split
+/// (see that module for the full rationale, including the `store.rs`
+/// precedent this follows). `extension_encodings` is looked up per file
+/// via `prefs::extension_encoding_for`, exactly like
+/// `replaceinfiles::scan_one_file`, since one folder walk can visit files
+/// of many different extensions where `open_document` only ever opens one.
+pub fn search_in_folder_with_extensions(
     folder: String,
     query: String,
     case_sensitive: bool,
     use_regex: bool,
+    extension_encodings: &[(String, String)],
 ) -> Result<SearchResults, String> {
     if query.is_empty() {
         return Ok(SearchResults {
@@ -228,7 +243,8 @@ pub fn search_in_folder(
             continue;
         }
         files_scanned += 1;
-        let decoded = encoding::decode_auto(&bytes);
+        let ext_hint = crate::prefs::extension_encoding_for(extension_encodings, file);
+        let decoded = encoding::decode_auto_with_extension(&bytes, ext_hint.as_deref());
         search_text(
             &decoded.content,
             &matcher,
@@ -245,6 +261,31 @@ pub fn search_in_folder(
         files_scanned,
         scan_errors,
     })
+}
+
+/// Tauri command wrapper: resolves the per-extension encoding preference
+/// table from the app config directory and forwards it to
+/// [`search_in_folder_with_extensions`] — see that function's doc comment
+/// and issue #178. `app` is injected by Tauri from the invocation context,
+/// not sent by the frontend, so no frontend call site needs to change for
+/// this to take effect (same mechanism `replaceinfiles::
+/// scan_replace_in_folder` already uses).
+#[tauri::command(async)]
+pub fn search_in_folder<R: Runtime>(
+    app: AppHandle<R>,
+    folder: String,
+    query: String,
+    case_sensitive: bool,
+    use_regex: bool,
+) -> Result<SearchResults, String> {
+    let extension_encodings = crate::prefs::current(&app).extension_encodings;
+    search_in_folder_with_extensions(
+        folder,
+        query,
+        case_sensitive,
+        use_regex,
+        &extension_encodings,
+    )
 }
 
 #[cfg(test)]
@@ -265,22 +306,24 @@ mod tests {
         let (big5_bytes, _) = encoding::encode("第一行\n搜尋目標在這\n", "Big5", false).unwrap();
         std::fs::write(dir.join("b.txt"), big5_bytes).unwrap();
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "目標".into(),
             true,
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(results.matches.len(), 1);
         assert_eq!(results.matches[0].line, 2);
         assert!(results.matches[0].preview.contains("搜尋目標"));
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "HELLO".into(),
             false,
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(results.matches.len(), 1);
@@ -294,21 +337,23 @@ mod tests {
         let (big5_bytes, _) = encoding::encode("錯誤代碼:E42\n正常\n", "Big5", false).unwrap();
         std::fs::write(dir.join("b.txt"), big5_bytes).unwrap();
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             r"^error \d{4}".into(),
             false,
             true,
+            &[],
         )
         .unwrap();
         assert_eq!(results.matches.len(), 1);
         assert!(results.matches[0].preview.starts_with("ERROR 2026"));
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             r"代碼:E\d+".into(),
             true,
             true,
+            &[],
         )
         .unwrap();
         assert_eq!(results.matches.len(), 1);
@@ -319,11 +364,12 @@ mod tests {
     #[test]
     fn invalid_regex_returns_friendly_error() {
         let dir = fixture_dir("badregex");
-        let result = search_in_folder(
+        let result = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "[unclosed".into(),
             true,
             true,
+            &[],
         );
         assert!(result.unwrap_err().starts_with("Invalid regex"));
         std::fs::remove_dir_all(&dir).ok();
@@ -336,11 +382,12 @@ mod tests {
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join(".git").join("c.txt"), "needle\n").unwrap();
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "needle".into(),
             true,
             false,
+            &[],
         )
         .unwrap();
         assert!(results.matches.is_empty());
@@ -360,11 +407,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!dir.exists(), "fixture precondition: path must not exist");
 
-        let err = search_in_folder(
+        let err = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "needle".into(),
             true,
             false,
+            &[],
         )
         .unwrap_err();
         assert!(
@@ -393,11 +441,12 @@ mod tests {
         // No read/execute bit at all: `read_dir(&locked)` itself fails.
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "needle".into(),
             true,
             false,
+            &[],
         );
 
         // Restore permissions immediately — before any assertion below can
@@ -452,11 +501,12 @@ mod tests {
         // resolve/stat the child (needs search permission on `no_exec`).
         std::fs::set_permissions(&no_exec, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        let results = search_in_folder(
+        let results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "needle".into(),
             true,
             false,
+            &[],
         );
 
         // Restore before any assertion can panic — same reasoning as
@@ -581,11 +631,12 @@ mod tests {
         let dir = fixture_dir("cross-module-agreement");
         std::fs::write(dir.join("doc.txt"), b"needle one\rneedle two\r").unwrap();
 
-        let search_results = search_in_folder(
+        let search_results = search_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "needle".into(),
             true,
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -597,18 +648,114 @@ mod tests {
         assert_eq!(search_results.matches[0].line, 1);
         assert_eq!(search_results.matches[1].line, 2);
 
-        let replace_scan = crate::replaceinfiles::scan_replace_in_folder(
+        let replace_scan = crate::replaceinfiles::scan_replace_in_folder_with_extensions(
             dir.to_string_lossy().into_owned(),
             "needle".into(),
             true,
             false,
             "X".into(),
+            &[],
         )
         .unwrap();
         assert_eq!(replace_scan.entries.len(), 1, "{:?}", replace_scan.entries);
         assert_eq!(
             replace_scan.entries[0].match_count, 2,
             "search and replace-scan must agree on how many matches this file contains"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- issue #178: `search_in_folder` must honor the per-extension
+    // encoding preference the same way `open_document`
+    // (`encoding::decode_auto_with_extension`) and
+    // `replaceinfiles::scan_replace_in_folder` do, instead of decoding
+    // through plain `encoding::decode_auto`. Unlike a wrong *label* on a
+    // read-only search, the observable harm here is a silently missed
+    // match: a query for real Chinese text can find nothing at all in a
+    // file whose bytes were misdetected without the hint, even though the
+    // text is plainly there once decoded correctly.
+
+    /// Failing-test-first, issue #178: with no hint, chardetng misdetects
+    /// this real fixture (a short Big5 sample) as EUC-KR, garbling "測試"
+    /// into unrelated Korean characters. A search for "測試" itself must
+    /// therefore find nothing without the hint, but must find it once the
+    /// "txt" -> "Big5" preference is wired through -- matching what
+    /// `encoding::decode_auto_with_extension` (and therefore
+    /// `open_document`) reports for the identical bytes and hint.
+    #[test]
+    fn search_honors_extension_encoding_hint_and_finds_the_match() {
+        let dir = fixture_dir("ext-hint-search");
+        let text = "測試 MARKER\n";
+        let (bytes, unmappable) = encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        std::fs::write(dir.join("notes.txt"), &bytes).unwrap();
+
+        // Sanity: this fixture must actually be ambiguous without the
+        // hint, or this test doesn't exercise it at all.
+        let baseline = encoding::decode_auto(&bytes);
+        assert!(
+            !baseline.content.contains("測試"),
+            "fixture precondition: chardetng must not already recover \"測試\" \
+             unaided (decoded as {:?}: {:?})",
+            baseline.encoding,
+            baseline.content
+        );
+
+        let extension_encodings = vec![("txt".to_string(), "Big5".to_string())];
+        let results = search_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "測試".into(),
+            true,
+            false,
+            &extension_encodings,
+        )
+        .unwrap();
+        assert_eq!(
+            results.matches.len(),
+            1,
+            "the Big5 hint must let search recover the real text: {:?}",
+            results.matches
+        );
+        assert!(results.matches[0].preview.contains("測試"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Failing-test-first, issue #178 (no regression): a table with an
+    /// entry for a *different* extension must leave search's behavior
+    /// identical to an empty table (today's, pre-fix, behavior).
+    #[test]
+    fn search_without_matching_extension_entry_is_unchanged() {
+        let dir = fixture_dir("ext-hint-search-no-match");
+        let text = "測試 MARKER\n";
+        let (bytes, unmappable) = encoding::encode(text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        std::fs::write(dir.join("notes.txt"), &bytes).unwrap();
+
+        let mismatched_table = vec![("log".to_string(), "Big5".to_string())];
+        let with_mismatched_entry = search_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "MARKER".into(),
+            true,
+            false,
+            &mismatched_table,
+        )
+        .unwrap();
+        let with_empty_table = search_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "MARKER".into(),
+            true,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(with_mismatched_entry.matches, with_empty_table.matches);
+        assert_eq!(
+            with_mismatched_entry.matches.len(),
+            1,
+            "{:?}",
+            with_mismatched_entry.matches
         );
 
         std::fs::remove_dir_all(&dir).ok();
