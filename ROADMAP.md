@@ -916,10 +916,24 @@ surface for incoming contributors.
 - [x] July dependency cadence: lockfile-level patch/minor float, no
   manifest changes, full local matrix green (merged as #156 ahead of
   this section — routine DIRECTION §7 policy, not new scope)
-- [ ] #136: explicit-encoding UTF-8 large-file preview applies the same
+- [x] #136: explicit-encoding UTF-8 large-file preview applies the same
   tail trim gate as auto-detect (mid-character cut at the 2 MiB window
   edge misreports U+FFFD/malformed); real interior malformed bytes must
-  still surface [danger]
+  still surface [danger]. The gate now asks "does the effective encoding
+  resolve to UTF-8" via a new `encoding::is_utf8_label` that shares the
+  same `Encoding::for_label` normalization as the actual decode — no
+  WHATWG label spelling can make the gate and the decode disagree.
+  `next_offset` takes the trimmed length, pinned by a
+  `str::from_utf8(&full[..next_offset])` boundary assertion. The trim
+  can never swallow a real EOF-malformed file: `truncated` requires
+  total size > 10 MiB while the window is 2 MiB, so a trimmed tail is
+  always strictly file-interior (adversarial review confirmed);
+  interior bad bytes and ≤10 MiB files keep surfacing `malformed`
+  unchanged, and auto-detect/UTF-16/legacy explicit paths are
+  bit-identical to before (asserted by an explicit-vs-auto equivalence
+  test). Same-shaped gap for explicit legacy multi-byte encodings
+  (Big5/Shift_JIS/GBK — no UTF-8-style trim helper exists for them)
+  found out-of-scope and filed as #165.
 - [ ] Chunk-paging property fuzz: deterministic-PRNG random operation
   sequences (Next/Prev/goto/append/prepend × line-ending mixes ×
   multi-byte boundaries) checked against whole-file ground truth;

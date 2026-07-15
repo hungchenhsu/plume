@@ -258,20 +258,49 @@ fn open_document(
             extension_encoding.as_deref(),
         );
         let slice = preview_slice(&raw, PREVIEW_BYTES, utf16);
-        // Issue #71 (single-line P3): for a non-UTF-16 auto-detected
-        // preview, `preview_slice` cuts at the last newline — a clean
-        // UTF-8 boundary the real decode's confident-UTF-8 gate relies
-        // on. A single very long line with no newline in the window has
-        // no such cut, so the slice can still end mid-character; left
-        // as-is the decode below would miss that gate and an extension
-        // hint would hijack the whole window into mojibake. Trimming the
-        // truncated trailing UTF-8 sequence realigns it. Scoped to
-        // auto-detect (an explicit reopen decodes exactly as asked) and
-        // to non-UTF-16 (a UTF-16-aligned slice must stay whole; real
-        // UTF-16 has no truncated-UTF-8 tail to trim). A no-op unless the
-        // tail really is a split multibyte sequence, so the multi-line
-        // and clean-cut cases are unaffected.
-        let slice = if encoding.is_none() && utf16.is_none() {
+        // Issue #71 (single-line P3) / #136: for a non-UTF-16 preview
+        // whose *effective* encoding is UTF-8, `preview_slice` cuts at
+        // the last newline — a clean UTF-8 boundary the real decode
+        // relies on (auto-detect's confident-UTF-8 gate; an explicit
+        // UTF-8 label's direct decode just as much). A single very long
+        // line with no newline in the window has no such cut, so the
+        // slice can still end mid-character; left as-is, auto-detect
+        // would miss its gate and an extension hint could hijack the
+        // whole window into mojibake, while an explicit UTF-8 reopen
+        // would simply decode the truncated tail as malformed — a
+        // spurious U+FFFD for a file that is not actually corrupt
+        // anywhere (#136). Trimming the truncated trailing UTF-8
+        // sequence realigns it, and `next_offset` below is derived from
+        // the (possibly trimmed) slice's own length, so a trimmed open
+        // always hands the next chunk read a character-aligned offset
+        // too.
+        //
+        // Applies whenever the effective encoding is UTF-8: during
+        // auto-detection (`encoding.is_none()` — trimming first is what
+        // lets detection itself reach the verdict it would on the whole
+        // file, so this cannot be narrowed to "only once we already know
+        // it's UTF-8"; the trim is a no-op for any other detected
+        // encoding, see below) or when the caller explicitly reopened as
+        // UTF-8 (`encoding::is_utf8_label`; before #136 this took the
+        // untrimmed `else` branch below). Both stay scoped to non-UTF-16
+        // (`utf16.is_none()`): a UTF-16-aligned slice must stay whole,
+        // and real UTF-16 has no truncated-UTF-8 tail to trim. An
+        // explicit non-UTF-8 label (e.g. Big5) is untouched either way —
+        // byte-range trimming is only sound for UTF-8, the one encoding
+        // `trim_truncated_utf8_tail` validates against via
+        // `str::from_utf8`. That same validation is also why this is
+        // safe to apply unconditionally for auto-detect regardless of
+        // what encoding detection eventually settles on: the function
+        // only ever removes bytes that form a truncated-at-the-very-end
+        // multibyte sequence (`error_len() == None`) and otherwise
+        // returns its input unchanged — a genuine *interior* malformed
+        // sequence (`error_len() == Some(_)`, e.g. real non-UTF-8 bytes,
+        // or truly corrupt UTF-8) is left in place and still reported as
+        // malformed, and the multi-line/clean-cut cases are untouched
+        // because they never hit the truncated-tail branch at all.
+        let effective_utf8 =
+            encoding.is_none() || encoding.as_deref().is_some_and(encoding::is_utf8_label);
+        let slice = if utf16.is_none() && effective_utf8 {
             encoding::trim_truncated_utf8_tail(slice)
         } else {
             slice
@@ -2214,6 +2243,119 @@ mod tests {
         );
 
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #136 core regression. Same fixture as
+    /// `open_document_large_cjk_utf8_singleline_ext_hint_not_corrupted`
+    /// (one line, no newline anywhere in the 2 MiB preview window, so the
+    /// raw cut always lands mid-character — it splits the 699,051st `中`
+    /// after its first two bytes), but opened with an *explicit* "UTF-8"
+    /// label — as when the user manually reopens a file with a chosen
+    /// encoding — instead of auto-detection.
+    ///
+    /// Before the fix, `open_document`'s trim gate only called
+    /// `trim_truncated_utf8_tail` when `encoding.is_none()`
+    /// (auto-detect); an explicit "UTF-8" label took the untrimmed
+    /// `else` branch, so the raw `preview_slice` cut was decoded as
+    /// given: `decode_with` reports a spurious U+FFFD and `malformed ==
+    /// true` for a file that is not actually corrupt anywhere, and
+    /// `next_offset` lands two bytes short of that character's boundary
+    /// — so a subsequent `Continuation`-kind chunk read (which never
+    /// re-aligns; see `chunk.rs`) would start mid-character and mint a
+    /// second spurious U+FFFD at the seam. Red before the fix; green
+    /// after, because the widened trim gate applies
+    /// `trim_truncated_utf8_tail` for an explicit UTF-8 label exactly as
+    /// it already did for auto-detected UTF-8.
+    #[test]
+    fn open_document_large_cjk_utf8_singleline_explicit_utf8_not_corrupted() {
+        let file =
+            write_large_cjk_utf8_fixture("plume-large-cjk-utf8-singleline-explicit-utf8", false);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path.clone(), Some("UTF-8".to_string()), None).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(opened.encoding, "UTF-8");
+        assert!(
+            !opened.malformed,
+            "an explicit UTF-8 reopen of a genuinely well-formed file must never \
+             report malformed (issue #136)"
+        );
+        assert!(
+            opened.content.chars().all(|c| c == '中'),
+            "content must decode as CJK, not a wrong-boundary artifact"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "the truncated tail must be trimmed, not surfaced as U+FFFD (issue #136)"
+        );
+
+        let next_offset = opened
+            .next_offset
+            .expect("a truncated large-file open must report next_offset")
+            as usize;
+        let full = std::fs::read(&file).unwrap();
+        assert!(
+            std::str::from_utf8(&full[..next_offset]).is_ok(),
+            "next_offset must land on a UTF-8 character boundary, not mid-character (issue #136)"
+        );
+
+        // Consistency with the auto-detect path: the same bytes, opened
+        // without an explicit label, have trimmed this way since #71 —
+        // the explicit-UTF-8 reopen must now agree with it exactly.
+        let auto = open_document(path, None, None).unwrap();
+        assert_eq!(opened.next_offset, auto.next_offset);
+        assert_eq!(opened.content, auto.content);
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #136, control/pin test. A genuine *interior* invalid UTF-8
+    /// byte within the 2 MiB preview window — not merely a truncated
+    /// tail — must still surface as `malformed == true` after widening
+    /// the trim gate to cover explicit UTF-8 reopens. This is exactly
+    /// what `trim_truncated_utf8_tail`'s `error_len().is_none()`
+    /// discriminator exists to protect (see its doc comment): a real
+    /// interior corruption reports `error_len() == Some(_)`, which the
+    /// trim leaves untouched, so nothing about the #136 fix masks a
+    /// genuinely broken file.
+    #[test]
+    fn open_document_large_explicit_utf8_interior_malformed_still_reported() {
+        let dir = std::env::temp_dir().join("plume-large-explicit-utf8-interior-malformed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("interior-malformed.txt");
+
+        let mut data = "中".repeat(4_000_000).into_bytes();
+        assert!(data.len() as u64 > LARGE_FILE_THRESHOLD);
+        // A lone 0xFF is never valid UTF-8 in any position (not a valid
+        // lead byte, not a valid continuation byte): genuine interior
+        // corruption, well inside the 2 MiB preview window and far from
+        // its tail.
+        data[1000] = 0xFF;
+        std::fs::write(&file, &data).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, Some("UTF-8".to_string()), None).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(opened.encoding, "UTF-8");
+        assert!(
+            opened.malformed,
+            "a genuine interior invalid byte must still be reported as malformed, \
+             not masked by the #136 trim-gate widening"
+        );
+        assert!(
+            opened.content.contains('\u{FFFD}'),
+            "the interior corruption must surface as a replacement character"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Issue #59. `explain_detection` must sample a bounded prefix from

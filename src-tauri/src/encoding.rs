@@ -250,6 +250,17 @@ pub fn utf16_variant(raw: &[u8], explicit_label: Option<&str>) -> Option<Utf16Va
     }
 }
 
+/// Whether an encoding label names UTF-8 — any alias `encoding_rs`
+/// recognizes (e.g. "utf-8", "UTF8"), resolved the same way `decode_with`
+/// itself resolves a label, so a caller deciding whether UTF-8-only
+/// preprocessing (like `trim_truncated_utf8_tail`) applies can never
+/// disagree with what the real decode is about to do. An unknown label is
+/// not UTF-8 by definition here; `decode_with` surfaces the "unknown
+/// encoding" error separately.
+pub fn is_utf8_label(label: &str) -> bool {
+    Encoding::for_label(label.as_bytes()) == Some(UTF_8)
+}
+
 /// Trim a trailing UTF-8 multibyte sequence that is incomplete *only
 /// because the input was truncated at its end*, returning the longest
 /// valid-UTF-8 prefix in that case and `bytes` unchanged otherwise. The
