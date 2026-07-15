@@ -155,6 +155,16 @@ export interface TabEvents {
    *  slot) — main.ts hooks this to persistSession(), mirroring the timing
    *  every other order-affecting tab operation already persists at. */
   onReorder(): void;
+  /** Right-click (contextmenu) on a tab — main.ts opens the tab context
+   *  menu (Close Others / Close Tabs to the Right / Copy Path / Reveal in
+   *  Finder(Explorer), ROADMAP.md Track C) anchored at `tab`, targeting
+   *  `id` regardless of which tab happens to be active. Independent of the
+   *  pointerdown/pointerup drag-or-select machinery below: a right-click's
+   *  own pointerdown already arms (and, on release, resolves as a select
+   *  — see beginTabDrag's `primaryButton` doc comment) exactly like every
+   *  non-primary button did before this event existed, so wiring this
+   *  alongside it changes nothing about that resolution. */
+  onContextMenu(id: number, tab: HTMLElement): void;
 }
 
 /** Horizontal pointer displacement, in CSS pixels, a tab must travel before
@@ -283,6 +293,14 @@ export class TabStore {
       tab.addEventListener("pointerdown", (e) =>
         this.beginTabDrag(e, doc.id, tab),
       );
+      // Suppress the native context menu and open ours instead. This is a
+      // plain "contextmenu" listener, not folded into the pointer-drag
+      // state machine above — see TabEvents.onContextMenu for why the two
+      // never interfere.
+      tab.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        this.events.onContextMenu(doc.id, tab);
+      });
 
       const title = document.createElement("span");
       title.className = "tab-title";
@@ -445,5 +463,49 @@ export class TabStore {
     this.moveTab(fromIndex, toIndex);
     this.render();
     this.events.onReorder();
+  }
+}
+
+// ---- Tab context menu helpers (ROADMAP.md Track C "Tab context menu") ----
+// Pure id-set/ordering logic, kept separate from main.ts's showTabContextMenu
+// (which owns the actual closeTab/clipboard/reveal side effects) so the
+// target-set math and the batch abort semantics are unit-testable without a
+// live TabStore, DOM, or Tauri IPC.
+
+/** Ids of every doc other than `id`, in `docs`' current tab order — the
+ *  target set for "Close Others". `id` not being present in `docs` isn't
+ *  specially handled: it simply can't match any element's `.id`, so every
+ *  doc is returned, same as filtering by any other id no doc has. */
+export function idsOtherThan(docs: Doc[], id: number): number[] {
+  return docs.filter((d) => d.id !== id).map((d) => d.id);
+}
+
+/** Ids of every doc strictly to the right of `id` in `docs`' current tab
+ *  order — the target set for "Close Tabs to the Right". `[]` if `id`
+ *  isn't found (defensive — a live caller always passes a tab that was
+ *  just right-clicked) or is already the rightmost tab. */
+export function idsToTheRightOf(docs: Doc[], id: number): number[] {
+  const index = docs.findIndex((d) => d.id === id);
+  if (index === -1) return [];
+  return docs.slice(index + 1).map((d) => d.id);
+}
+
+/** Close each of `ids` in order, awaiting `closeTab` (main.ts — the same
+ *  dirty-confirm flow a manual close goes through) for one before starting
+ *  the next, and stopping the moment any one of them doesn't actually
+ *  close. `closeTab` itself never throws on a cancelled close (see its own
+ *  doc comment) — cancellation shows up only as the doc still being
+ *  present afterward — so `stillOpen` (typically `(id) => tabs.get(id) !==
+ *  null`) is how this tells "closed" from "cancelled" apart. Used by
+ *  main.ts's showTabContextMenu for both Close Others and Close Tabs to
+ *  the Right: same loop, different `ids`. */
+export async function closeSequentially(
+  ids: number[],
+  closeTab: (id: number) => Promise<void>,
+  stillOpen: (id: number) => boolean,
+): Promise<void> {
+  for (const id of ids) {
+    await closeTab(id);
+    if (stillOpen(id)) return; // cancelled — leave the rest of ids untouched
   }
 }

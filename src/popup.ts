@@ -57,6 +57,11 @@ export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
     button.appendChild(label);
 
     button.addEventListener("click", () => {
+      // Belt-and-suspenders alongside the native `disabled` attribute set
+      // above (which already suppresses the browser's own click dispatch
+      // on a disabled button in every real WebView/jsdom): an explicit
+      // guard here doesn't depend on that platform behavior being uniform.
+      if (item.disabled) return;
       closeMenu();
       item.action?.();
     });
@@ -66,7 +71,26 @@ export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
   document.body.appendChild(el);
   const rect = anchor.getBoundingClientRect();
   el.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - el.offsetWidth - 8))}px`;
-  el.style.bottom = `${window.innerHeight - rect.top + 6}px`;
+
+  // Every pre-existing caller anchors to a status-bar control near the
+  // bottom of the window, where opening upward (bottom-anchored, growing
+  // toward the top) is correct and is all this once did unconditionally.
+  // A trigger nearer the top of the window instead — e.g. the tab-strip
+  // context menu (main.ts's showTabContextMenu) — needs the opposite: open
+  // downward from the anchor's own bottom edge, or the menu would render
+  // with its top edge above the viewport's own top edge (bottom-anchored
+  // position math with no explicit `top` grows upward from the anchor with
+  // no lower bound). Picking whichever side has more room keeps every
+  // existing caller's behavior byte-for-byte unchanged (they all have more
+  // room above than below) while making the container correct for a new
+  // top-anchored caller too.
+  const spaceAbove = rect.top;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  if (spaceBelow > spaceAbove) {
+    el.style.top = `${rect.bottom + 6}px`;
+  } else {
+    el.style.bottom = `${window.innerHeight - rect.top + 6}px`;
+  }
 
   const onAway = (event: MouseEvent) => {
     if (!el.contains(event.target as Node)) closeMenu();

@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EditorBuffer } from "./editor";
-import { DRAG_THRESHOLD_PX, isEffectivelyReadOnly, TabStore, type Doc } from "./tabs";
+import {
+  closeSequentially,
+  DRAG_THRESHOLD_PX,
+  idsOtherThan,
+  idsToTheRightOf,
+  isEffectivelyReadOnly,
+  TabStore,
+  type Doc,
+} from "./tabs";
 
 function makeDoc(id: number, path: string | null = null): Doc {
   return {
@@ -42,6 +50,7 @@ function makeStore() {
     onClose: vi.fn(),
     onNew: vi.fn(),
     onReorder: vi.fn(),
+    onContextMenu: vi.fn(),
   };
   return { store: new TabStore(container, events), container, events };
 }
@@ -189,6 +198,48 @@ describe("TabStore", () => {
       .querySelector(".tab-new")!
       .dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(events.onNew).toHaveBeenCalled();
+  });
+
+  it("right-click fires onContextMenu with the tab's own id and suppresses the native menu, without touching selection", () => {
+    const { store, container, events } = makeStore();
+    store.add(makeDoc(1));
+    store.add(makeDoc(2));
+    store.render();
+    const tabs = container.querySelectorAll<HTMLElement>(".tab");
+
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+    tabs[0].dispatchEvent(event);
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(events.onContextMenu).toHaveBeenCalledWith(1, tabs[0]);
+    // contextmenu alone (no pointerdown/pointerup gesture) never resolves
+    // a select or a reorder — those stay owned by the pointer state
+    // machine, exercised separately in the drag-to-reorder suite below.
+    expect(events.onSelect).not.toHaveBeenCalled();
+    expect(events.onReorder).not.toHaveBeenCalled();
+  });
+
+  it("a right-click gesture (pointerdown+contextmenu+pointerup) both selects and opens the context menu, same as any non-primary-button click", () => {
+    const { store, container, events } = makeStore();
+    store.add(makeDoc(1));
+    store.add(makeDoc(2));
+    store.render();
+    const tabs = container.querySelectorAll<HTMLElement>(".tab");
+
+    // Mirrors a real right-click's event sequence: pointerdown arms the
+    // (non-primary-button) gesture, contextmenu fires, then pointerup
+    // resolves it — see beginTabDrag's primaryButton doc comment for why
+    // a right-click's pointerup always resolves as a plain select.
+    tabs[1].dispatchEvent(
+      new PointerEvent("pointerdown", { button: 2, pointerId: 1, clientX: 0, bubbles: true }),
+    );
+    tabs[1].dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    tabs[1].dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, clientX: 0, bubbles: true }));
+
+    expect(events.onContextMenu).toHaveBeenCalledWith(2, tabs[1]);
+    expect(events.onSelect).toHaveBeenCalledWith(2);
+    expect(events.onReorder).not.toHaveBeenCalled();
   });
 });
 
@@ -527,5 +578,140 @@ describe("TabStore pointer drag-to-reorder", () => {
     expect(events.onSelect).not.toHaveBeenCalled();
     expect(tabs[0].classList.contains("tab-dragging")).toBe(false);
     expect(tabs[0].style.transform).toBe("");
+  });
+});
+
+// Tab context menu target-set math (ROADMAP.md Track C). Pure over a plain
+// Doc[]/id — no TabStore/DOM needed, see tabs.ts's "Tab context menu
+// helpers" section.
+describe("idsOtherThan", () => {
+  it("returns every other id, preserving tab order, excluding the given id", () => {
+    const docs = [makeDoc(1), makeDoc(2), makeDoc(3)];
+    expect(idsOtherThan(docs, 2)).toEqual([1, 3]);
+  });
+
+  it("excludes the first and the last tab the same way as any middle one", () => {
+    const docs = [makeDoc(1), makeDoc(2), makeDoc(3)];
+    expect(idsOtherThan(docs, 1)).toEqual([2, 3]);
+    expect(idsOtherThan(docs, 3)).toEqual([1, 2]);
+  });
+
+  it("returns every id when the given id isn't present", () => {
+    const docs = [makeDoc(1), makeDoc(2)];
+    expect(idsOtherThan(docs, 999)).toEqual([1, 2]);
+  });
+
+  it("returns [] for a single-tab store (the lone tab excludes itself)", () => {
+    expect(idsOtherThan([makeDoc(1)], 1)).toEqual([]);
+  });
+
+  it("returns [] for an empty store", () => {
+    expect(idsOtherThan([], 1)).toEqual([]);
+  });
+});
+
+describe("idsToTheRightOf", () => {
+  it("returns only the ids strictly to the right, in order", () => {
+    const docs = [makeDoc(1), makeDoc(2), makeDoc(3), makeDoc(4)];
+    expect(idsToTheRightOf(docs, 2)).toEqual([3, 4]);
+  });
+
+  it("returns every other id when given the leftmost tab", () => {
+    const docs = [makeDoc(1), makeDoc(2), makeDoc(3)];
+    expect(idsToTheRightOf(docs, 1)).toEqual([2, 3]);
+  });
+
+  it("returns [] for the rightmost tab", () => {
+    const docs = [makeDoc(1), makeDoc(2), makeDoc(3)];
+    expect(idsToTheRightOf(docs, 3)).toEqual([]);
+  });
+
+  it("returns [] when the given id isn't present (defensive)", () => {
+    const docs = [makeDoc(1), makeDoc(2)];
+    expect(idsToTheRightOf(docs, 999)).toEqual([]);
+  });
+
+  it("returns [] for a single-tab or empty store", () => {
+    expect(idsToTheRightOf([makeDoc(1)], 1)).toEqual([]);
+    expect(idsToTheRightOf([], 1)).toEqual([]);
+  });
+});
+
+// Batch-close abort semantics (ROADMAP.md Track C): "any one cancel stops
+// the rest of the batch." closeTab itself never throws on a cancelled
+// close (it just leaves the doc in place) — see tabs.ts's closeSequentially
+// doc comment — so these fakes model that exact contract: closeTab is a
+// plain async no-throw function, and cancellation is only observable by
+// asking stillOpen afterward.
+describe("closeSequentially", () => {
+  function fakeCloser(cancelOn: number[]) {
+    const closed: number[] = [];
+    const open = new Set<number>();
+    const closeTab = vi.fn(async (id: number) => {
+      if (cancelOn.includes(id)) {
+        open.add(id); // "cancel": doc stays present, closeTab still resolves
+        return;
+      }
+      closed.push(id);
+      open.delete(id); // closed for real
+    });
+    const stillOpen = (id: number) => open.has(id);
+    return { closeTab, stillOpen, closed };
+  }
+
+  it("closes every id in order when none are cancelled", async () => {
+    const { closeTab, stillOpen, closed } = fakeCloser([]);
+    await closeSequentially([1, 2, 3], closeTab, stillOpen);
+    expect(closed).toEqual([1, 2, 3]);
+    expect(closeTab).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops immediately at the first cancelled id, never attempting the rest", async () => {
+    const { closeTab, stillOpen, closed } = fakeCloser([2]);
+    await closeSequentially([1, 2, 3], closeTab, stillOpen);
+    expect(closed).toEqual([1]); // 2 cancelled; 3 never attempted
+    expect(closeTab).toHaveBeenCalledTimes(2);
+    expect(closeTab).not.toHaveBeenCalledWith(3);
+  });
+
+  it("cancelling the very first id closes nothing", async () => {
+    const { closeTab, stillOpen, closed } = fakeCloser([1]);
+    await closeSequentially([1, 2, 3], closeTab, stillOpen);
+    expect(closed).toEqual([]);
+    expect(closeTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op for an empty id list", async () => {
+    const { closeTab, stillOpen, closed } = fakeCloser([]);
+    await closeSequentially([], closeTab, stillOpen);
+    expect(closed).toEqual([]);
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
+  it("awaits each closeTab before starting the next (true sequencing, not Promise.all)", async () => {
+    const order: string[] = [];
+    const resolvers: Array<() => void> = [];
+    const closeTab = vi.fn(
+      (id: number) =>
+        new Promise<void>((resolve) => {
+          order.push(`start:${id}`);
+          resolvers.push(() => {
+            order.push(`end:${id}`);
+            resolve();
+          });
+        }),
+    );
+    const donePromise = closeSequentially([1, 2], closeTab, () => false);
+
+    // Only the first call has fired; the second must not start until the
+    // first's promise resolves.
+    expect(order).toEqual(["start:1"]);
+    resolvers[0]();
+    await Promise.resolve(); // let the microtask queue drain one tick
+    await Promise.resolve();
+    expect(order).toEqual(["start:1", "end:1", "start:2"]);
+    resolvers[1]();
+    await donePromise;
+    expect(order).toEqual(["start:1", "end:1", "start:2", "end:2"]);
   });
 });
