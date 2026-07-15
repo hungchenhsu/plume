@@ -59,6 +59,7 @@ export interface Messages {
   "detectcard.sampledPartial": (shown: string, total: string) => string;
   "detectcard.wouldChooseValue": (encoding: string, reason: string) => string;
   "detectcard.manualNote": (current: string, detected: string) => string;
+  "detectcard.detectionBoundaryNote": (encoding: string) => string;
 
   "charinspect.title": (codepoint: string) => string;
   "charinspect.labelChar": string;
@@ -396,6 +397,8 @@ const en: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding} (${reason})`,
   "detectcard.manualNote": (current, detected) =>
     `Currently using ${current} manually — auto-detect would choose ${detected}.`,
+  "detectcard.detectionBoundaryNote": (encoding) =>
+    `${encoding} isn't one of chardetng's detection targets — it can only be selected via a BOM, a per-extension default, or Reopen with Encoding.`,
 
   "charinspect.title": (codepoint) => `Character ${codepoint}`,
   "charinspect.labelChar": "Character",
@@ -730,6 +733,8 @@ const zhTW: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
   "detectcard.manualNote": (current, detected) =>
     `目前手動使用 ${current}——自動偵測會選擇 ${detected}。`,
+  "detectcard.detectionBoundaryNote": (encoding) =>
+    `${encoding} 不在 chardetng 的偵測範圍內——只能透過 BOM、副檔名預設值，或「以指定編碼重新開啟」選取。`,
 
   "charinspect.title": (codepoint) => `字元 ${codepoint}`,
   "charinspect.labelChar": "字元",
@@ -1037,6 +1042,8 @@ const ja: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
   "detectcard.manualNote": (current, detected) =>
     `現在手動で ${current} を使用しています。自動検出では ${detected} が選択されます。`,
+  "detectcard.detectionBoundaryNote": (encoding) =>
+    `${encoding} は chardetng の検出対象ではありません。BOM、拡張子ごとの既定値、または「エンコーディングを指定して再度開く」でのみ選択できます。`,
 
   "charinspect.title": (codepoint) => `文字 ${codepoint}`,
   "charinspect.labelChar": "文字",
@@ -1361,6 +1368,8 @@ const zhCN: Messages = {
   "detectcard.wouldChooseValue": (encoding, reason) => `${encoding}（${reason}）`,
   "detectcard.manualNote": (current, detected) =>
     `目前手动使用 ${current}——自动检测将选择 ${detected}。`,
+  "detectcard.detectionBoundaryNote": (encoding) =>
+    `${encoding} 不在 chardetng 的检测范围内——只能通过 BOM、扩展名默认值，或“以指定编码重新打开”选取。`,
 
   "charinspect.title": (codepoint) => `字符 ${codepoint}`,
   "charinspect.labelChar": "字符",

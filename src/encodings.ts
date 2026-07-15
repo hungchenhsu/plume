@@ -178,6 +178,58 @@ export function encodingChoices(): EncodingChoice[] {
   ];
 }
 
+// Detection-boundary classification (ROADMAP.md v0.5 Track E3): which of
+// the 27 catalog values chardetng's *statistical* guess (`detector.guess()`
+// in src-tauri/src/encoding.rs) can never itself produce, so opening a file
+// as one of these always required a BOM, a per-extension default, or a
+// manual "Reopen with Encoding" — never a bare content scan. Verified
+// against chardetng 0.1.17 (the version `Cargo.lock` pins) itself, not
+// assumed from encoding age or byte width — see its README's "Notes About
+// Encodings" section: https://github.com/hsivonen/chardetng/blob/master/README.md
+//
+// - "ISO-8859-15" and "macintosh" are listed under "Not detected" outright:
+//   "These encodings have never been a locale-specific fallback in a major
+//   browser or a menu item in IE."
+// - "gb18030" is listed as "Detected as GBK": the underlying Chinese
+//   multi-byte statistical family IS recognized, but `guess()` can only
+//   ever return the distinct `GBK` `Encoding`, never `gb18030` — so
+//   `detect_with_extension`'s reason=detector path can set `chosen` to GBK,
+//   but literally never to gb18030.
+// - "KOI8-R" is listed as "Detected as KOI8-U", for the identical reason
+//   ("Always guessing the U variant is less likely to corrupt non-box
+//   drawing characters.") — the guess always comes back labeled KOI8-U.
+//
+// Every *other* single-byte family this catalog offers — windows-1250
+// through windows-1258, windows-874, ISO-8859-2/5/7, KOI8-U — IS a genuine
+// chardetng detection target and is deliberately absent from this set, even
+// though it shares the "legacy single-byte" shape with the four above.
+// (windows-1257 and windows-874 do carry accuracy caveats in the same
+// README — "very inaccurate" and poor on short input, respectively — but
+// chardetng does attempt them, unlike the four below, so they stay out of
+// this boolean set; see docs/encoding-detection.md for the accuracy notes.)
+//
+// UTF-16LE/UTF-16BE are also outside chardetng's own target set
+// ("Detecting these belongs on the BOM layer") but are deliberately
+// excluded from this set: this app's BOM-sniffing layer (`Encoding::
+// for_bom`, checked before chardetng in `detect_with_extension`) detects
+// them automatically whenever a BOM is present — the overwhelmingly common
+// case for real UTF-16 files — so calling them "manual-only" here would
+// overstate the gap the detectcard.ts note built on this set describes.
+export const MANUAL_ONLY_ENCODINGS: ReadonlySet<string> = new Set([
+  "gb18030",
+  "ISO-8859-15",
+  "KOI8-R",
+  "macintosh",
+]);
+
+/** Whether `value` (a canonical encoding_rs name, as used throughout this
+ *  module) is one chardetng's content-based auto-detect can never itself
+ *  choose — see `MANUAL_ONLY_ENCODINGS`'s doc comment for the verified
+ *  evidence. Drives detectcard.ts's detection-boundary note. */
+export function isManualOnlyEncoding(value: string): boolean {
+  return MANUAL_ONLY_ENCODINGS.has(value);
+}
+
 /** Choices for reopening: BOM variants collapse into their base encoding. */
 export function reopenEncodingChoices(): EncodingChoice[] {
   return encodingChoices().filter((e) => !(e.value === "UTF-8" && e.withBom));

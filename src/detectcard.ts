@@ -2,6 +2,7 @@
 // current document's encoding (BOM found, chardetng verdict) so the "Why
 // {encoding}?" status-bar item has something to display. Read-only — it
 // never changes the open document.
+import { isManualOnlyEncoding } from "./encodings";
 import { t } from "./i18n";
 import { explainDetection, type DetectionExplanation } from "./ipc";
 import { formatSize } from "./statusbar";
@@ -43,6 +44,14 @@ export interface DetectionCardModel {
    * would choose — i.e. it was picked manually (or inherited from a manual
    * reopen), not by the detector that ran on open. */
   manualNote: string | null;
+  /** Set whenever the *current* encoding is one chardetng's statistical
+   * detector can never itself produce (see encodings.ts's
+   * `MANUAL_ONLY_ENCODINGS`) — independent of `manualNote`/`reason`, since
+   * even a document that reached this encoding via a per-extension default
+   * (reason=extension, no mismatch, no `manualNote`) still needs the same
+   * "this isn't a bug, this encoding always requires one of those paths"
+   * context. */
+  detectionBoundaryNote: string | null;
 }
 
 /** Pure helper: assemble the diagnostic card's text from raw evidence. */
@@ -58,6 +67,9 @@ export function formatDetectionCard(
     currentEncoding === detectedEncoding
       ? null
       : t("detectcard.manualNote", currentEncoding, detectedEncoding);
+  const detectionBoundaryNote = isManualOnlyEncoding(currentEncoding)
+    ? t("detectcard.detectionBoundaryNote", currentEncoding)
+    : null;
 
   return {
     title: t("detectcard.title", currentEncoding),
@@ -83,6 +95,7 @@ export function formatDetectionCard(
       { label: t("detectcard.labelCurrentlyUsing"), value: currentEncoding },
     ],
     manualNote,
+    detectionBoundaryNote,
   };
 }
 
@@ -110,6 +123,13 @@ function renderCard(panel: HTMLElement, model: DetectionCardModel): void {
     const note = document.createElement("div");
     note.className = "detectcard-note";
     note.textContent = model.manualNote;
+    panel.appendChild(note);
+  }
+
+  if (model.detectionBoundaryNote) {
+    const note = document.createElement("div");
+    note.className = "detectcard-note";
+    note.textContent = model.detectionBoundaryNote;
     panel.appendChild(note);
   }
 }
