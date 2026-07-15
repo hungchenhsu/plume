@@ -23,13 +23,16 @@ function deferred<T>(): Deferred<T> {
 
 /** Minimal stand-in for the parts of tabs.ts's Doc that saveFlow's
  *  completion block touches, plus a fake backup registry so "dropBackup"
- *  is observable without pulling in ipc.ts. */
+ *  is observable without pulling in ipc.ts. `lineEnding` is only read by
+ *  the issue #160 scenarios below; every other test in this file ignores
+ *  it. */
 function makeDocState() {
   return {
     revision: 0,
     dirty: true,
     backupName: "bk-1.txt" as string | null,
     fingerprint: "fp-0" as unknown,
+    lineEnding: "LF",
   };
 }
 
@@ -223,5 +226,102 @@ describe("save completion race — deferred IPC scenarios", () => {
     expect(doc.dirty).toBe(true);
     expect(doc.backupName).toBe("bk-1.txt");
     expect(doc.fingerprint).toBe("fp-lossy-1");
+  });
+});
+
+// Issue #160: main.ts's setLineEnding only ever touched doc.lineEnding and
+// doc.dirty — never doc.revision. runSaveFlow snapshots doc.lineEnding into
+// saveParams alongside content and revisionAtStart, so a line-ending switch
+// mid-flight makes this save's bytes stale the instant it happens, exactly
+// like a content edit does. But because doc.revision never moved, the
+// revisionAtStart/currentRevision comparison below (issue #112's own guard)
+// couldn't tell the two apart from "nothing changed" — clearDirty/dropBackup
+// would wrongly fire, leaving disk with the *old* line ending while the tab
+// reports saved. setLineEndingSim mirrors main.ts's setLineEnding (kept in
+// sync with it by hand, the same way this file's deferred-IPC harness mirrors
+// saveFlow's completion step instead of reimplementing decideSaveCompletion's
+// own branch logic) — the pre-fix version is exactly main.ts's current body;
+// the fix adds the doc.revision bump main.ts's editor onChange handler,
+// applyOpenedForReload, and reopenWithEncoding already perform for every
+// other save-relevant mutation.
+function setLineEndingSim(
+  doc: ReturnType<typeof makeDocState>,
+  lineEnding: string,
+): void {
+  if (doc.lineEnding === lineEnding) return;
+  doc.lineEnding = lineEnding;
+  // The fix under test (issue #160): draws a new revision from the same
+  // shared sequence main.ts's editor onChange handler, applyOpenedForReload,
+  // and reopenWithEncoding already use for every other save-relevant
+  // mutation. Delete this line to reproduce the pre-fix bug — the scenario
+  // below fails without it (decideSaveCompletion wrongly clears dirty).
+  doc.revision += 1;
+  if (!doc.dirty) doc.dirty = true;
+}
+
+describe("issue #160 — a line-ending switch during an in-flight save must count as a revision-worthy edit", () => {
+  it("LF -> CRLF lands while save is in flight: dirty and the backup survive (pre-fix this was wrongly cleared)", async () => {
+    const doc = makeDocState();
+    const revisionAtStart = doc.revision;
+    const call = deferred<{ written: boolean; stale: boolean; fingerprint: unknown }>();
+
+    const completion = call.promise.then((result) => {
+      const decision = decideSaveCompletion({
+        written: result.written,
+        stale: result.stale,
+        revisionAtStart,
+        currentRevision: doc.revision,
+        pathChanged: false,
+      });
+      applyDecision(doc, decision, result.fingerprint);
+      return decision;
+    });
+
+    // The save's IPC round trip already captured doc.lineEnding ("LF") into
+    // its saveParams before this — main.ts's runSaveFlow reads doc.lineEnding
+    // synchronously, before the first await. Switching it now (Format menu,
+    // still mid-flight) means whatever this save writes is stale line-ending
+    // bytes the moment it lands.
+    setLineEndingSim(doc, "CRLF");
+
+    call.resolve({ written: true, stale: false, fingerprint: "fp-1" });
+    const decision = await completion;
+
+    expect(decision).toEqual({
+      clearDirty: false,
+      dropBackup: false,
+      updateFingerprint: true,
+    });
+    expect(doc.dirty).toBe(true);
+    expect(doc.backupName).toBe("bk-1.txt");
+    expect(doc.fingerprint).toBe("fp-1"); // fingerprint still updates: disk really did change
+  });
+
+  it("control — line ending changes only after the save has already resolved: ordinary dirty semantics apply, no race", async () => {
+    const doc = makeDocState();
+    const revisionAtStart = doc.revision;
+    const call = deferred<{ written: boolean; stale: boolean; fingerprint: unknown }>();
+
+    const completion = call.promise.then((result) => {
+      const decision = decideSaveCompletion({
+        written: result.written,
+        stale: result.stale,
+        revisionAtStart,
+        currentRevision: doc.revision,
+        pathChanged: false,
+      });
+      applyDecision(doc, decision, result.fingerprint);
+      return decision;
+    });
+
+    call.resolve({ written: true, stale: false, fingerprint: "fp-1" });
+    await completion;
+    expect(doc.dirty).toBe(false);
+    expect(doc.backupName).toBeNull();
+
+    // Only now — after the save has fully settled — does the user switch
+    // line ending. No save in flight, so this is just an ordinary edit.
+    setLineEndingSim(doc, "CRLF");
+    expect(doc.dirty).toBe(true);
   });
 });

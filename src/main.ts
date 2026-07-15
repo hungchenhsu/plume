@@ -1732,6 +1732,15 @@ function setLineEnding(lineEnding: string): void {
   const doc = tabs.active;
   if (!doc || doc.lineEnding === lineEnding) return;
   doc.lineEnding = lineEnding;
+  // Line ending is passed into saveParams alongside content (runSaveFlow
+  // above), so switching it changes what a save will write to disk exactly
+  // like a content edit does — it must draw a new revision from the same
+  // shared sequence the editor's onChange handler, applyOpenedForReload,
+  // and reopenWithEncoding already use, or a save already in flight when
+  // this fires can finish, see revisionAtStart still match doc.revision,
+  // and have decideSaveCompletion wrongly clear dirty/drop the backup for
+  // bytes it never actually wrote with this line ending (issue #160).
+  doc.revision = nextRevision++;
   if (!doc.dirty) {
     doc.dirty = true;
     tabs.render();
