@@ -32,6 +32,7 @@ import type {
   SearchResults,
   SearchScanError,
 } from "./ipc";
+import { findHistory, pushFindTerm, replaceHistory } from "./searchhistory";
 
 // showFindInFiles builds its own DOM (no framework) and never touches the
 // WebView directly, so this is driveable in jsdom — same as
@@ -801,5 +802,113 @@ describe("showFindInFiles — replace-in-files busy guard", () => {
     expect(executeReplaceInFolder).toHaveBeenCalledTimes(1);
     exec.resolve([replaceExecEntry()]);
     await flush();
+  });
+});
+
+// Task: wire find-in-files' query/replace fields into the same MRU search
+// history as the CM6 in-editor search panel (searchhistory.ts's shared
+// `searchHistory` singleton, editor.ts's wireSearchHistory is the existing
+// consumer). searchHistory is a module-level singleton, so — like
+// `lastFolder` above — its state persists across every test in this file;
+// once history-recording is wired in, the suites above (which all search
+// for "needle" and replace with "repl") also push into it. Every assertion
+// below therefore uses a distinctive marker string and checks containment /
+// relative order rather than exact list contents, so it can't be confused
+// by entries any other suite in this file has already recorded.
+describe("showFindInFiles — search history integration", () => {
+  afterEach(resetReplaceMocks);
+
+  function datalistOptions(panel: HTMLElement, id: string): string[] {
+    const list = panel.querySelector(`#${id}`) as HTMLDataListElement | null;
+    return list ? Array.from(list.querySelectorAll("option")).map((o) => o.value) : [];
+  }
+  const findOptions = (panel: HTMLElement): string[] =>
+    datalistOptions(panel, "plume-fif-find-history");
+  const replaceOptions = (panel: HTMLElement): string[] =>
+    datalistOptions(panel, "plume-fif-replace-history");
+
+  it("wires the query field to a find-history datalist and the replace field to a replace-history datalist, with ids distinct from each other and from the CM6 editor panel's own datalists", () => {
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    const replaceInput = panel.querySelector(".fif-replace-input") as HTMLInputElement;
+
+    expect(queryInput.getAttribute("list")).toBe("plume-fif-find-history");
+    expect(replaceInput.getAttribute("list")).toBe("plume-fif-replace-history");
+    expect(queryInput.getAttribute("list")).not.toBe(replaceInput.getAttribute("list"));
+    expect(panel.querySelector("#plume-fif-find-history")).not.toBeNull();
+    expect(panel.querySelector("#plume-fif-replace-history")).not.toBeNull();
+    // editor.ts's wireSearchHistory uses "plume-find-history" /
+    // "plume-replace-history" for the CM6 panel's own datalists — these
+    // must never collide, even if both panels' DOM happened to coexist.
+    expect(queryInput.getAttribute("list")).not.toBe("plume-find-history");
+    expect(replaceInput.getAttribute("list")).not.toBe("plume-replace-history");
+  });
+
+  it("a term already in the shared history (as if recorded by the CM6 editor panel) appears in the query datalist on open", () => {
+    pushFindTerm("editor-typed-term-8f2c1");
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    expect(findOptions(panel)).toContain("editor-typed-term-8f2c1");
+  });
+
+  it("records the searched query after a successful search, even with zero matches, into the store the CM6 panel also reads", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    searchInFolder.mockResolvedValue(results([]));
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    queryInput.value = "history-marker-search-9d1e";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    expect(findHistory()).toContain("history-marker-search-9d1e");
+    expect(findOptions(panel)).toContain("history-marker-search-9d1e");
+  });
+
+  it("refreshes the datalist to newest-first order after each recorded search", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    searchInFolder.mockResolvedValue(results([]));
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+
+    queryInput.value = "order-marker-one-77f3";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+    queryInput.value = "order-marker-two-77f3";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    const options = findOptions(panel);
+    expect(options.indexOf("order-marker-two-77f3")).toBeLessThan(
+      options.indexOf("order-marker-one-77f3"),
+    );
+  });
+
+  it("records both query and replacement after a successfully initiated replace scan, into the stores the CM6 panel also reads", async () => {
+    const panel = await openAndPreview(
+      [replaceScanEntry()],
+      [],
+      "history-marker-query-4a7b",
+      "history-marker-repl-4a7b",
+    );
+
+    expect(findHistory()).toContain("history-marker-query-4a7b");
+    expect(replaceHistory()).toContain("history-marker-repl-4a7b");
+    expect(findOptions(panel)).toContain("history-marker-query-4a7b");
+    expect(replaceOptions(panel)).toContain("history-marker-repl-4a7b");
+  });
+
+  it("does not record an empty replacement text, but still records the query", async () => {
+    const replaceCountBefore = replaceHistory().length;
+    await openAndPreview([replaceScanEntry()], [], "history-marker-query-empty-rep-c3d9", "");
+
+    expect(findHistory()).toContain("history-marker-query-empty-rep-c3d9");
+    expect(replaceHistory()).toHaveLength(replaceCountBefore);
   });
 });

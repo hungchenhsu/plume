@@ -1197,8 +1197,16 @@ byte-preservation machinery)
   regex mode shows a "replacement is literal, $1 won't expand" hint
   before the user ever runs a scan. 684 vitest (+62 over the
   pre-item baseline).
-- [ ] Find-in-files query/replace inputs wired to the existing
-  searchhistory module (localStorage datalist, the CM6-panel precedent)
+- [x] Find-in-files query/replace inputs wired to the existing
+  searchhistory module (localStorage datalist, the CM6-panel
+  precedent). searchhistory.ts turned out to already be generic
+  (shared find/replace MRU singletons behind plain functions) — a
+  zero-line diff there; the panel builds its own two namespaced
+  datalists mirroring editor.ts's private helper. Queries record on
+  every resolved search; replace scans record query+replacement only
+  after the non-stale generation check. History is shared with the
+  CM6 panel structurally (same module singleton), asserted both
+  directions in tests. 690 vitest (+6).
 
 **Track E — encoding breadth [danger]**
 - [ ] Curated encoding list expansion: windows-125x family, common

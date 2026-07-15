@@ -36,11 +36,36 @@ import {
   summarizeReplaceResults,
   type ReplaceResultGroup,
 } from "./replaceinfiles-ui";
+import { findHistory, pushFindTerm, pushReplaceTerm, replaceHistory } from "./searchhistory";
 
 let lastFolder: string | null = null;
 
 function basename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
+}
+
+// MRU search-history dropdowns for the query/replacement fields below,
+// backed by the exact same store (searchhistory.ts's shared `searchHistory`
+// singleton, "plume.searchHistory.v1" in localStorage) that the CM6
+// in-editor search panel's wireSearchHistory (editor.ts) reads and writes —
+// a term searched or replaced in either panel becomes selectable in the
+// other's dropdown, with no separate wiring needed here beyond calling the
+// same imported functions. Ids are namespaced "fif-" (distinct from
+// editor.ts's own "plume-find-history" / "plume-replace-history") so both
+// panels' datalists never collide even if their DOM happened to coexist.
+const FIND_DATALIST_ID = "plume-fif-find-history";
+const REPLACE_DATALIST_ID = "plume-fif-replace-history";
+
+/** Refills `list`'s `<option>`s from `terms` — mirrors editor.ts's
+ *  populateDatalist for the CM6 search panel's own MRU dropdowns. */
+function populateDatalist(list: HTMLDataListElement, terms: readonly string[]): void {
+  list.replaceChildren(
+    ...terms.map((term) => {
+      const option = document.createElement("option");
+      option.value = term;
+      return option;
+    }),
+  );
 }
 
 /** The exact scan parameters a replace preview was produced from — bound to
@@ -130,6 +155,16 @@ export function showFindInFiles(
   regexHint.hidden = !regexBox.checked;
   replaceRow.appendChild(regexHint);
   panel.appendChild(replaceRow);
+
+  const findDatalist = document.createElement("datalist");
+  findDatalist.id = FIND_DATALIST_ID;
+  const replaceDatalist = document.createElement("datalist");
+  replaceDatalist.id = REPLACE_DATALIST_ID;
+  panel.append(findDatalist, replaceDatalist);
+  populateDatalist(findDatalist, findHistory());
+  populateDatalist(replaceDatalist, replaceHistory());
+  input.setAttribute("list", FIND_DATALIST_ID);
+  replaceInput.setAttribute("list", REPLACE_DATALIST_ID);
 
   const status = document.createElement("div");
   status.className = "fif-status";
@@ -576,6 +611,14 @@ export function showFindInFiles(
       // already superseded this response — discard it unrendered (issue
       // #95's fix, applied here).
       if (myGeneration !== replaceGeneration) return;
+      // Recorded only once the scan is known to be the one actually
+      // rendered below — never for a generation discarded above. Empty
+      // replacement text (the "delete the match" use case) is silently not
+      // recorded, same as the CM6 panel: pushReplaceTerm no-ops on "".
+      pushFindTerm(params.query);
+      pushReplaceTerm(params.replacement);
+      populateDatalist(findDatalist, findHistory());
+      populateDatalist(replaceDatalist, replaceHistory());
       status.textContent = "";
       renderPreview(report.entries, report.scanErrors, report.truncated, params);
     } catch (error) {
@@ -684,6 +727,11 @@ export function showFindInFiles(
         caseBox.checked,
         regexBox.checked,
       );
+      // Recorded on every successful search, matches or not — mirrors the
+      // CM6 panel's own commitFind, which fires on Enter regardless of
+      // whether anything was found.
+      pushFindTerm(query);
+      populateDatalist(findDatalist, findHistory());
       const count = results.matches.length;
       status.textContent = t(
         "findInFiles.status",
