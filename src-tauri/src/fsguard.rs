@@ -286,26 +286,36 @@ mod tests {
     /// including straddling the epoch itself — never collide.
     #[test]
     fn epoch_offset_conversion_round_trips_across_epoch() {
+        // Sub-second offsets are multiples of 100ns throughout: Windows
+        // `SystemTime` is FILETIME-backed (100ns intervals), so a 1ns
+        // offset like `UNIX_EPOCH - Duration::new(0, 1)` silently
+        // truncates back to the epoch there and the pre-epoch cases stop
+        // being pre-epoch at all (caught by the first real Windows CI run
+        // after #123 merged; Unix, with nanosecond resolution, represents
+        // either just fine). 100ns is exact on both platforms, so these
+        // fixtures exercise the same normalization/borrow paths everywhere.
         let cases = [
             std::time::UNIX_EPOCH,
-            std::time::UNIX_EPOCH + std::time::Duration::new(5, 1),
-            std::time::UNIX_EPOCH - std::time::Duration::new(0, 1),
+            std::time::UNIX_EPOCH + std::time::Duration::new(5, 100),
+            std::time::UNIX_EPOCH - std::time::Duration::new(0, 100),
             std::time::UNIX_EPOCH - std::time::Duration::new(1, 0),
-            std::time::UNIX_EPOCH - std::time::Duration::new(1, 999_999_999),
+            std::time::UNIX_EPOCH - std::time::Duration::new(1, 999_999_900),
         ];
         for t in cases {
             let offset = EpochOffset::from(t);
             assert!(offset.nanos < 1_000_000_000, "{offset:?} not normalized");
             assert_eq!(std::time::SystemTime::from(offset), t, "{offset:?}");
         }
-        // One nanosecond on either side of the epoch must stay distinct.
-        let just_before = EpochOffset::from(std::time::UNIX_EPOCH - std::time::Duration::new(0, 1));
+        // The smallest cross-platform-representable step on either side of
+        // the epoch must stay distinct.
+        let just_before =
+            EpochOffset::from(std::time::UNIX_EPOCH - std::time::Duration::new(0, 100));
         let at_epoch = EpochOffset::from(std::time::UNIX_EPOCH);
         assert_eq!(
             just_before,
             EpochOffset {
                 secs: -1,
-                nanos: 999_999_999
+                nanos: 999_999_900
             }
         );
         assert_eq!(at_epoch, EpochOffset { secs: 0, nanos: 0 });
