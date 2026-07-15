@@ -1,11 +1,20 @@
-//! The single source of truth for byte-level line-break semantics shared
-//! by large-file chunk alignment (`chunk.rs`) and the line-offset index
-//! (`lineindex.rs`), fixing #119/#132. A line is terminated by LF, CRLF,
-//! or a lone CR (Classic Mac line endings) — the same three-way split
-//! `encoding::detect_line_ending` (#92) uses on decoded text, so "where
-//! does a line start" agrees everywhere in the app. CRLF always counts as
-//! *one* terminator; no helper here ever places a boundary between a CR
-//! and the LF that follows it.
+//! The single source of truth for line-break semantics shared by
+//! large-file chunk alignment (`chunk.rs`), the line-offset index
+//! (`lineindex.rs`), and folder-wide find/replace (`search.rs`,
+//! `replaceinfiles.rs`), fixing #119/#132/#162. A line is terminated by
+//! LF, CRLF, or a lone CR (Classic Mac line endings) — the same
+//! three-way split `encoding::detect_line_ending` (#92) uses on decoded
+//! text, so "where does a line start" agrees everywhere in the app. CRLF
+//! always counts as *one* terminator; no helper here ever places a
+//! boundary between a CR and the LF that follows it.
+//!
+//! Two layers of the same definition live here: [`scan_line_breaks`] and
+//! its byte-offset siblings below operate on raw `&[u8]` (what
+//! `replaceinfiles.rs::split_line_segments` builds on directly);
+//! [`split_str_lines`] is the `&str` counterpart for callers that already
+//! hold decoded text (`search.rs`) — see its own doc comment for why
+//! delegating to the same byte scanner is sound rather than a second,
+//! independently-drifting implementation.
 //!
 //! Byte-scanning without decoding is only sound for ASCII-compatible
 //! encodings — a literal `0x0A` (LF) or `0x0D` (CR) byte can never appear
@@ -94,6 +103,64 @@ pub(crate) fn scan_line_breaks(
             _ => i += 1,
         }
     }
+}
+
+/// Split already-decoded `text` into lines using the same LF/CRLF/lone-CR
+/// definition as [`scan_line_breaks`] — unlike `str::lines()`, which only
+/// recognizes LF and CRLF and so treats a whole Classic Mac (lone-CR) file
+/// as a single line (issue #162). Each returned slice is one line's
+/// content with its own terminator stripped, mirroring `str::lines()`'s
+/// own convention (no trailing empty line for text ending on a
+/// terminator; `""` yields no lines at all).
+///
+/// Delegates to `scan_line_breaks` on `text.as_bytes()` rather than
+/// re-deriving LF/CRLF/lone-CR detection with a second, independent
+/// `char`-based scan: decoded text is always UTF-8, which — like every
+/// `is_ascii_compatible()` encoding this module's own doc comment already
+/// reasons about — never places a literal `0x0A`/`0x0D` byte inside a
+/// multi-byte sequence (`replaceinfiles.rs`'s `whole_file_replace` relies
+/// on the identical fact to re-split decoded text by raw byte offsets).
+/// Every offset `scan_line_breaks` reports is therefore guaranteed to land
+/// on a `str` char boundary, so slicing `text` at those offsets can never
+/// panic. This also means `split_str_lines` can never drift out of sync
+/// with the byte-level scanner other callers use directly — there is only
+/// ever one LF/CRLF/lone-CR decision, just two ways to consume it; see the
+/// `split_str_lines_agrees_with_byte_level_line_table` test below for the
+/// equivalence lock.
+pub(crate) fn split_str_lines(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let bytes = text.as_bytes();
+    let mut ends: Vec<usize> = Vec::new();
+    let mut pending_cr = false;
+    scan_line_breaks(bytes, 0, &mut pending_cr, |next_line_start| {
+        ends.push(next_line_start as usize);
+    });
+    if pending_cr {
+        // Unresolved trailing CR: there is no next chunk (this is the
+        // whole string), so it's a lone-CR terminator right at EOF —
+        // mirrors `replaceinfiles.rs::split_line_segments`'s identical
+        // post-loop resolution and `lineindex.rs`'s `build_line_index`.
+        ends.push(bytes.len());
+    }
+
+    let mut lines = Vec::with_capacity(ends.len() + 1);
+    let mut start = 0usize;
+    for end in ends {
+        let line = &text[start..end];
+        let content = line
+            .strip_suffix("\r\n")
+            .or_else(|| line.strip_suffix('\n'))
+            .or_else(|| line.strip_suffix('\r'))
+            .unwrap_or(line);
+        lines.push(content);
+        start = end;
+    }
+    if start < text.len() {
+        lines.push(&text[start..]);
+    }
+    lines
 }
 
 /// Bytes to skip so a mid-file chunk starts right after its first
@@ -293,5 +360,114 @@ mod tests {
         scan_line_breaks(b"bb", 3, &mut pending, |b| found.push(b));
         assert!(!pending);
         assert_eq!(found, vec![3]);
+    }
+
+    #[test]
+    fn split_str_lines_recognizes_lf_crlf_and_lone_cr() {
+        assert_eq!(split_str_lines(""), Vec::<&str>::new());
+        assert_eq!(split_str_lines("a\nb"), vec!["a", "b"]);
+        assert_eq!(
+            split_str_lines("a\r\nb"),
+            vec!["a", "b"],
+            "CRLF is one terminator, not two lines plus an empty one"
+        );
+        assert_eq!(
+            split_str_lines("a\rb"),
+            vec!["a", "b"],
+            "lone CR terminates a line (issue #162)"
+        );
+        assert_eq!(
+            split_str_lines("a\nb\n"),
+            vec!["a", "b"],
+            "a final terminator does not produce a trailing empty line"
+        );
+        assert_eq!(
+            split_str_lines("a\rb\rc\r"),
+            vec!["a", "b", "c"],
+            "a final lone CR is resolved as EOF, not left pending"
+        );
+    }
+
+    /// Independent reference line table for the equivalence test below:
+    /// mirrors `replaceinfiles.rs::split_line_segments` +
+    /// `split_terminator` (content only, terminator stripped) using only
+    /// `scan_line_breaks` directly, without calling `split_str_lines`
+    /// itself — so the test below is a genuine cross-check between the
+    /// byte-level path other callers use and the `&str`-level path
+    /// `search.rs` uses, not the same code exercised twice.
+    fn byte_line_contents(bytes: &[u8]) -> Vec<&[u8]> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
+        let mut ends: Vec<usize> = Vec::new();
+        let mut pending_cr = false;
+        scan_line_breaks(bytes, 0, &mut pending_cr, |b| ends.push(b as usize));
+        if pending_cr {
+            ends.push(bytes.len());
+        }
+        let mut lines = Vec::with_capacity(ends.len() + 1);
+        let mut start = 0usize;
+        for end in ends {
+            let segment = &bytes[start..end];
+            let content = if let Some(c) = segment.strip_suffix(b"\r\n") {
+                c
+            } else if let Some(c) = segment.strip_suffix(b"\n") {
+                c
+            } else if let Some(c) = segment.strip_suffix(b"\r") {
+                c
+            } else {
+                segment
+            };
+            lines.push(content);
+            start = end;
+        }
+        if start < bytes.len() {
+            lines.push(&bytes[start..]);
+        }
+        lines
+    }
+
+    /// Locks `split_str_lines` (the `&str`-level path `search.rs` uses)
+    /// against the byte-level line table every other caller
+    /// (`replaceinfiles.rs`, `lineindex.rs`, `chunk.rs`) is built on, so
+    /// the two can never silently drift apart and re-open issue #162's
+    /// "Find and Replace disagree on line numbers" symptom. Covers plain
+    /// LF/CRLF/lone-CR, mixed styles, no terminator at all, a final
+    /// *unresolved* trailing CR (the EOF edge case both
+    /// `split_line_segments` and `split_str_lines` resolve specially), and
+    /// multi-byte UTF-8 content straddling lone-CR terminators.
+    #[test]
+    fn split_str_lines_agrees_with_byte_level_line_table() {
+        let cases: &[&str] = &[
+            "",
+            "a",
+            "a\n",
+            "a\nb",
+            "a\nb\n",
+            "a\r\nb\r\n",
+            "a\rb\rc",
+            "a\rb\rc\r",
+            "mixed\rstyles\r\nhere\nend",
+            "a\rb\r\nc\nd\r",
+            "\r",
+            "\n",
+            "\r\n",
+            "\r\r",
+            "\n\r",
+            "xxx\r",
+            "first\rneedle\rthird",
+            "café\r日本語\rend",
+        ];
+        for &case in cases {
+            let expected: Vec<&str> = byte_line_contents(case.as_bytes())
+                .into_iter()
+                .map(|b| std::str::from_utf8(b).expect("test fixtures are valid UTF-8"))
+                .collect();
+            let actual = split_str_lines(case);
+            assert_eq!(
+                actual, expected,
+                "split_str_lines disagrees with the byte-level line table on {case:?}"
+            );
+        }
     }
 }
