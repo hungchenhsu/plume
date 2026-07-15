@@ -59,7 +59,7 @@ import {
   windowRelativeBookmarks,
 } from "./bookmarks";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
-import { shouldApplyChunkResponse } from "./chunkguard";
+import { preemptChunkLoad, shouldApplyChunkResponse } from "./chunkguard";
 import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
@@ -620,21 +620,26 @@ function pagerState(doc: Doc): { hasPrev: boolean; hasNext: boolean } | null {
 
 /**
  * Next/Prev pager button. Guarded against issue #120's stale-response
- * class of bugs two ways: `doc.chunkLoadInFlight` keeps a second click (or
- * an overlapping auto append/prepend/goto for the same doc) from ever
- * firing while this one is still in flight, and `doc.chunkGeneration` —
- * bumped here and checked via `shouldApplyChunkResponse` once the IPC call
- * resolves — catches a response that a reload/reopen has since made
- * irrelevant (those don't wait on `chunkLoadInFlight`; they preempt it).
+ * class of bugs via `doc.chunkGeneration` — bumped here and checked via
+ * `shouldApplyChunkResponse` once the IPC call resolves — which catches a
+ * response that a newer request (another click, a goto/bookmark jump, or
+ * a reload/reopen) has since made irrelevant. A request already in flight
+ * for this doc (an auto append/prepend the user scrolled past, or another
+ * still-in-flight manual jump) is preempted rather than blocking this one
+ * (issue #134 — see chunkguard.ts's preemptChunkLoad); `doc.chunkLoadInFlight`
+ * still exists purely so auto append/prepend know to yield instead
+ * (chunkpolicy.ts's canAutoAppend/canPrepend), since those deliberately
+ * never preempt.
  * The Prev offset is only popped off `prevChunkOffsets` once the response
  * is actually about to be applied — previously it was popped eagerly,
  * before the request was even known to succeed, so a failed or
  * superseded Prev silently dropped that offset from the history stack.
+ * This still holds under preemption: a preempted Prev's response is
+ * discarded by the generation check before it would ever reach the pop.
  */
 async function pageChunk(direction: 1 | -1): Promise<void> {
   const doc = tabs.active;
   if (!doc?.path || !pagingSupported(doc)) return;
-  if (doc.chunkLoadInFlight) return;
   let target: number;
   if (direction === 1) {
     if (doc.nextChunkOffset === null) return;
@@ -646,6 +651,10 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
     if (prev === undefined) return;
     target = prev;
   }
+  // A prior request for this doc — an auto append/prepend the user
+  // scrolled past, or another still-in-flight manual jump — may already
+  // be in flight. Preempt it rather than silently no-op (issue #134).
+  if (doc.chunkLoadInFlight) preemptChunkLoad(doc);
   doc.chunkLoadInFlight = true;
   doc.chunkGeneration += 1;
   const myGeneration = doc.chunkGeneration;
@@ -899,11 +908,16 @@ async function ensureLineIndex(doc: Doc, myGeneration: number): Promise<LineInde
  * triggered mid-paging (Go to Line, or a bookmark jump via
  * jumpToBookmark) and its own IPC chain (buildLineIndex, optionally
  * locateLineOffset, then readDocumentChunk) must not overlap with those,
- * nor apply once superseded by a newer request or a reload/reopen.
+ * nor apply once superseded by a newer request or a reload/reopen. Being
+ * user-initiated, it preempts a request already in flight (an auto
+ * append/prepend, or another still-in-flight manual jump) instead of
+ * no-opping on it, same as pageChunk — see chunkguard.ts's
+ * preemptChunkLoad (issue #134).
  */
 async function gotoLargeFileLine(doc: Doc, targetLine1: number): Promise<void> {
   if (!doc.path) return;
-  if (doc.chunkLoadInFlight) return;
+  // See pageChunk's preempt comment (issue #134).
+  if (doc.chunkLoadInFlight) preemptChunkLoad(doc);
   doc.chunkLoadInFlight = true;
   doc.chunkGeneration += 1;
   const myGeneration = doc.chunkGeneration;

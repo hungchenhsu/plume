@@ -28,6 +28,22 @@
 // separately because isMojibakeSnapshotStale predates the tab check),
 // every call site here needs both conditions at once, so they're bundled
 // into a single decision rather than split across two checks.
+//
+// issue #134: sharing one per-doc chunkLoadInFlight guard across all five
+// call sites had a side effect — a user-initiated jump (pageChunk Next/
+// Prev, gotoLargeFileLine via Go to Line or a bookmark jump) that arrived
+// while an auto append/prepend was still in flight used to hit
+// `if (doc.chunkLoadInFlight) return;` and silently no-op, forcing a
+// retry. preemptChunkLoad below lets those call sites preempt instead of
+// blocking: bump the generation and clear the flag right before starting
+// their own request, exactly like reloadFromDisk/reopenWithEncoding
+// already do, so whatever was in flight discards its own response via
+// shouldApplyChunkResponse once it resolves. Auto append/prepend
+// deliberately never call it — they still yield to an in-flight load
+// (chunkpolicy.ts's canAutoAppend/canPrepend, unchanged) — so only
+// user-initiated requests preempt, including one user-initiated request
+// preempting another (rapid Next/Next): safe because the loser's response
+// is a generation-guarded discard, not the pre-#120 stale-overwrite race.
 
 export interface ChunkResponseContext {
   /** This request's own generation, captured right after the bump that
@@ -47,4 +63,35 @@ export interface ChunkResponseContext {
  *  error dialog for a failed response either. */
 export function shouldApplyChunkResponse(context: ChunkResponseContext): boolean {
   return context.requestGeneration === context.currentGeneration && context.isActiveTab;
+}
+
+/** Slice of tabs.ts's Doc that preemptChunkLoad reads/writes. */
+export interface ChunkLoadState {
+  chunkGeneration: number;
+  chunkLoadInFlight: boolean;
+}
+
+/**
+ * Preempt whatever chunk request is currently in flight for a doc, so a
+ * user-initiated jump (pageChunk Next/Prev, gotoLargeFileLine — including
+ * a bookmark jump via jumpToBookmark) never silently no-ops just because
+ * a background continuous-reading auto append/prepend — or another
+ * still-in-flight user-initiated jump — got there first (issue #134).
+ *
+ * Mirrors reloadFromDisk/reopenWithEncoding's existing approach: bump the
+ * generation and clear the in-flight flag, so whatever was in flight
+ * discards its own response via `shouldApplyChunkResponse` once it
+ * resolves, instead of either blocking this new request or racing to
+ * clobber it. The caller is expected to immediately follow this with the
+ * same generation-bump-and-set-flag pair every chunk-mutating call site
+ * already runs unconditionally before issuing its own IPC call — this
+ * only invalidates what came before.
+ *
+ * Auto append/prepend deliberately never call this: they yield to an
+ * in-flight load instead of preempting it (see chunkpolicy.ts's
+ * canAutoAppend/canPrepend) — only user-initiated requests preempt.
+ */
+export function preemptChunkLoad(state: ChunkLoadState): void {
+  state.chunkLoadInFlight = false;
+  state.chunkGeneration += 1;
 }
