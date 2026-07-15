@@ -46,7 +46,11 @@ Plume is a Tauri 2 application with a strict split between a Rust core and a web
 3. **Encoding handling is core logic, not UI logic.**
    Detection, decoding, and conversion live in `src-tauri/src/encoding.rs`
    with unit tests. The UI only displays results and forwards user choices
-   (e.g. "reopen as Big5").
+   (e.g. "reopen as Big5"). Statistical detection (chardetng) does not
+   cover every encoding the picker offers — see
+   [docs/encoding-detection.md](docs/encoding-detection.md) for exactly
+   which ones only ever come from a BOM, a per-extension default, or a
+   manual reopen, and why.
 
 4. **Platform-correct, not platform-neutral.**
    Menus, shortcuts, and dialogs follow each platform's conventions

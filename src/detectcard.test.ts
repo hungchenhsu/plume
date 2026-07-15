@@ -135,4 +135,51 @@ describe("formatDetectionCard", () => {
       "Currently using Big5 manually — auto-detect would choose UTF-8.",
     );
   });
+
+  // ROADMAP.md v0.5 Track E3: detection-boundary consistency for the four
+  // catalog values chardetng's guess() can never itself produce (see
+  // encodings.ts's MANUAL_ONLY_ENCODINGS).
+  describe("detectionBoundaryNote", () => {
+    it("is null for an ordinary detected encoding", () => {
+      const model = formatDetectionCard("readme.txt", "UTF-8", bomInfo);
+      expect(model.detectionBoundaryNote).toBeNull();
+    });
+
+    it("is set when the current encoding is manual-only, independent of any manualNote mismatch", () => {
+      // detector re-guesses windows-1252 right now, but the document is
+      // currently using macintosh — both notes should fire together.
+      const info: DetectionExplanation = {
+        bom: null,
+        detectorVerdict: "windows-1252",
+        sampledBytes: 128,
+        totalSize: 128,
+        wouldChoose: "windows-1252 (detector)",
+      };
+      const model = formatDetectionCard("notes.txt", "macintosh", info);
+      expect(model.manualNote).toBe(
+        "Currently using macintosh manually — auto-detect would choose windows-1252.",
+      );
+      expect(model.detectionBoundaryNote).toBe(
+        "macintosh isn't one of chardetng's detection targets — it can only be selected via a BOM, a per-extension default, or Reopen with Encoding.",
+      );
+    });
+
+    it("still fires with no manualNote, when a manual-only encoding was reached via a per-extension default", () => {
+      // reason=extension and currentEncoding matches wouldChoose exactly —
+      // no mismatch, so manualNote is null — but gb18030 is still a
+      // manual-only value and the boundary context still applies.
+      const info: DetectionExplanation = {
+        bom: null,
+        detectorVerdict: "GBK",
+        sampledBytes: 128,
+        totalSize: 128,
+        wouldChoose: "gb18030 (extension)",
+      };
+      const model = formatDetectionCard("notes.txt", "gb18030", info);
+      expect(model.manualNote).toBeNull();
+      expect(model.detectionBoundaryNote).toBe(
+        "gb18030 isn't one of chardetng's detection targets — it can only be selected via a BOM, a per-extension default, or Reopen with Encoding.",
+      );
+    });
+  });
 });

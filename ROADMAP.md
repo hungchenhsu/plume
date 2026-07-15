@@ -1249,9 +1249,26 @@ byte-preservation machinery)
   index map). `EncodingChoice.group` is optional — groupless entries
   (batch's "keep" pseudo-choice) are skipped by design. Group names
   i18n'd across four locales. 703 vitest (+13).
-- [ ] Detection-boundary documentation: single-byte families chardetng
+- [x] Detection-boundary documentation: single-byte families chardetng
   cannot reliably detect are labeled "manual reopen only" consistently
-  in the detection diagnostics; no detection behavior change
+  in the detection diagnostics; no detection behavior change. The
+  fact-check narrowed the premise considerably: per chardetng's own
+  README (0.1.17, fetched verbatim), only four of the 27 picker
+  entries can never come out of `guess()` — ISO-8859-15 and macintosh
+  (listed "not detected"), gb18030 (always reported as GBK) and
+  KOI8-R (always reported as KOI8-U); the windows-125x family,
+  windows-874, ISO-8859-2/5/7 and KOI8-U are genuine detection
+  targets (some with accuracy caveats), and UTF-16 is owned by the
+  BOM layer. `MANUAL_ONLY_ENCODINGS`/`isManualOnlyEncoding`
+  (encodings.ts, citation in comments) drive a new detection-boundary
+  note in the detectcard diagnostics, shown only when the current
+  encoding is one of those four; i18n across four locales. Full
+  reference lives in a new `docs/encoding-detection.md` (decision
+  order deliberately not restated — it points at
+  `detect_with_extension`'s doc comment to avoid drift), with a
+  one-sentence pointer added to ARCHITECTURE.md (approved). Also
+  fixed a stray NUL byte in encodings.test.ts that made git treat it
+  as binary. 714 vitest (+11).
 
 **Track C — comfort (stretch: cut first under schedule pressure)**
 - [ ] Reopen closed tab (Mod+Shift+T, per-session stack, File menu
