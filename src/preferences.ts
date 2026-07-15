@@ -1,6 +1,11 @@
 // Preferences state, application, and the in-window settings dialog.
 import type { EditorHandle } from "./editor";
-import { encodingChoices, reopenEncodingChoices } from "./encodings";
+import {
+  encodingChoices,
+  groupEncodingChoices,
+  reopenEncodingChoices,
+  type EncodingChoice,
+} from "./encodings";
 import { normalizeTable } from "./extensionEncodings";
 import { effectiveLocale, setLocale, t, type Locale } from "./i18n";
 import {
@@ -219,15 +224,48 @@ function row(label: string, control: HTMLElement): HTMLElement {
   return wrapper;
 }
 
-function select(options: { label: string; value: string }[]): HTMLSelectElement {
+/** `group` is optional and unused by themeChoices()/languageChoices() (they
+ *  render as a flat list exactly as before); the two encoding selects below
+ *  pass it to get `<optgroup>` sections via the native browser mechanism. */
+function select(options: { label: string; value: string; group?: string }[]): HTMLSelectElement {
   const el = document.createElement("select");
+  const groups = new Map<string, HTMLOptGroupElement>();
   for (const option of options) {
     const opt = document.createElement("option");
     opt.value = option.value;
     opt.textContent = option.label;
-    el.appendChild(opt);
+    if (option.group === undefined) {
+      el.appendChild(opt);
+      continue;
+    }
+    let group = groups.get(option.group);
+    if (!group) {
+      group = document.createElement("optgroup");
+      group.label = option.group;
+      groups.set(option.group, group);
+      el.appendChild(group);
+    }
+    group.appendChild(opt);
   }
   return el;
+}
+
+/** Flattens `groupEncodingChoices(choices)` into `select()`'s option shape,
+ *  carrying each group's localized label along for the `<optgroup>`.
+ *  `toValue` lets callers encode extra state into the option value (the
+ *  default-encoding-for-new-files select below packs `withBom` alongside
+ *  the encoding name) without duplicating the grouping/flattening here. */
+function encodingSelectOptions(
+  choices: EncodingChoice[],
+  toValue: (choice: EncodingChoice) => string = (choice) => choice.value,
+): { label: string; value: string; group: string }[] {
+  return groupEncodingChoices(choices).flatMap((group) =>
+    group.choices.map((choice) => ({
+      label: choice.label,
+      value: toValue(choice),
+      group: group.label,
+    })),
+  );
 }
 
 /** Build the "Per-extension encodings" editor: a small table of
@@ -265,9 +303,7 @@ function extensionTable(initial: [string, string][]): {
     ext.placeholder = t("preferences.extPlaceholder");
     ext.value = extension;
 
-    const enc = select(
-      reopenEncodingChoices().map((e) => ({ label: e.label, value: e.value })),
-    );
+    const enc = select(encodingSelectOptions(reopenEncodingChoices()));
     enc.className = "prefs-ext-encoding";
     enc.value = encoding;
     if (enc.selectedIndex < 0) enc.selectedIndex = 0;
@@ -346,10 +382,7 @@ export function showPreferencesDialog(): void {
   dialog.appendChild(row(t("preferences.language"), language));
 
   const encoding = select(
-    encodingChoices().map((e) => ({
-      label: e.label,
-      value: `${e.value} ${e.withBom}`,
-    })),
+    encodingSelectOptions(encodingChoices(), (e) => `${e.value} ${e.withBom}`),
   );
   encoding.value = `${current.defaultEncoding} ${current.defaultBom}`;
   if (encoding.selectedIndex < 0) encoding.selectedIndex = 0;

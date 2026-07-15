@@ -20,7 +20,13 @@ import {
   textStatsOf,
 } from "./editor";
 import { showCharInspector } from "./charinspect";
-import { encodingChoices, reopenEncodingChoices, streamConvertEncodingChoices } from "./encodings";
+import {
+  encodingChoices,
+  groupEncodingChoices,
+  reopenEncodingChoices,
+  streamConvertEncodingChoices,
+  type EncodingChoice,
+} from "./encodings";
 import { onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
@@ -88,7 +94,7 @@ import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
 import { planNormalization, type NormalizeForm } from "./normalize";
 import { orphanBackups } from "./orphans";
 import { showQuickOpen } from "./quickopen";
-import { showMenu } from "./popup";
+import { showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { runStreamConvert } from "./streamconvert";
@@ -1734,6 +1740,27 @@ function showMojibakeRepairWizard(): void {
   });
 }
 
+/**
+ * Flattens `choices` into popup `MenuItem`s with a non-interactive section
+ * header (see popup.ts's `MenuItem.header`) ahead of each of
+ * `groupEncodingChoices`'s buckets. `toItem` supplies the per-choice
+ * `checked`/`action` (and anything else besides `label`/`header`), which
+ * differs across this menu's three encoding submenus below.
+ */
+function encodingMenuItems(
+  choices: EncodingChoice[],
+  toItem: (choice: EncodingChoice) => Omit<MenuItem, "label" | "header">,
+): MenuItem[] {
+  const items: MenuItem[] = [];
+  for (const group of groupEncodingChoices(choices)) {
+    items.push({ label: group.label, header: true });
+    for (const choice of group.choices) {
+      items.push({ label: choice.label, ...toItem(choice) });
+    }
+  }
+  return items;
+}
+
 function showEncodingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
@@ -1760,8 +1787,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
       action: () =>
         showMenu(
           anchor,
-          reopenEncodingChoices().map((e) => ({
-            label: e.label,
+          encodingMenuItems(reopenEncodingChoices(), (e) => ({
             checked: e.value === doc.encoding,
             action: () => void reopenWithEncoding(e.value),
           })),
@@ -1786,8 +1812,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
       action: () =>
         showMenu(
           anchor,
-          encodingChoices().map((e) => ({
-            label: e.label,
+          encodingMenuItems(encodingChoices(), (e) => ({
             checked: e.value === doc.encoding && e.withBom === doc.withBom,
             action: () => {
               // Applied speculatively so the save encodes with the new
@@ -1822,8 +1847,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
       action: () =>
         showMenu(
           anchor,
-          streamConvertEncodingChoices().map((e) => ({
-            label: e.label,
+          encodingMenuItems(streamConvertEncodingChoices(), (e) => ({
             checked: e.value === doc.encoding && e.withBom === doc.withBom,
             action: () => {
               if (!doc.path) return;

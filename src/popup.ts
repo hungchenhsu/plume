@@ -4,6 +4,13 @@ export interface MenuItem {
   checked?: boolean;
   disabled?: boolean;
   action?: () => void;
+  /** Render `label` as a non-interactive section header (e.g. the encoding
+   *  picker's Unicode/East Asian/… groups) instead of a clickable item.
+   *  `checked` / `disabled` / `action` are ignored when this is true.
+   *  Optional and defaulting to falsy, so every pre-existing `showMenu`
+   *  caller (line-ending menu, decode-warning menu, the top-level encoding
+   *  menu, etc.) needs no changes. */
+  header?: boolean;
 }
 
 interface OpenMenu {
@@ -28,6 +35,14 @@ export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
   el.className = "popup-menu";
 
   for (const item of items) {
+    if (item.header) {
+      const headerEl = document.createElement("div");
+      headerEl.className = "popup-section-header";
+      headerEl.textContent = item.label;
+      el.appendChild(headerEl);
+      continue;
+    }
+
     const button = document.createElement("button");
     button.className = "popup-item";
     button.disabled = item.disabled ?? false;

@@ -28,7 +28,7 @@ import {
   confirm as confirmDialog,
   open as openDialog,
 } from "@tauri-apps/plugin-dialog";
-import { encodingChoices, type EncodingChoice } from "./encodings";
+import { encodingChoices, groupEncodingChoices, type EncodingChoice } from "./encodings";
 import { t } from "./i18n";
 import {
   executeBatchConversion,
@@ -233,12 +233,29 @@ export function showBatchConvert(): void {
   const encodingSelect = document.createElement("select");
   encodingSelect.className = "batchconvert-encoding";
   const choices = batchEncodingChoices();
-  choices.forEach((choice, index) => {
-    const option = document.createElement("option");
-    option.value = String(index);
-    option.textContent = choice.label;
-    encodingSelect.appendChild(option);
-  });
+  // `option.value` is the choice's index in `choices` (not e.g. its encoding
+  // name), since the "keep" pseudo-choice at index 0 shares its withBom
+  // shape with nothing else and several real choices share a `.value` (the
+  // UTF-8 / UTF-8 BOM pair) — see `batchEncodingChoices`'s doc comment. That
+  // scheme survives grouping unchanged: `indexByChoice` looks up each
+  // choice's original position by reference, independent of where
+  // `groupEncodingChoices` places it in the grouped/reordered DOM.
+  const indexByChoice = new Map<EncodingChoice, number>(choices.map((c, i) => [c, i]));
+  const keepOption = document.createElement("option");
+  keepOption.value = "0";
+  keepOption.textContent = choices[0].label;
+  encodingSelect.appendChild(keepOption);
+  for (const group of groupEncodingChoices(choices.slice(1))) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group.label;
+    for (const choice of group.choices) {
+      const option = document.createElement("option");
+      option.value = String(indexByChoice.get(choice));
+      option.textContent = choice.label;
+      optgroup.appendChild(option);
+    }
+    encodingSelect.appendChild(optgroup);
+  }
   targetLabel.appendChild(encodingSelect);
 
   const scanButton = document.createElement("button");

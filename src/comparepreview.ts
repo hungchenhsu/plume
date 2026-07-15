@@ -10,7 +10,7 @@
 // delegates to main.ts's existing reopenWithEncoding flow via a callback
 // (the same callback-into-main.ts shape as findinfiles.ts's
 // showFindInFiles) and then closes the panel.
-import { reopenEncodingChoices, type EncodingChoice } from "./encodings";
+import { groupEncodingChoices, reopenEncodingChoices, type EncodingChoice } from "./encodings";
 import { hexPreviewCaption } from "./hexview";
 import { t } from "./i18n";
 import { previewTwoEncodings, type EncodingPreviewSide } from "./ipc";
@@ -67,11 +67,16 @@ function renderColumn(
 }
 
 function populateSelect(select: HTMLSelectElement, choices: EncodingChoice[]): void {
-  for (const choice of choices) {
-    const option = document.createElement("option");
-    option.value = choice.value;
-    option.textContent = choice.label;
-    select.appendChild(option);
+  for (const group of groupEncodingChoices(choices)) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group.label;
+    for (const choice of group.choices) {
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label;
+      optgroup.appendChild(option);
+    }
+    select.appendChild(optgroup);
   }
 }
 
