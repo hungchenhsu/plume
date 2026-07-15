@@ -1051,12 +1051,36 @@ surface for incoming contributors.
   Rust tests failed (nonexistent root, chmod-000 subdir, no-execute
   parent), then the real logic turned them green with the readable
   sibling still scanned. 352 Rust + 603 vitest.
-- [ ] #96 (1/3): streaming replace read-chunk byte-passthrough — a
+- [x] #96 (1/3): streaming replace read-chunk byte-passthrough — a
   chunk with no match involvement, no decoder pending on either edge,
   and no carry in/out is copied byte-identical (the BOM-bearing first
   chunk always excluded); regions that are re-encoded are honestly
   disclosed; regression fixtures use the #96-verified non-injective
-  byte pairs (Big5 8E 69, Shift_JIS 87 90, GBK A2 E3) [danger]
+  byte pairs (Big5 8E 69, Shift_JIS 87 90, GBK A2 E3) [danger].
+  Eligibility short-circuits cheapest-first: stateless encoding →
+  no match/carry-out → no carry-in → decode self-sufficiency (a fresh
+  `without_bom_handling` decoder over the raw chunk with `last=true`
+  must reproduce the streaming decoder's exact text with zero
+  malformed — for a stateless encoding this *is* segment correctness,
+  since the whole file is the concatenation of segments that each
+  cold-decode cleanly at character boundaries; the worst conceivable
+  false negative degrades to the pre-fix re-encode, never to wrong
+  bytes). The encoder still runs on every chunk (its state always
+  advances); passthrough only chooses which buffer hits the disk.
+  Adversarial review REJECTED the first version with a live-fire
+  P1: ISO-2022-JP — encoding_rs's only stateful encoder, genuinely
+  reachable via chardetng auto-detection — could leave the raw
+  chunk's trailing shift-state (e.g. ending in Roman mode via ESC ( J)
+  disagreeing with the encoder's internal state, so the next
+  re-encoded chunk omitted its escape sequence and the file decoded
+  to silently different text with had_errors=false — worse than the
+  canonicalization being fixed. Closed by a stateless-encoding gate
+  (`enc != ISO_2022_JP`, static-singleton identity, alias-proof —
+  reviewer re-verified and lifted the REJECT); the corruption
+  signature is pinned by a red→green cross-chunk fixture, and the
+  lesson is recorded in the judgment overlay. New
+  `StreamReplaceReport.unmatched_region_reencoded` field awaits the
+  (2/3)/(3/3) UI. 360 Rust tests (26 in streamreplace, +8).
 - [ ] #96 (2/3): lazy byte-drift detection on a doc's first save —
   rebuild the full save pipeline (line-ending re-application + BOM)
   against the on-disk bytes and warn once, informed-consent style,
