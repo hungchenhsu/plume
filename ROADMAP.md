@@ -1019,8 +1019,21 @@ surface for incoming contributors.
   keep the retry path alive. +22 vitest (599 total; mutation-tested —
   a disabled mustDefer fails 9, a disabled dirty re-check fails 2).
   Same-shaped consent gap found in reopenWithEncoding filed as #169.
-- [ ] #128: batch scan classify_file switches to single-handle bounded
-  read (#117's exact pattern) closing the metadata/read TOCTOU [danger]
+- [x] #128: batch scan classify_file switches to single-handle bounded
+  read (#117's exact pattern) closing the metadata/read TOCTOU [danger].
+  New `open_for_classification` (open_for_conversion minus the
+  Fingerprint — a dry-run has no later commit to guard) feeding the
+  #117 `take_bounded` helper verbatim; the oversize verdict now reads
+  actual bytes pulled (`bytes.len() > MAX_FILE_SIZE`), literally the
+  same test as the execute side. Boundary behavior (exactly-MAX,
+  MAX+1, empty) unchanged; one deliberate hardening: an fstat failing
+  on an already-open handle now classifies fail-closed as undecodable
+  instead of the old silent `.unwrap_or(false)` pass-through
+  (#116 spirit, surfaced to the user). Failing-test-first via a
+  temporary unbounded stub (real assertion failure 10485801 vs
+  10485761), regression test grows the file through a second handle
+  after the check and asserts the read stops at the take-limit
+  sentinel. Adversarial review AGREE (349 Rust tests).
 - [ ] #130: find-in-files collect_files records unreadable
   directories/entries as scan errors surfaced in the panel (#116's
   pattern) instead of silently skipping subtrees
