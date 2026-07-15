@@ -80,8 +80,18 @@ faster for text files, or is it IDE creep?*
   local full-matrix verification evidence instead; re-run CI on main
   once billing is fixed.
 - Tests at cycle end: 333 Rust + 572 vitest (cycle start: 182/245).
-  Tagged **v0.4.0-alpha.1** (draft-release workflow blocked on Actions
-  billing — re-run the tag workflow after billing is restored).
+  Tagged **v0.4.0-alpha.1**.
+- **Repo is PUBLIC by explicit user decision (2026-07-15)**: the user
+  confirmed the earlier visibility flip was deliberate (public repos get
+  free Actions CI, and "it's about time"), overriding the original
+  keep-private-until-named gate. Consequence: D3 is now *partially*
+  entered out of order — the remaining hygiene items (D1 naming,
+  `.claude/archive/` internal-material purge, outward-facing README
+  pass, macOS signing) are outstanding **post-publication** work items
+  rather than preconditions, tracked in §3/D3. The positioning red
+  lines (§5-S13) apply with full force now that every file is
+  outward-facing. Actions billing on the account remains unfixed but
+  moot while public.
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
