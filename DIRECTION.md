@@ -115,8 +115,10 @@ faster for text files, or is it IDE creep?*
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
-- Open decision gates: naming (D1), signing/updates (D2), going public
-  (D3), distribution (D4) — see §3.
+- Open decision gates: naming (D1), signing/updates (D2), distribution
+  (D4) — see §3. D3 (going public) was entered early by user decision
+  on 2026-07-15; its remaining items are post-publication work, not a
+  gate (§3/D3).
 - Known operational constraints and dead ends live in
   [.claude/judgment-overlay.md](.claude/judgment-overlay.md); hard
   architectural constraints in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -198,22 +200,28 @@ Three independent pieces, cheapest first:
 
 ### D3 — Going public
 
-**Preconditions (all must hold):**
+**Status: entered early by explicit user decision (2026-07-15).** The
+repo is public; the original preconditions below are kept for the
+record but are now **post-publication work items**, not gates:
 
-1. D1 decided and applied.
-2. Repo hygiene sweep: no secrets in history (`gh secret` usage only, but
-   verify with a scanner), no positioning red-line violations anywhere in
-   code/docs/commits (see §5-S13), LICENSE/CONTRIBUTING/README current,
-   screenshots in README.
-3. At least the macOS half of D2 done, so the first public impression
-   isn't a Gatekeeper warning.
-4. A tagged build the user has actually run for daily work.
+1. D1 decided and applied — still open (the largest remaining item; the
+   README carries an explicit "Plume is a working codename" notice as
+   the accepted interim treatment while public — honesty over hiding —
+   recorded here as the sanctioned exception to the §1 branding note
+   until the rename lands).
+2. Repo hygiene sweep — archive material relocated out of the repo
+   (2026-07-15); README rewritten with an Install section and accuracy
+   pass (v0.5 H1); screenshots still owner-pending (agents must not
+   launch the GUI).
+3. macOS signing — pending (D2, user-held; planned 2026-07-22).
+4. A tagged build in daily use — ongoing (alpha pre-releases are
+   published; the §7 versioning policy's original "first public tag is
+   v0.1.0-beta.1" plan was overtaken by events: the repo went public
+   mid-alpha, so alpha tags are public and the beta designation now
+   simply marks the first signed build).
 
-**Steps, in order:** rename repo → final sweep → flip to public → tag
-`v0.1.0-beta.1` (see versioning policy, §7) → publish the release (Red
-action: user confirms) → soft announce wherever the user chooses.
-Publishing is deliberately quiet-first; loud marketing is a separate,
-later user decision.
+Publishing remains deliberately quiet-first; loud marketing is a
+separate, later user decision.
 
 ### D4 — Distribution channels
 
