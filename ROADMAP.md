@@ -966,9 +966,28 @@ surface for incoming contributors.
   (348 pass / 3 ignored), fuzz subset ~4s wall on a 12-core dev
   machine (expect ~11s on CI runners), release `--ignored` variant
   passes in ~31s.
-- [ ] #134: user-initiated goto/paging/bookmark jumps preempt an
+- [x] #134: user-initiated goto/paging/bookmark jumps preempt an
   in-flight auto-append (bump generation + clear the in-flight flag,
-  the reload precedent) instead of silently no-op'ing [danger]
+  the reload precedent) instead of silently no-op'ing [danger]. New
+  pure `preemptChunkLoad` helper (chunkguard.ts); pageChunk preempts
+  only after its target/early-exits resolve, gotoLargeFileLine
+  preempts at entry (its only early exits are an index-build failure
+  that already shows an error dialog, or an empty file — a killed
+  background auto-append re-triggers on the next scroll, so the
+  trade-off is documented rather than fought). Auto append/prepend
+  still yields (chunkpolicy.ts untouched, asserted by a test that
+  throws if auto even issues a request). The classic preemption
+  clobber hole is closed by construction: every request's cleanup is
+  generation-guarded (`if (doc.chunkGeneration === myGeneration)`),
+  so a preempted request's finally can never clear the winner's
+  in-flight flag — verified per call site in adversarial review
+  (AGREE). Prev's #120 peek-then-pop-on-confirmed invariant survives
+  preemption (Prev-during-Prev pops history exactly once, asserted).
+  Failing-test-first: the pre-fix assertions showed the bug was
+  worse than a silent no-op — the user's target content lost to the
+  stale auto chunk. +5 vitest (577 total); the harnesses are honest
+  stand-ins for main.ts's orchestration (which needs a WebView), with
+  the shared pure helpers imported for real.
 - [ ] #124: per-doc save/reload in-flight mutual exclusion — no more
   orphan backup or fingerprint/buffer divergence when a reload lands
   mid-save; second save deferred, watcher state re-evaluated on

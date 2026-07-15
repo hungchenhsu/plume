@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { shouldApplyChunkResponse } from "./chunkguard";
+import { canAutoAppend } from "./chunkpolicy";
+import { preemptChunkLoad, shouldApplyChunkResponse } from "./chunkguard";
 
 describe("shouldApplyChunkResponse — full branch table", () => {
   it("applies when the generation matches and the tab is still active", () => {
@@ -149,5 +150,204 @@ describe("shouldApplyChunkResponse — issue #120 race scenarios", () => {
     inFlight.resolve("stale-pre-reload-content");
     await p;
     expect(doc.applied).toEqual([]);
+  });
+});
+
+/** Minimal stand-in for the slice of tabs.ts's Doc that pageChunk (Next/
+ *  Prev)/gotoLargeFileLine/autoAppendChunk (main.ts) read and write for
+ *  the in-flight-preemption behavior added for issue #134 — the
+ *  generation/active-tab slice above (makeDocState) plus the fields
+ *  needed to (a) decide whether a request preempts (user-initiated) or
+ *  yields (auto) when something is already in flight, and (b) exercise
+ *  pageChunk's Prev "pop only once confirmed current" offset-history
+ *  invariant (#120) under preemption. */
+function makePagingDocState() {
+  return {
+    chunkGeneration: 0,
+    chunkLoadInFlight: false,
+    activeId: 1 as number | null,
+    docId: 1,
+    nextChunkOffset: 100 as number | null,
+    prevChunkOffsets: [10, 20] as number[],
+    applied: [] as string[],
+  };
+}
+
+type PagingDocState = ReturnType<typeof makePagingDocState>;
+
+/** Mirrors pageChunk's Next direction / gotoLargeFileLine: user-initiated
+ *  requests. Issue #134: these must preempt (bump the generation, clear
+ *  the flag) a request already in flight rather than silently no-op on
+ *  it — see the entry guard these two functions share in main.ts. */
+async function issueUserChunkRequest(
+  doc: PagingDocState,
+  fetchContent: () => Promise<string>,
+): Promise<void> {
+  if (doc.chunkLoadInFlight) preemptChunkLoad(doc);
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
+  try {
+    const content = await fetchContent();
+    if (
+      !shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: doc.activeId === doc.docId,
+      })
+    ) {
+      return;
+    }
+    doc.applied.push(content);
+  } finally {
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
+  }
+}
+
+/** Mirrors pageChunk's Prev direction specifically: peeks
+ *  `prevChunkOffsets` before issuing the request and only pops once the
+ *  response is confirmed current (#120) — must still hold under
+ *  preemption (#134). */
+async function issueUserPrevRequest(
+  doc: PagingDocState,
+  fetchContent: () => Promise<string>,
+): Promise<void> {
+  if (doc.chunkLoadInFlight) preemptChunkLoad(doc);
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
+  try {
+    const content = await fetchContent();
+    if (
+      !shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: doc.activeId === doc.docId,
+      })
+    ) {
+      return;
+    }
+    doc.prevChunkOffsets.pop();
+    doc.applied.push(content);
+  } finally {
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
+  }
+}
+
+/** Mirrors autoAppendChunk: auto-triggered — must keep yielding (no-op)
+ *  when a request is already in flight rather than preempting it (issue
+ *  #134 only changes user-initiated call sites). Uses the real
+ *  chunkpolicy.ts guard so this stays honest if that policy ever changes. */
+async function issueAutoChunkRequest(
+  doc: PagingDocState,
+  fetchContent: () => Promise<string>,
+): Promise<void> {
+  if (!canAutoAppend({ nextOffset: doc.nextChunkOffset, inFlight: doc.chunkLoadInFlight })) {
+    return;
+  }
+  doc.chunkLoadInFlight = true;
+  doc.chunkGeneration += 1;
+  const myGeneration = doc.chunkGeneration;
+  try {
+    const content = await fetchContent();
+    if (
+      !shouldApplyChunkResponse({
+        requestGeneration: myGeneration,
+        currentGeneration: doc.chunkGeneration,
+        isActiveTab: doc.activeId === doc.docId,
+      })
+    ) {
+      return;
+    }
+    doc.applied.push(content);
+  } finally {
+    if (doc.chunkGeneration === myGeneration) doc.chunkLoadInFlight = false;
+  }
+}
+
+describe("issue #134 — user-initiated jumps preempt an in-flight auto append/prepend", () => {
+  it("goto-during-auto: a user goto must not silently no-op while an auto append is in flight", async () => {
+    const doc = makePagingDocState();
+    const auto = deferred<string>();
+    const gotoResp = deferred<string>();
+
+    const autoP = issueAutoChunkRequest(doc, () => auto.promise); // scroll-triggered auto append starts...
+    expect(doc.chunkLoadInFlight).toBe(true); // ...and is still in flight when the user acts.
+
+    const gotoP = issueUserChunkRequest(doc, () => gotoResp.promise); // user: Go to Line
+
+    gotoResp.resolve("goto-target-content");
+    await gotoP;
+    auto.resolve("stale-auto-content");
+    await autoP;
+
+    expect(doc.applied).toEqual(["goto-target-content"]);
+  });
+
+  it("Next-during-auto: a user Next must not silently no-op while an auto append is in flight", async () => {
+    const doc = makePagingDocState();
+    const auto = deferred<string>();
+    const next = deferred<string>();
+
+    const autoP = issueAutoChunkRequest(doc, () => auto.promise);
+    expect(doc.chunkLoadInFlight).toBe(true);
+
+    const nextP = issueUserChunkRequest(doc, () => next.promise); // user: Next click
+
+    next.resolve("next-chunk-content");
+    await nextP;
+    auto.resolve("stale-auto-content");
+    await autoP;
+
+    expect(doc.applied).toEqual(["next-chunk-content"]);
+  });
+
+  it("Next-Next (double click): the second click preempts the first instead of no-opping", async () => {
+    const doc = makePagingDocState();
+    const first = deferred<string>();
+    const second = deferred<string>();
+
+    const p1 = issueUserChunkRequest(doc, () => first.promise);
+    const p2 = issueUserChunkRequest(doc, () => second.promise);
+
+    second.resolve("page-2");
+    await p2;
+    first.resolve("page-1-stale");
+    await p1;
+
+    expect(doc.applied).toEqual(["page-2"]);
+  });
+
+  it("Prev-Prev (double click): the winning (second) request still pops the offset-history exactly once — #120's pop-timing invariant survives preemption", async () => {
+    const doc = makePagingDocState();
+    const first = deferred<string>();
+    const second = deferred<string>();
+
+    const p1 = issueUserPrevRequest(doc, () => first.promise);
+    const p2 = issueUserPrevRequest(doc, () => second.promise);
+
+    second.resolve("page-prev-2");
+    await p2;
+    first.resolve("page-prev-1-stale");
+    await p1;
+
+    expect(doc.applied).toEqual(["page-prev-2"]);
+    expect(doc.prevChunkOffsets).toEqual([10]);
+  });
+
+  it("auto append still yields (never preempts) when a user request is already in flight", async () => {
+    const doc = makePagingDocState();
+    const user = deferred<string>();
+
+    const userP = issueUserChunkRequest(doc, () => user.promise);
+    await issueAutoChunkRequest(doc, () => {
+      throw new Error("auto must not even attempt a request while a user request is in flight");
+    });
+
+    user.resolve("user-content");
+    await userP;
+
+    expect(doc.applied).toEqual(["user-content"]);
+    expect(doc.chunkLoadInFlight).toBe(false);
   });
 });
