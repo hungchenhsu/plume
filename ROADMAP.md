@@ -934,11 +934,38 @@ surface for incoming contributors.
   test). Same-shaped gap for explicit legacy multi-byte encodings
   (Big5/Shift_JIS/GBK — no UTF-8-style trim helper exists for them)
   found out-of-scope and filed as #165.
-- [ ] Chunk-paging property fuzz: deterministic-PRNG random operation
+- [x] Chunk-paging property fuzz: deterministic-PRNG random operation
   sequences (Next/Prev/goto/append/prepend × line-ending mixes ×
   multi-byte boundaries) checked against whole-file ground truth;
   scheduled after the #136 fix (built first it would trip the known
-  bug) and before the #134 paging change it protects [danger]
+  bug) and before the #134 paging change it protects [danger]. New
+  test-only `fuzz_paging.rs` mirroring fuzz_roundtrip.rs's xorshift64/
+  `#[cfg(test)]`/`#[ignore]`-variant organization: 12 fixtures (LF/
+  CRLF/CR-only/Mixed × ASCII/CJK/astral, ~10 MB each — CHUNK_BYTES is
+  a hard const with no injection point, so big-fixture/few-rounds; the
+  overlong line is 3×CHUNK_BYTES, sized so stale-goto probes actually
+  reach the no-terminator raw-fallback branch, measured 114/288 hits
+  after an instrumented run showed the naive 1×-plus-epsilon sizing
+  hit it 0/144 times) × four properties: forward-chain lossless
+  reassembly against the whole file, chunk boundaries on real line
+  starts or documented #118 exceptions, line-index goto offsets equal
+  to an independently-derived ground-truth line table (zero shared
+  code with linebreak.rs, cross-checked against build_line_index's own
+  totals so oracle and prod can't self-certify), and same-seed
+  determinism — plus a stale-goto boundary fuzz generalizing the #118
+  follow-up regressions. Adversarial review (AGREE-WITH-CHANGES) added
+  two fixes before commit: goto/stale-goto paths now assert full
+  content equivalence against the ground-truth slice (an
+  `OffsetKind::LineStart` off-by-one that kept offsets correct but
+  dropped a content byte was previously invisible — exactly the region
+  #134 is about to touch), and the stale-goto oracle no longer treats
+  EOF as a legal realign target when the file ends in an unresolved
+  lone CR or no terminator at all (prod correctly raw-falls-back
+  there; masked today at ~3e-10/probe but would have become a false
+  alarm the moment #134 touched EOF semantics). Suite: 351 tests
+  (348 pass / 3 ignored), fuzz subset ~4s wall on a 12-core dev
+  machine (expect ~11s on CI runners), release `--ignored` variant
+  passes in ~31s.
 - [ ] #134: user-initiated goto/paging/bookmark jumps preempt an
   in-flight auto-append (bump generation + clear the in-flight flag,
   the reload precedent) instead of silently no-op'ing [danger]
