@@ -107,9 +107,15 @@ export interface BatchCounts {
   lossy: number;
   undecodable: number;
   tooLarge: number;
+  /** Issue #96 (3/3): how many entries carry `byteDrift: true` — always a
+   *  subset of `alreadyTarget` (see `BatchEntry.byteDrift`'s doc comment),
+   *  tallied independently of `status` since it's an orthogonal flag, not
+   *  a status of its own. */
+  byteDrift: number;
 }
 
-/** Pure helper: tally scan entries by status for the report header. */
+/** Pure helper: tally scan entries by status (plus the orthogonal
+ *  byte-drift flag) for the report header. */
 export function countByStatus(entries: BatchEntry[]): BatchCounts {
   const counts: BatchCounts = {
     convertible: 0,
@@ -117,10 +123,14 @@ export function countByStatus(entries: BatchEntry[]): BatchCounts {
     lossy: 0,
     undecodable: 0,
     tooLarge: 0,
+    byteDrift: 0,
   };
   for (const entry of entries) {
     if (entry.status in counts) {
       counts[entry.status as keyof BatchCounts] += 1;
+    }
+    if (entry.byteDrift) {
+      counts.byteDrift += 1;
     }
   }
   return counts;
@@ -448,6 +458,7 @@ export function showBatchConvert(): void {
             counts.lossy,
             counts.undecodable,
             counts.tooLarge,
+            counts.byteDrift,
           );
     list.replaceChildren();
     for (const entry of entries) {
@@ -486,6 +497,18 @@ export function showBatchConvert(): void {
       const statusEl = document.createElement("span");
       statusEl.className = "batchconvert-row-status";
       statusEl.textContent = statusLabel(entry.status);
+      // Issue #96 (3/3): an orthogonal flag, not a status of its own (see
+      // BatchEntry.byteDrift's doc comment) — appended as a badge next to
+      // the status text rather than replacing it, mirroring
+      // comparePreview.ts's malformed-encoding badge (same small-pill
+      // presentation, see .comparepreview-col-badge in styles.css).
+      if (entry.byteDrift) {
+        const driftBadge = document.createElement("span");
+        driftBadge.className = "batchconvert-row-drift-badge";
+        driftBadge.textContent = t("batchConvert.byteDriftBadge");
+        driftBadge.title = t("batchConvert.byteDriftTooltip");
+        statusEl.appendChild(driftBadge);
+      }
       row.appendChild(checkboxEl);
       row.appendChild(pathEl);
       row.appendChild(detectedEl);

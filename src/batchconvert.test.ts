@@ -61,8 +61,13 @@ describe("parseExtensions", () => {
   });
 });
 
-function entry(status: string, path = `/f-${status}.txt`, detected = "Big5"): BatchEntry {
-  return { path, detected, status, lineEnding: "LF" };
+function entry(
+  status: string,
+  path = `/f-${status}.txt`,
+  detected = "Big5",
+  byteDrift = false,
+): BatchEntry {
+  return { path, detected, status, lineEnding: "LF", byteDrift };
 }
 
 function scanError(path: string, message = "Permission denied (os error 13)"): BatchScanError {
@@ -92,6 +97,7 @@ describe("countByStatus", () => {
       lossy: 1,
       undecodable: 1,
       tooLarge: 1,
+      byteDrift: 0,
     });
   });
 
@@ -102,6 +108,7 @@ describe("countByStatus", () => {
       lossy: 0,
       undecodable: 0,
       tooLarge: 0,
+      byteDrift: 0,
     });
   });
 
@@ -112,6 +119,25 @@ describe("countByStatus", () => {
       lossy: 0,
       undecodable: 0,
       tooLarge: 0,
+      byteDrift: 0,
+    });
+  });
+
+  // Issue #96 (3/3): byteDrift is orthogonal to status — tallied
+  // independently, not as one of the mutually-exclusive status buckets.
+  it("tallies byteDrift independently of status, counting only flagged entries", () => {
+    const entries = [
+      entry("alreadyTarget", "/a.txt", "Big5", true),
+      entry("alreadyTarget", "/b.txt", "Big5", false),
+      entry("convertible", "/c.txt", "UTF-8", false),
+    ];
+    expect(countByStatus(entries)).toEqual({
+      convertible: 1,
+      alreadyTarget: 2,
+      lossy: 0,
+      undecodable: 0,
+      tooLarge: 0,
+      byteDrift: 1,
     });
   });
 });
@@ -794,5 +820,69 @@ describe("showBatchConvert — incomplete-scan warning (issue #116)", () => {
       t("batchConvert.confirmMessageIncomplete", 2, 2),
       expect.anything(),
     );
+  });
+});
+
+// Issue #96 (3/3): a same-encoding, same-line-ending "no-op" conversion can
+// still canonicalize a legacy non-injective byte sequence (Big5/Shift_JIS/
+// GBK) — invisible in the dry-run report before this. `BatchEntry.byteDrift`
+// surfaces it; the panel renders a badge next to the status text (mirroring
+// comparePreview.ts's malformed-encoding badge — see styles.css's
+// .batchconvert-row-drift-badge) and folds a tally into the report summary
+// alongside the existing lossy count.
+describe("showBatchConvert — byte-drift badge (issue #96 3/3)", () => {
+  afterEach(() => {
+    // Mirrors the other DOM describe blocks: let the open dialog's own
+    // Escape handler clean up its document-level listeners.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.querySelector(".batchconvert-overlay")?.remove();
+    scanBatchConversion.mockReset();
+    executeBatchConversion.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+  });
+
+  it("renders the badge only on entries flagged byteDrift: true", async () => {
+    const panel = await openAndScan([
+      entry("alreadyTarget", "/drift.txt", "Big5", true),
+      entry("alreadyTarget", "/clean.txt", "Big5", false),
+      entry("convertible", "/other.txt", "UTF-8", false),
+    ]);
+    const rows = panel.querySelectorAll(".batchconvert-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].querySelector(".batchconvert-row-drift-badge")?.textContent).toBe(
+      t("batchConvert.byteDriftBadge"),
+    );
+    expect(rows[1].querySelector(".batchconvert-row-drift-badge")).toBeNull();
+    expect(rows[2].querySelector(".batchconvert-row-drift-badge")).toBeNull();
+  });
+
+  it("omits the badge entirely when no entry has byte drift", async () => {
+    const panel = await openAndScan([entry("alreadyTarget", "/clean.txt", "Big5", false)]);
+    expect(panel.querySelector(".batchconvert-row-drift-badge")).toBeNull();
+  });
+
+  it("includes a non-empty tooltip on the badge", async () => {
+    const panel = await openAndScan([entry("alreadyTarget", "/drift.txt", "Big5", true)]);
+    const badge = panel.querySelector(".batchconvert-row-drift-badge") as HTMLElement;
+    expect(badge.title.length).toBeGreaterThan(0);
+  });
+
+  it("folds the byte-drift tally into the report summary, mirroring the lossy count", async () => {
+    const panel = await openAndScan([
+      entry("alreadyTarget", "/drift.txt", "Big5", true),
+      entry("convertible", "/other.txt", "UTF-8", false),
+    ]);
+    const summary = panel.querySelector(".batchconvert-summary") as HTMLElement;
+    // 1 convertible, 1 alreadyTarget, 0 lossy, 0 undecodable, 0 tooLarge,
+    // 1 byteDrift — same positional convention statusLabel's summary
+    // already used for the first five counts.
+    expect(summary.textContent).toBe(t("batchConvert.summary", 1, 1, 0, 0, 0, 1));
+  });
+
+  it("reports a zero byte-drift tally when nothing is flagged", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt", "UTF-8", false)]);
+    const summary = panel.querySelector(".batchconvert-summary") as HTMLElement;
+    expect(summary.textContent).toBe(t("batchConvert.summary", 1, 0, 0, 0, 0, 0));
   });
 });

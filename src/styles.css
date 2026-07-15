@@ -1029,6 +1029,22 @@ select:focus-visible {
   color: var(--fg-faint);
 }
 
+/* Issue #96 (3/3): byte-drift badge, appended inside an alreadyTarget row's
+   status cell. Same small-pill treatment as .comparepreview-col-badge
+   (warning-toned, not danger — this is a heads-up on a no-op conversion,
+   not a blocking problem like lossy/undecodable). */
+.batchconvert-row-drift-badge {
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: var(--font-ui-xs);
+  font-weight: 400;
+  color: var(--warning);
+  white-space: nowrap;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+}
+
 .batchconvert-actions {
   display: flex;
   justify-content: flex-end;
