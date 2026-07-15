@@ -291,23 +291,55 @@ fn open_document(
         // untrimmed `else` branch below). Both stay scoped to non-UTF-16
         // (`utf16.is_none()`): a UTF-16-aligned slice must stay whole,
         // and real UTF-16 has no truncated-UTF-8 tail to trim. An
-        // explicit non-UTF-8 label (e.g. Big5) is untouched either way —
-        // byte-range trimming is only sound for UTF-8, the one encoding
-        // `trim_truncated_utf8_tail` validates against via
-        // `str::from_utf8`. That same validation is also why this is
-        // safe to apply unconditionally for auto-detect regardless of
-        // what encoding detection eventually settles on: the function
-        // only ever removes bytes that form a truncated-at-the-very-end
-        // multibyte sequence (`error_len() == None`) and otherwise
-        // returns its input unchanged — a genuine *interior* malformed
-        // sequence (`error_len() == Some(_)`, e.g. real non-UTF-8 bytes,
-        // or truly corrupt UTF-8) is left in place and still reported as
-        // malformed, and the multi-line/clean-cut cases are untouched
-        // because they never hit the truncated-tail branch at all.
+        // explicit label naming a *legacy multi-byte* encoding (Big5,
+        // Shift_JIS, GBK, gb18030, EUC-JP, EUC-KR) is handled by the
+        // sibling branch below instead (issue #165) — this function
+        // itself stays UTF-8-only, validated via `str::from_utf8` exactly
+        // as before. Any other explicit label (a single-byte encoding, or
+        // one neither branch below claims — see
+        // `encoding::is_legacy_multibyte_label`'s doc comment for the
+        // full exclusion list) is still left untouched — byte-range
+        // trimming is only sound for an encoding one of the two functions
+        // below explicitly supports. That same validation is also why
+        // this UTF-8 branch is safe to apply unconditionally for
+        // auto-detect regardless of what encoding detection eventually
+        // settles on: the function only ever removes bytes that form a
+        // truncated-at-the-very-end multibyte sequence (`error_len() ==
+        // None`) and otherwise returns its input unchanged — a genuine
+        // *interior* malformed sequence (`error_len() == Some(_)`, e.g.
+        // real non-UTF-8 bytes, or truly corrupt UTF-8) is left in place
+        // and still reported as malformed, and the multi-line/clean-cut
+        // cases are untouched because they never hit the truncated-tail
+        // branch at all.
         let effective_utf8 =
             encoding.is_none() || encoding.as_deref().is_some_and(encoding::is_utf8_label);
+        // Issue #165: the same truncated-tail problem #136 fixed for an
+        // explicit UTF-8 reopen also applies to an explicit reopen as one
+        // of the legacy multi-byte encodings — a bare byte-range preview
+        // cut can land mid-character there too. Unlike the UTF-8 branch,
+        // this never applies during auto-detection: auto-detect has no
+        // committed target encoding yet to validate a trimmed tail
+        // against. chardetng *does* guess these encodings on clean
+        // samples (see encoding.rs's detects_big5_from_realistic_sample),
+        // but empirically its statistical verdict swings away from the
+        // legacy encoding — to a single-byte candidate like windows-1252 —
+        // precisely when the window ends mid-character, so the
+        // truncated-tail misreport this branch fixes does not reproduce on
+        // the auto-detect path (verified against encoding_rs 0.8.35 +
+        // chardetng 0.1.17 in adversarial review; the separate
+        // "mis-detected as single-byte" limitation that experiment exposed
+        // is tracked as its own issue). This branch therefore only fires
+        // for an explicit label, which `trim_truncated_legacy_tail`
+        // resolves the same way `decode_with` below will.
+        let is_legacy_multibyte = encoding
+            .as_deref()
+            .is_some_and(encoding::is_legacy_multibyte_label);
         let slice = if utf16.is_none() && effective_utf8 {
             encoding::trim_truncated_utf8_tail(slice)
+        } else if utf16.is_none() && is_legacy_multibyte {
+            // `is_legacy_multibyte` is true only when `encoding` is
+            // `Some`, so this unwrap cannot panic.
+            encoding::trim_truncated_legacy_tail(slice, encoding.as_deref().unwrap())
         } else {
             slice
         };
@@ -2363,6 +2395,305 @@ mod tests {
         assert!(
             opened.content.contains('\u{FFFD}'),
             "the interior corruption must surface as a replacement character"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Issue #165: the #136 fix's sibling for an explicit reopen as a
+    // legacy multi-byte encoding (Big5, gb18030 here; the underlying
+    // `encoding::trim_truncated_legacy_tail` also covers Shift_JIS, GBK,
+    // EUC-JP, EUC-KR — see its own unit tests in `encoding.rs`). Same
+    // fixture shape as the #136 UTF-8 tests above: one line, no newline
+    // anywhere in the 2 MiB preview window, so the raw `preview_slice` cut
+    // always lands mid-character. ---
+
+    /// Build a large, genuinely-valid Big5 fixture: a single leading ASCII
+    /// byte followed by `中` (a 2-byte Big5 character) repeated enough
+    /// times to exceed `LARGE_FILE_THRESHOLD`, with no newline anywhere.
+    /// `PREVIEW_BYTES` is a power of two (so even), and every character
+    /// here is 2 bytes starting at offset 1 (odd) — without the leading
+    /// ASCII byte, the preview cut at `PREVIEW_BYTES` would always land
+    /// exactly on a character boundary (even cut, even-aligned 2-byte
+    /// characters starting at 0) and never actually exercise the
+    /// mid-character split this fixture exists to test. The one leading
+    /// odd-parity byte shifts every later character's start to an odd
+    /// offset, so the even `PREVIEW_BYTES` cut always splits the
+    /// character straddling it after exactly its first byte.
+    fn write_large_big5_fixture(dir_name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big5.txt");
+        let mut text = String::from("a");
+        text.push_str(&"中".repeat(6_000_000));
+        let (bytes, unmappable) = crate::encoding::encode(&text, "Big5", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in Big5"
+        );
+        std::fs::write(&file, &bytes).unwrap();
+        file
+    }
+
+    /// Issue #165 core regression, Big5 analogue of
+    /// `open_document_large_cjk_utf8_singleline_explicit_utf8_not_corrupted`
+    /// (#136). Before the fix, `open_document`'s trim gate never applied
+    /// any trim for an explicit non-UTF-8 label, so the raw
+    /// `preview_slice` cut (landing 1 byte into the 6,000,000th `中`, per
+    /// `write_large_big5_fixture`'s doc comment) was decoded as given:
+    /// `decode_with` reports a spurious trailing U+FFFD and `malformed ==
+    /// true` for a file that is not actually corrupt anywhere, and
+    /// `next_offset` lands 1 byte short of that character's boundary.
+    /// Red before the fix; green after, because the widened trim gate now
+    /// applies `trim_truncated_legacy_tail` for an explicit legacy
+    /// multi-byte label the same way it already applied
+    /// `trim_truncated_utf8_tail` for an explicit UTF-8 label (#136).
+    ///
+    /// This also stands in for issue #165's failing-test item 4 ("true
+    /// tail malformed" control): there is no separate test for a
+    /// genuinely-corrupt-at-EOF file, because #136's own argument already
+    /// rules it out structurally for this code path, unchanged by #165 —
+    /// the trim gate only ever runs when `truncated` is true, which
+    /// requires the *whole file* to exceed `LARGE_FILE_THRESHOLD` (10
+    /// MiB) while the preview window is only `PREVIEW_BYTES` (2 MiB), so
+    /// the byte the trim gate ever looks at as "the tail" is always deep
+    /// inside the real file, never its actual last byte. A genuine
+    /// end-of-file malformed sequence physically cannot be the thing this
+    /// gate trims, on this path, regardless of encoding.
+    #[test]
+    fn open_document_large_big5_singleline_explicit_reopen_not_corrupted() {
+        let file = write_large_big5_fixture("plume-large-big5-singleline");
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, Some("Big5".to_string()), None).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(opened.encoding, "Big5");
+        assert!(
+            !opened.malformed,
+            "an explicit Big5 reopen of a genuinely well-formed file must never \
+             report malformed (issue #165)"
+        );
+        assert!(opened.content.starts_with('a'));
+        assert!(
+            opened.content[1..].chars().all(|c| c == '中'),
+            "content must decode as CJK, not a wrong-boundary artifact"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "the truncated tail must be trimmed, not surfaced as U+FFFD (issue #165)"
+        );
+
+        let next_offset = opened
+            .next_offset
+            .expect("a truncated large-file open must report next_offset")
+            as usize;
+        let full = std::fs::read(&file).unwrap();
+        let realigned = crate::encoding::decode_with(&full[..next_offset], "Big5").unwrap();
+        assert!(
+            !realigned.malformed,
+            "next_offset must land on a Big5 character boundary, not mid-character (issue #165)"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #165, control/pin test mirroring
+    /// `open_document_large_explicit_utf8_interior_malformed_still_reported`
+    /// (#136) for Big5: a genuine *interior* invalid byte within the 2 MiB
+    /// preview window — not merely a truncated tail — must still surface
+    /// as `malformed == true` after adding the legacy-encoding trim gate.
+    /// `0xFF` is never a valid Big5 lead byte under any continuation, so
+    /// `encoding::trim_truncated_legacy_tail`'s step 1 (whole-slice,
+    /// `last: false` decode) must report it regardless of the trailing
+    /// bytes, and no cut depth in step 2 can make it disappear — nothing
+    /// about the #165 fix may mask a genuinely broken file.
+    #[test]
+    fn open_document_large_big5_interior_malformed_still_reported() {
+        let dir = std::env::temp_dir().join("plume-large-big5-interior-malformed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("interior-malformed.txt");
+
+        // Big5 is 2 bytes/char (not UTF-8's 3), so this needs more
+        // repeats than the UTF-8 interior-malformed fixture to clear
+        // LARGE_FILE_THRESHOLD.
+        let text = "中".repeat(6_000_000);
+        let (mut data, unmappable) = crate::encoding::encode(&text, "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert!(data.len() as u64 > LARGE_FILE_THRESHOLD);
+        // A lone 0xFF is never valid Big5 in any position (not a valid
+        // lead byte, not a valid trail byte): genuine interior
+        // corruption, well inside the 2 MiB preview window and far from
+        // its tail.
+        data[1000] = 0xFF;
+        std::fs::write(&file, &data).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, Some("Big5".to_string()), None).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(opened.encoding, "Big5");
+        assert!(
+            opened.malformed,
+            "a genuine interior invalid byte must still be reported as malformed, \
+             not masked by the #165 trim-gate widening"
+        );
+        assert!(
+            opened.content.contains('\u{FFFD}'),
+            "the interior corruption must surface as a replacement character"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Build a large, genuinely-valid gb18030 fixture: `pad` ASCII bytes
+    /// (1, 2, or 3) followed by U+20000 (a 4-byte gb18030 sequence — see
+    /// `encoding::tests::trim_truncated_legacy_tail_gb18030_drops_truncated_four_byte_tail_at_each_split_position`)
+    /// repeated enough times to exceed `LARGE_FILE_THRESHOLD`, with no
+    /// newline anywhere. `PREVIEW_BYTES` is a power of two >= 4, so with
+    /// no padding the preview cut always lands exactly on a 4-byte
+    /// character boundary; shifting every character's start by `pad`
+    /// bytes instead makes the even `PREVIEW_BYTES` cut land `pad` bytes
+    /// into whichever character straddles it. Concretely, `pad == 3, 2,
+    /// 1` leave exactly `1, 2, 3` complete bytes of the split character
+    /// before the cut — the three "split position" fixtures issue #165
+    /// asks for, driven by `split_after_bytes` in
+    /// `assert_open_document_large_gb18030_split_not_corrupted` below.
+    fn write_large_gb18030_fixture(dir_name: &str, pad: usize) -> std::path::PathBuf {
+        assert!((1..=3).contains(&pad), "pad must leave 1..=3 bytes visible");
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("gb18030.txt");
+        let mut text = "a".repeat(pad);
+        text.push_str(&"\u{20000}".repeat(3_000_000));
+        let (bytes, unmappable) = crate::encoding::encode(&text, "gb18030", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in gb18030"
+        );
+        assert_eq!(bytes.len(), pad + 4 * 3_000_000);
+        std::fs::write(&file, &bytes).unwrap();
+        file
+    }
+
+    /// Shared body for the three `open_document_large_gb18030_split_after_*`
+    /// tests below — see `write_large_gb18030_fixture`'s doc comment for
+    /// the `pad`/`split_after_bytes` arithmetic. Otherwise the gb18030
+    /// analogue of `open_document_large_big5_singleline_explicit_reopen_not_corrupted`
+    /// above.
+    fn assert_open_document_large_gb18030_split_not_corrupted(
+        split_after_bytes: usize,
+        dir_name: &str,
+    ) {
+        let pad = (4 - split_after_bytes) % 4;
+        let file = write_large_gb18030_fixture(dir_name, pad);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, Some("gb18030".to_string()), None).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(opened.encoding, "gb18030");
+        assert!(
+            !opened.malformed,
+            "an explicit gb18030 reopen of a genuinely well-formed file must never \
+             report malformed even when the preview window splits a 4-byte \
+             character after {split_after_bytes} of its bytes (issue #165)"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "the truncated tail must be trimmed, not surfaced as U+FFFD (issue #165)"
+        );
+        assert!(
+            opened.content.chars().skip(pad).all(|c| c == '\u{20000}'),
+            "content must decode as the fixture's supplementary-plane character, \
+             not a wrong-boundary artifact"
+        );
+
+        let next_offset = opened
+            .next_offset
+            .expect("a truncated large-file open must report next_offset")
+            as usize;
+        let full = std::fs::read(&file).unwrap();
+        let realigned = crate::encoding::decode_with(&full[..next_offset], "gb18030").unwrap();
+        assert!(
+            !realigned.malformed,
+            "next_offset must land on a gb18030 character boundary, not mid-character \
+             (issue #165)"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn open_document_large_gb18030_split_after_1_byte_not_corrupted() {
+        assert_open_document_large_gb18030_split_not_corrupted(
+            1,
+            "plume-large-gb18030-split-after-1",
+        );
+    }
+
+    #[test]
+    fn open_document_large_gb18030_split_after_2_bytes_not_corrupted() {
+        assert_open_document_large_gb18030_split_not_corrupted(
+            2,
+            "plume-large-gb18030-split-after-2",
+        );
+    }
+
+    #[test]
+    fn open_document_large_gb18030_split_after_3_bytes_not_corrupted() {
+        assert_open_document_large_gb18030_split_not_corrupted(
+            3,
+            "plume-large-gb18030-split-after-3",
+        );
+    }
+
+    /// Issue #165, zero-regression pin for single-byte encodings: every
+    /// byte of a single-byte encoding already *is* one whole character, so
+    /// `encoding::is_legacy_multibyte_label` must reject it and
+    /// `open_document`'s trim gate must take the same untrimmed path it
+    /// always did before #165. Pinned precisely (`next_offset ==
+    /// PREVIEW_BYTES`, not merely "not malformed") so a future bug in
+    /// `max_legacy_seq_len` wrongly matching a single-byte encoding would
+    /// fail this test even though nothing here could ever actually produce
+    /// `malformed == true` either way.
+    #[test]
+    fn open_document_large_windows1252_singleline_explicit_reopen_unaffected_by_legacy_gate() {
+        let dir = std::env::temp_dir().join("plume-large-windows1252-singleline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("windows-1252.txt");
+        let text = "é".repeat(11_000_000);
+        let (bytes, unmappable) = crate::encoding::encode(&text, "windows-1252", false).unwrap();
+        assert!(!unmappable);
+        assert!(bytes.len() as u64 > LARGE_FILE_THRESHOLD);
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let opened = open_document(path, Some("windows-1252".to_string()), None).unwrap();
+
+        assert!(opened.truncated);
+        assert_eq!(opened.encoding, "windows-1252");
+        assert!(!opened.malformed);
+        assert!(!opened.content.contains('\u{FFFD}'));
+        assert!(opened.content.chars().all(|c| c == 'é'));
+        assert_eq!(
+            opened.next_offset,
+            Some(PREVIEW_BYTES as u64),
+            "a single-byte encoding must never be trimmed by the #165 legacy gate"
         );
 
         std::fs::remove_dir_all(&dir).ok();
