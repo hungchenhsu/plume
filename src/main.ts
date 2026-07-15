@@ -49,6 +49,7 @@ import {
   saveDocument,
   saveSession,
   syncReadOnlyMenu,
+  syncReopenClosedTabMenu,
   takePendingFiles,
   unwatchFile,
   watchFile,
@@ -68,6 +69,7 @@ import {
 import { runByteDriftGate } from "./bytedrift";
 import { canAutoAppend, canPrepend } from "./chunkpolicy";
 import { preemptChunkLoad, shouldApplyChunkResponse } from "./chunkguard";
+import { hasClosedTabs, popClosedTab, recordClosedTab } from "./closedtabs";
 import { showComparePreview } from "./comparepreview";
 import { lookupExtensionEncoding } from "./extensionEncodings";
 import { pushBack, pushFront } from "./chunkwindow";
@@ -1363,8 +1365,12 @@ function extensionHint(path: string): string | undefined {
   return lookupExtensionEncoding(preferences().extensionEncodings, path);
 }
 
-/** Open a file by path into a tab, focusing the existing tab if any. */
-async function openPath(path: string): Promise<void> {
+/** Open a file by path into a tab, focusing the existing tab if any.
+ *  `cursor` is a character offset for the newly opened buffer (clamped by
+ *  editor.ts's `newBuffer`, like SessionFile.cursor on session restore) —
+ *  reopenClosedTab passes the offset recorded at close time. A path
+ *  that's already open keeps that tab's own cursor instead. */
+async function openPath(path: string, cursor = 0): Promise<void> {
   const existing = tabs.findByPath(path);
   if (existing) {
     activate(existing.id);
@@ -1374,7 +1380,7 @@ async function openPath(path: string): Promise<void> {
     const opened = await openDocument(path, undefined, extensionHint(path));
     const previous = tabs.active;
     if (previous) previous.buffer = editor.snapshot();
-    tabs.add(docFromOpened(opened));
+    tabs.add(docFromOpened(opened, cursor));
     if (previous && isPristineUntitled(previous)) tabs.close(previous.id);
     showActive();
     persistSession();
@@ -1949,11 +1955,52 @@ async function closeTab(id: number): Promise<void> {
   if (doc.path) void unwatchFile(doc.path).catch(() => {});
   dropBackup(doc);
   const wasActive = id === tabs.activeId;
+  // Record for File > Reopen Closed Tab now that the close is definitely
+  // going through (both cancel paths returned above). recordClosedTab
+  // itself excludes untitled tabs (path === null); a "save" choice that
+  // Save-As'd an untitled tab has already set doc.path, so that close
+  // records the new path. Cursor freshness mirrors collectSession: the
+  // active tab's live cursor exists only in editor.snapshot() —
+  // doc.buffer goes stale until the next tab switch syncs it.
+  recordClosedTab(
+    doc.path,
+    cursorOf(wasActive ? editor.snapshot() : doc.buffer),
+  );
+  syncReopenClosedTabState();
   tabs.close(id);
   if (tabs.docs.length === 0) tabs.add(makeUntitled());
   if (wasActive) showActive();
   else tabs.render();
   persistSession();
+}
+
+/** File > Reopen Closed Tab (Mod+Shift+T): pop the most recently closed
+ *  tab off the session-local stack and reopen it, cursor restored through
+ *  openPath's cursor parameter (the same clamped path session restore
+ *  uses). The popped entry is consumed even when the open fails (file
+ *  deleted since the close): openPath's own error dialog reports it and
+ *  the flow stops — no chained pop, so the next Mod+Shift+T moves on to
+ *  the previous entry instead of retrying a dead path. A path already
+ *  open in another tab goes through openPath's usual
+ *  focus-the-existing-tab behavior. */
+async function reopenClosedTab(): Promise<void> {
+  const entry = popClosedTab();
+  syncReopenClosedTabState();
+  if (!entry) return;
+  await openPath(entry.path, entry.cursor);
+}
+
+/** Sync the File > Reopen Closed Tab item's enabled state to whether the
+ *  stack holds anything (menu.rs `sync_reopen_closed_tab_menu`; the item
+ *  is built disabled since the stack is always empty at launch). Called
+ *  after every push (closeTab) and pop (reopenClosedTab) — the stack is
+ *  global, not per-tab, so unlike syncReadOnlyState there is nothing for
+ *  showActive to re-derive on tab switches. Best-effort like the other
+ *  menu-sync IPC calls. */
+function syncReopenClosedTabState(): void {
+  void syncReopenClosedTabMenu(hasClosedTabs()).catch(() => {
+    // Best-effort; see doc comment above.
+  });
 }
 
 /** Guard an Edit > Line Operations menu action against a read-only
@@ -2099,6 +2146,9 @@ void listen<string>("plume://menu", (event) => {
       break;
     case "close_tab":
       if (tabs.activeId !== null) void closeTab(tabs.activeId);
+      break;
+    case "reopen_closed_tab":
+      void reopenClosedTab();
       break;
     // Selection commands, not edits — like "find"/"goto_line" below, these
     // run unguarded (no runLineOperation truncated-preview check): they

@@ -657,6 +657,7 @@ pub fn run() {
             prefs::save_preferences,
             menu::sync_theme_menu,
             menu::sync_read_only_menu,
+            menu::sync_reopen_closed_tab_menu,
             menu::retitle_menu,
             take_pending_files,
             print_window,

@@ -1271,8 +1271,19 @@ byte-preservation machinery)
   as binary. 714 vitest (+11).
 
 **Track C — comfort (stretch: cut first under schedule pressure)**
-- [ ] Reopen closed tab (Mod+Shift+T, per-session stack, File menu
-  entry, untitled tabs excluded)
+- [x] Reopen closed tab (Mod+Shift+T, per-session stack, File menu
+  entry, untitled tabs excluded). `ClosedTabsStack` pure module
+  (LIFO, MRU dedup on re-closing the same path, cap 20, pop consumes
+  even if the file has since vanished — the existing open-error
+  dialog shows and the chain does not cascade); pushes happen only
+  after a close is truly confirmed (cancel paths don't record).
+  Cursor position rides along: the stack stores the offset the
+  session snapshot already captures, and reopen feeds it through the
+  existing `docFromOpened` clamp — no new persistence invented. The
+  File menu item is this codebase's first dynamically-enabled plain
+  MenuItem (`sync_reopen_closed_tab_menu`, disabled while the stack
+  is empty), LABELS across four locales with the pinned-translation
+  test. 725 vitest (+11) + 423 Rust (+1).
 - [ ] Tab context menu: Close Others / Close to the Right / Copy Path /
   Reveal in Finder(Explorer) via the already-bundled opener plugin
   (zero new dependencies; path items disabled for untitled tabs)
