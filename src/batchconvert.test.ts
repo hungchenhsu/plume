@@ -886,3 +886,62 @@ describe("showBatchConvert — byte-drift badge (issue #96 3/3)", () => {
     expect(summary.textContent).toBe(t("batchConvert.summary", 1, 0, 0, 0, 0, 0));
   });
 });
+
+// Issue #176 (#96 3/3's other half): a `convertible` entry can now carry
+// byteDrift: true too — the encoding-axis-unchanged, line-ending-only
+// conversion case (src-tauri/src/batch.rs's `classify_file`). Reusing the
+// `alreadyTarget` tooltip's "Text unchanged..." wording there would
+// misreport a requested line-ending change as an unrequested one, so the
+// badge picks a status-specific tooltip key while keeping the same badge
+// pill for both.
+describe("showBatchConvert — byte-drift badge on convertible entries (issue #176)", () => {
+  afterEach(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.querySelector(".batchconvert-overlay")?.remove();
+    scanBatchConversion.mockReset();
+    executeBatchConversion.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+  });
+
+  it("renders the badge on a convertible entry flagged byteDrift: true", async () => {
+    const panel = await openAndScan([entry("convertible", "/a.txt", "Big5", true)]);
+    const badge = panel.querySelector(".batchconvert-row-drift-badge");
+    expect(badge?.textContent).toBe(t("batchConvert.byteDriftBadge"));
+  });
+
+  it("never renders the badge on a convertible entry without drift", async () => {
+    const panel = await openAndScan([entry("convertible", "/clean.txt", "Big5", false)]);
+    expect(panel.querySelector(".batchconvert-row-drift-badge")).toBeNull();
+  });
+
+  it("uses the convertible-specific tooltip, distinct from the alreadyTarget wording", async () => {
+    const panel = await openAndScan([
+      entry("alreadyTarget", "/no-op.txt", "Big5", true),
+      entry("convertible", "/le-change.txt", "Big5", true),
+    ]);
+    const rows = panel.querySelectorAll(".batchconvert-row");
+    const alreadyTargetBadge = rows[0].querySelector(
+      ".batchconvert-row-drift-badge",
+    ) as HTMLElement;
+    const convertibleBadge = rows[1].querySelector(
+      ".batchconvert-row-drift-badge",
+    ) as HTMLElement;
+    expect(alreadyTargetBadge.title).toBe(t("batchConvert.byteDriftTooltip"));
+    expect(convertibleBadge.title).toBe(t("batchConvert.byteDriftTooltipConvertible"));
+    expect(convertibleBadge.title.length).toBeGreaterThan(0);
+    expect(convertibleBadge.title).not.toBe(alreadyTargetBadge.title);
+  });
+
+  it("folds a convertible entry's byteDrift into the same summary tally as alreadyTarget's", async () => {
+    const panel = await openAndScan([
+      entry("convertible", "/le-change.txt", "Big5", true),
+      entry("convertible", "/clean.txt", "Big5", false),
+    ]);
+    const summary = panel.querySelector(".batchconvert-summary") as HTMLElement;
+    // 2 convertible, 0 alreadyTarget, 0 lossy, 0 undecodable, 0 tooLarge,
+    // 1 byteDrift — countByStatus already covers the tally logic itself;
+    // this pins that the DOM summary line actually reflects it end to end.
+    expect(summary.textContent).toBe(t("batchConvert.summary", 2, 0, 0, 0, 0, 1));
+  });
+});

@@ -107,10 +107,12 @@ export interface BatchCounts {
   lossy: number;
   undecodable: number;
   tooLarge: number;
-  /** Issue #96 (3/3): how many entries carry `byteDrift: true` — always a
-   *  subset of `alreadyTarget` (see `BatchEntry.byteDrift`'s doc comment),
-   *  tallied independently of `status` since it's an orthogonal flag, not
-   *  a status of its own. */
+  /** Issue #96 (3/3) / #176: how many entries carry `byteDrift: true` —
+   *  either an `alreadyTarget` no-op entry (#96 3/3) or a `convertible`
+   *  entry whose only requested change is line-ending, encoding axis
+   *  otherwise untouched (#176; see `BatchEntry.byteDrift`'s doc comment
+   *  for both scenarios), tallied independently of `status` since it's an
+   *  orthogonal flag, not a status of its own. */
   byteDrift: number;
 }
 
@@ -514,16 +516,26 @@ export function showBatchConvert(): void {
       const statusEl = document.createElement("span");
       statusEl.className = "batchconvert-row-status";
       statusEl.textContent = statusLabel(entry.status);
-      // Issue #96 (3/3): an orthogonal flag, not a status of its own (see
-      // BatchEntry.byteDrift's doc comment) — appended as a badge next to
-      // the status text rather than replacing it, mirroring
+      // Issue #96 (3/3) / #176: an orthogonal flag, not a status of its own
+      // (see BatchEntry.byteDrift's doc comment) — appended as a badge next
+      // to the status text rather than replacing it, mirroring
       // comparePreview.ts's malformed-encoding badge (same small-pill
-      // presentation, see .comparepreview-col-badge in styles.css).
+      // presentation, see .comparepreview-col-badge in styles.css). Same
+      // badge either way byteDrift is true, but the tooltip's wording
+      // differs by status: an `alreadyTarget` row is a pure no-op the user
+      // never asked to touch at all ("Text unchanged, but..."), while a
+      // `convertible` row (issue #176) is mid-conversion for a line-ending
+      // change the user *did* ask for — reusing the no-op wording there
+      // would misreport a requested change as an unrequested one, so it
+      // gets its own key instead.
       if (entry.byteDrift) {
         const driftBadge = document.createElement("span");
         driftBadge.className = "batchconvert-row-drift-badge";
         driftBadge.textContent = t("batchConvert.byteDriftBadge");
-        driftBadge.title = t("batchConvert.byteDriftTooltip");
+        driftBadge.title =
+          entry.status === "alreadyTarget"
+            ? t("batchConvert.byteDriftTooltip")
+            : t("batchConvert.byteDriftTooltipConvertible");
         statusEl.appendChild(driftBadge);
       }
       row.appendChild(checkboxEl);

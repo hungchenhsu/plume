@@ -236,6 +236,7 @@ export interface Messages {
   "batchConvert.statusTooLarge": string;
   "batchConvert.byteDriftBadge": string;
   "batchConvert.byteDriftTooltip": string;
+  "batchConvert.byteDriftTooltipConvertible": string;
   "batchConvert.lineEndingMixed": string;
   "batchConvert.includeFileLabel": string;
   "batchConvert.convertButton": (count: number) => string;
@@ -590,6 +591,9 @@ const en: Messages = {
   "batchConvert.byteDriftTooltip":
     "Text unchanged, but re-encoding would still change these bytes — a non-canonical " +
     "legacy byte sequence would be normalized.",
+  "batchConvert.byteDriftTooltipConvertible":
+    "Line endings will change as requested, but converting would also change these bytes " +
+    "beyond that — a non-canonical legacy byte sequence would be normalized.",
   "batchConvert.lineEndingMixed": "Mixed",
   "batchConvert.includeFileLabel": "Include this file",
   "batchConvert.convertButton": (count) => `Convert ${count} file${count === 1 ? "" : "s"}`,
@@ -933,6 +937,8 @@ const zhTW: Messages = {
   "batchConvert.byteDriftBadge": "位元組漂移",
   "batchConvert.byteDriftTooltip":
     "文字不會改變，但重新編碼後這些位元組仍會改變——非標準的舊版位元組序列會被正規化。",
+  "batchConvert.byteDriftTooltipConvertible":
+    "換行將依你的要求改變，但轉換後這些位元組還會有額外變化——非標準的舊版位元組序列會被正規化。",
   "batchConvert.lineEndingMixed": "混合換行",
   "batchConvert.includeFileLabel": "包含此檔案",
   "batchConvert.convertButton": (count) => `轉換 ${count} 個檔案`,
@@ -1259,6 +1265,9 @@ const ja: Messages = {
   "batchConvert.byteDriftBadge": "バイトドリフト",
   "batchConvert.byteDriftTooltip":
     "テキストは変わりませんが、再エンコードするとこれらのバイト列は変わります——" +
+    "非正規のレガシーバイト列が正規化されます。",
+  "batchConvert.byteDriftTooltipConvertible":
+    "改行コードはご指定どおり変更されますが、変換するとそれ以外のバイト列も変わります——" +
     "非正規のレガシーバイト列が正規化されます。",
   "batchConvert.lineEndingMixed": "混在",
   "batchConvert.includeFileLabel": "このファイルを含める",
@@ -1597,6 +1606,8 @@ const zhCN: Messages = {
   "batchConvert.byteDriftBadge": "字节漂移",
   "batchConvert.byteDriftTooltip":
     "文本不会改变，但重新编码后这些字节仍会改变——非规范的旧版字节序列会被规范化。",
+  "batchConvert.byteDriftTooltipConvertible":
+    "换行符将按你的要求改变，但转换后这些字节还会有额外变化——非规范的旧版字节序列会被规范化。",
   "batchConvert.lineEndingMixed": "混合换行",
   "batchConvert.includeFileLabel": "包含此文件",
   "batchConvert.convertButton": (count) => `转换 ${count} 个文件`,
