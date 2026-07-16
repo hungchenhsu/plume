@@ -1569,7 +1569,18 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     if (path === null) return false;
   }
   try {
-    const content = editor.content();
+    // doc may not be the active tab here: a saveFlow call that had to
+    // defer behind another in-flight save/reload for this same doc (issue
+    // #124) only actually runs once drainLock drains it later, by which
+    // point the user may have switched tabs — and even without deferring,
+    // the saveDialog await just above is itself a gap the user can switch
+    // tabs during. editor.ts's shared CodeMirror view only ever holds
+    // whichever doc is currently active, so reading it unconditionally
+    // here risked writing another tab's live content into this doc's file
+    // (issue #208). Same active-tab check as onCloseRequested's backup
+    // flush and closeTab's cursorOf call further down.
+    const content =
+      doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
     // Snapshotted alongside content (issue #112): if doc.revision no
     // longer matches this once the save resolves, an edit landed while
     // the IPC round trip (including the lossy/stale retries below, which

@@ -1057,3 +1057,316 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
     expect(doc.malformed).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #208 — runSaveFlow must never write another tab's live content into
+// doc.path. Separate, smaller harness from the one above: reproducing this
+// needs an ingredient the single-doc harness has no reason to model — a
+// *shared* editor surface. Real main.ts holds exactly one CodeMirror view
+// (editor.ts's module-level `view`, wrapped by editor.content()/.swap()),
+// reassigned between docs by activate() (main.ts:560-575), which syncs the
+// outgoing doc's buffer from that view *before* handing the surface over to
+// the incoming doc. The single-doc harness above bakes "whatever content the
+// test wants written" directly into each ipc mock's `writtenContent` —
+// sufficient for #124/#161's lock/staleness scenarios, but it never
+// exercises *which doc's* content actually gets read in the first place,
+// which is exactly what #208 is about: pre-fix, runSaveFlow (main.ts:1572)
+// read `editor.content()` unconditionally, with no check that `doc` was
+// still the tab that content belonged to — exposed both when a save had to
+// defer behind another in-flight save/reload for the same doc (issue #124's
+// own mechanism) and, independently, across the Save As dialog's own await.
+
+/** Minimal stand-in for the slice of tabs.ts's Doc this harness exercises —
+ *  distinct from DocState above (which has no notion of `id` or of a doc
+ *  that isn't the only one in play): #208 is specifically about *which*
+ *  doc's content a shared editor surface belongs to at any given moment. */
+interface TabDoc {
+  id: number;
+  buffer: string;
+  dirty: boolean;
+  saveReloadInFlight: LockOwner;
+  pendingSaveAs: boolean | null;
+}
+
+function makeTabDoc(id: number, buffer: string): TabDoc {
+  return { id, buffer, dirty: true, saveReloadInFlight: null, pendingSaveAs: null };
+}
+
+/** Stand-in for editor.ts's single shared CodeMirror view: `content` is
+ *  whatever the *currently active* doc's live text is right now. A doc that
+ *  isn't active has no representation here at all — its last-synced text
+ *  lives on `doc.buffer` instead (activateTab below keeps the two in sync at
+ *  every switch), mirroring the real EditorBuffer/`editor.content()` split. */
+function makeEditorSurface(initial: string): { content: string } {
+  return { content: initial };
+}
+type EditorSurface = ReturnType<typeof makeEditorSurface>;
+
+interface ActiveTabs {
+  activeId: number;
+}
+
+/** Mirrors main.ts's activate() (main.ts:560-575): the outgoing doc's
+ *  buffer is synced from the live editor surface *before* the surface is
+ *  handed over to show the incoming doc's own last-synced content. This
+ *  sync-before-switch is what makes a non-active doc's `.buffer` a
+ *  trustworthy stand-in for "its real, current content" at all — every real
+ *  switch call site (activate/newTab/cycleTab) does it the same way. */
+function activateTab(
+  tabs: ActiveTabs,
+  editorSurface: EditorSurface,
+  outgoing: TabDoc,
+  incoming: TabDoc,
+): void {
+  outgoing.buffer = editorSurface.content;
+  tabs.activeId = incoming.id;
+  editorSurface.content = incoming.buffer;
+}
+
+/**
+ * Mirrors main.ts's runSaveFlow content capture (main.ts:1572). Content
+ * written for `doc` must come from doc's own state, never from whatever the
+ * shared editor surface happens to be showing right now, unless `doc`
+ * actually *is* the active tab. Same active-tab check as onCloseRequested's
+ * backup flush (main.ts:2818) and closeTab's cursorOf call (main.ts:2348).
+ */
+function captureSaveContent(
+  doc: TabDoc,
+  tabs: ActiveTabs,
+  editorSurface: EditorSurface,
+): string {
+  // Live surface content only when doc IS the active tab (the surface
+  // shows nothing else); otherwise the last buffer activateTab synced for
+  // it when the user switched away. Pre-fix, this read the shared surface
+  // unconditionally (exactly main.ts:1572 before issue #208's fix) — the
+  // "red" run above confirmed both scenarios below fail against that
+  // shape before falling back to doc.buffer here restores them to green.
+  return doc.id === tabs.activeId ? editorSurface.content : doc.buffer;
+}
+
+interface SharedSurfaceSaveResult {
+  written: boolean;
+  writtenContent: string;
+}
+
+/** Records every `content` a doc's ipc mock actually received, in order —
+ *  the observable this harness's tests check against. */
+function capturingIpc(): {
+  ipc: (content: string) => Promise<SharedSurfaceSaveResult>;
+  received: string[];
+} {
+  const received: string[] = [];
+  return {
+    received,
+    ipc: (content: string) => {
+      received.push(content);
+      return Promise.resolve({ written: true, writtenContent: content });
+    },
+  };
+}
+
+/** withLock/drainLock/saveFlow trio mirroring main.ts's real shape
+ *  (main.ts:1158-1218, 1541-1572) closely enough to reproduce issue #208's
+ *  two exposure windows, wired to the real mustDefer/nextDrainStep — same
+ *  intent as createHarness above, scoped to the extra ingredient #208
+ *  needs that the single-doc harness has no reason to carry: a shared
+ *  editor surface plus the active-tab-aware content capture itself.
+ *  `showSaveDialog` mirrors main.ts's `saveDialog(...)` call (main.ts:1568)
+ *  for the Save As exposure window; defaults to an immediate path so tests
+ *  that don't care about that window (saveAs: false) never need to supply
+ *  one. */
+function createSharedSurfaceHarness(
+  tabs: ActiveTabs,
+  editorSurface: EditorSurface,
+  showSaveDialog: () => Promise<string | null> = () => Promise.resolve("chosen/path.txt"),
+) {
+  const pendingResolvers = new Map<number, Array<(written: boolean) => void>>();
+  const ipcs = new Map<number, (content: string) => Promise<SharedSurfaceSaveResult>>();
+
+  function ipcFor(id: number): (content: string) => Promise<SharedSurfaceSaveResult> {
+    const ipc = ipcs.get(id);
+    if (!ipc) throw new Error(`no ipc mock registered for doc ${id}`);
+    return ipc;
+  }
+
+  async function runSaveFlow(doc: TabDoc, saveAs: boolean): Promise<boolean> {
+    if (saveAs) {
+      const path = await showSaveDialog();
+      if (path === null) return false;
+    }
+    const content = captureSaveContent(doc, tabs, editorSurface);
+    const result = await ipcFor(doc.id)(content);
+    if (result.written) doc.dirty = false;
+    return result.written;
+  }
+
+  async function withLock(doc: TabDoc, owner: "save" | "reload", body: () => Promise<void>): Promise<void> {
+    doc.saveReloadInFlight = owner;
+    try {
+      await body();
+    } finally {
+      doc.saveReloadInFlight = null;
+      await drainLock(doc);
+    }
+  }
+
+  async function drainLock(doc: TabDoc): Promise<void> {
+    const step = nextDrainStep({
+      pendingReload: false,
+      pendingSaveAs: doc.pendingSaveAs,
+      dirty: doc.dirty,
+    });
+    if (step.kind === "done") return;
+    if (step.kind === "reload") {
+      throw new Error("this harness never issues a reload of its own — #208 is a save-only concern");
+    }
+    const resolvers = pendingResolvers.get(doc.id) ?? [];
+    pendingResolvers.delete(doc.id);
+    doc.pendingSaveAs = null;
+    if (step.kind === "dropSave") {
+      for (const resolve of resolvers) resolve(true);
+      await drainLock(doc); // something else may have queued up meanwhile
+      return;
+    }
+    let result = false;
+    await withLock(doc, "save", async () => {
+      result = await runSaveFlow(doc, step.saveAs);
+    });
+    for (const resolve of resolvers) resolve(result);
+  }
+
+  return {
+    /** Registers/overwrites the ipc mock this doc's *eventual* runSaveFlow
+     *  call will use — set here rather than threaded through issueSave's
+     *  return value, since a deferred call's own runSaveFlow only actually
+     *  runs later, from inside drainLock, with no direct caller to hand a
+     *  mock to at that point (mirrors createHarness's single `currentSaveIpc`
+     *  slot above, keyed per-doc since #208 needs more than one doc live at
+     *  once). */
+    setIpc(id: number, ipc: (content: string) => Promise<SharedSurfaceSaveResult>): void {
+      ipcs.set(id, ipc);
+    },
+    async issueSave(doc: TabDoc, saveAs: boolean): Promise<boolean> {
+      if (mustDefer({ inFlight: doc.saveReloadInFlight })) {
+        return new Promise<boolean>((resolve) => {
+          doc.pendingSaveAs = saveAs;
+          const resolvers = pendingResolvers.get(doc.id) ?? [];
+          resolvers.push(resolve);
+          pendingResolvers.set(doc.id, resolvers);
+        });
+      }
+      let result = false;
+      await withLock(doc, "save", async () => {
+        result = await runSaveFlow(doc, saveAs);
+      });
+      return result;
+    },
+    /** Simulates something else — a watcher-triggered reload, in issue
+     *  #208's own report — already holding `doc`'s lock for a while, the
+     *  reason a concurrent Save request on the same doc must defer instead
+     *  of running immediately. Resolves once `release()` is called; await
+     *  `settled` afterward to let the lock's own finally (and therefore
+     *  drainLock) actually run. */
+    holdLock(doc: TabDoc, owner: "save" | "reload"): { release: () => void; settled: Promise<void> } {
+      const gate = deferred<void>();
+      const settled = withLock(doc, owner, () => gate.promise);
+      return { release: () => gate.resolve(), settled };
+    },
+  };
+}
+
+describe("issue #208 — a deferred/in-flight save must write the doc it belongs to, never whatever tab the shared editor surface currently shows (failing-test-first)", () => {
+  it("a save deferred behind an in-flight reload writes the deferring doc's own last-synced buffer, not the tab the user switched to while it waited", async () => {
+    const docA = makeTabDoc(1, "A-buffer-before-request");
+    const docB = makeTabDoc(2, "B-buffer-initial");
+    const tabs: ActiveTabs = { activeId: docA.id };
+    const editorSurface = makeEditorSurface("A-buffer-before-request");
+    const harness = createSharedSurfaceHarness(tabs, editorSurface);
+    const { ipc: ipcA, received: receivedByA } = capturingIpc();
+    harness.setIpc(docA.id, ipcA);
+
+    // Something else (e.g. a watcher-triggered reload) already holds A's
+    // lock — the reason the Save request below must defer instead of
+    // running immediately (issue #124's own mechanism).
+    const hold = harness.holdLock(docA, "reload");
+    expect(docA.saveReloadInFlight).toBe("reload");
+
+    // The user edits A a little more, then hits Cmd+S while still on A —
+    // this is the content that must eventually be written.
+    editorSurface.content = "A-live-content-at-save-request";
+    const savePromise = harness.issueSave(docA, false);
+    expect(docA.pendingSaveAs).toBe(false); // deferred, not run yet
+    expect(receivedByA).toEqual([]); // nothing sent to the ipc mock yet
+
+    // The user switches to tab B while A's save is still queued —
+    // activateTab syncs A's buffer from the live surface first, exactly
+    // like main.ts's real activate().
+    activateTab(tabs, editorSurface, docA, docB);
+    expect(docA.buffer).toBe("A-live-content-at-save-request");
+    expect(tabs.activeId).toBe(docB.id);
+
+    // ...and keeps typing in B while A's reload is still resolving.
+    editorSurface.content = "B-live-content-after-switch";
+
+    // The reload finally resolves, releasing A's lock; withLock's finally
+    // drains the pending save, which actually runs runSaveFlow(A) now —
+    // with B, not A, the active tab.
+    hold.release();
+    await hold.settled;
+
+    const written = await savePromise;
+    expect(written).toBe(true);
+    // The bug: pre-fix, runSaveFlow read the shared editor surface
+    // unconditionally and would have sent B's live content to A's ipc
+    // mock. Post-fix, since A is no longer tabs.active, it must fall back
+    // to A's own last-synced buffer.
+    expect(receivedByA).toEqual(["A-live-content-at-save-request"]);
+  });
+
+  it("Save As's own dialog await is itself a window the active tab can change during — the resolved path still belongs to the doc that opened the dialog, not whatever tab is active once it resolves", async () => {
+    const docA = makeTabDoc(1, "A-buffer-initial");
+    const docB = makeTabDoc(2, "B-buffer-initial");
+    const tabs: ActiveTabs = { activeId: docA.id };
+    const editorSurface = makeEditorSurface("A-content-at-saveas-time");
+    const dialogGate = deferred<string | null>();
+    const harness = createSharedSurfaceHarness(tabs, editorSurface, () => dialogGate.promise);
+    const { ipc: ipcA, received: receivedByA } = capturingIpc();
+    harness.setIpc(docA.id, ipcA);
+
+    // Save As on A: nothing else holds A's lock, so this runs immediately
+    // and reaches the saveDialog await right away (main.ts:1568).
+    const savePromise = harness.issueSave(docA, true);
+    expect(docA.saveReloadInFlight).toBe("save");
+    expect(receivedByA).toEqual([]); // still waiting on the dialog
+
+    // The user switches to B while the native Save dialog is still open.
+    activateTab(tabs, editorSurface, docA, docB);
+    expect(docA.buffer).toBe("A-content-at-saveas-time");
+    editorSurface.content = "B-content-while-dialog-open";
+
+    // The dialog finally resolves with a chosen path.
+    dialogGate.resolve("chosen/A-path.txt");
+    const written = await savePromise;
+
+    expect(written).toBe(true);
+    // The bug: pre-fix, content was read only after this await, but still
+    // unconditionally from the shared surface — which by now shows B, not
+    // A. Post-fix, A is no longer active by the time content is captured,
+    // so it must fall back to A's own buffer.
+    expect(receivedByA).toEqual(["A-content-at-saveas-time"]);
+  });
+
+  it("control — a doc that stays active throughout still saves the editor's own live content, not a stale buffer", async () => {
+    const docA = makeTabDoc(1, "A-STALE-BUFFER-must-not-be-used");
+    const tabs: ActiveTabs = { activeId: docA.id };
+    const editorSurface = makeEditorSurface("A-LIVE-CONTENT-must-be-used");
+    const harness = createSharedSurfaceHarness(tabs, editorSurface);
+    const { ipc, received } = capturingIpc();
+    harness.setIpc(docA.id, ipc);
+
+    const written = await harness.issueSave(docA, false);
+
+    expect(written).toBe(true);
+    expect(received).toEqual(["A-LIVE-CONTENT-must-be-used"]);
+  });
+});
