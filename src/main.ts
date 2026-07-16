@@ -2209,6 +2209,31 @@ function showEncodingMenu(anchor: HTMLElement): void {
               // shows the new encoding, but disk still holds the old
               // bytes.
               doc.revision = nextRevision++;
+              // Also force dirty=true when the doc was fully clean (issue
+              // #221, a residual gap the revision bump above doesn't
+              // close): if dirty was already false, the bump alone never
+              // sets it — it only stops decideSaveCompletion from wrongly
+              // *clearing* an already-true dirty on some unrelated
+              // in-flight save's completion. A doc that's clean start to
+              // finish (the blocking save/reload is itself a no-op, and
+              // this mutation never touches dirty on its own) comes out of
+              // the lock still clean, so savemutex.ts's nextDrainStep sees
+              // pendingSaveAs !== null && !dirty and drops this now-pending
+              // request outright — same dropSave failure #210 fixed, just
+              // reached from the "no real edit anywhere" angle instead of
+              // "an in-flight save races a dirty doc". Same clean->dirty
+              // transition as setLineEnding's own fix just above (issue
+              // #160) and the editor's onChange handler near the top of
+              // this file.
+              if (!doc.dirty) {
+                doc.dirty = true;
+                tabs.render();
+                updateWindowTitle();
+              }
+              // Also mirrors setLineEnding/onChange: this mutation is a
+              // save-relevant change with no disk copy yet, so it needs the
+              // same hot-exit backup coverage a content edit gets.
+              scheduleBackup();
               updateStatusBar(doc);
               void saveFlow(false)
                 .then((written) => {
