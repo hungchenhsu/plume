@@ -9,6 +9,7 @@
 use crate::encoding;
 use crate::linebreak;
 use serde::Serialize;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Runtime};
 
@@ -33,13 +34,19 @@ pub struct SearchMatch {
     pub preview: String,
 }
 
-/// A directory or entry the walk could not read at all — recorded instead
-/// of silently skipped (issue #130, the same fix issue #116 applied to
-/// `batch.rs::collect_files`; the two walks are twin implementations, see
-/// that module's doc comment). `path` is the containing directory when the
-/// directory listing itself failed (`read_dir`), or the specific entry's
-/// own path when only its metadata lookup failed; `message` is the OS error
-/// text (e.g. "Permission denied (os error 13)").
+/// A directory, entry, or queued file that could not be scanned — recorded
+/// instead of silently skipped. Two generations of the same fix: issue
+/// #130 covers the walk itself failing to read a directory or entry (the
+/// same fix issue #116 applied to `batch.rs::collect_files`; the two walks
+/// are twin implementations, see that module's doc comment); issue #211
+/// extends this to a file the walk *did* queue successfully but that
+/// [`read_bounded_or_scan_error`] could no longer open, read, or that grew
+/// past `MAX_FILE_SIZE` by the time the scan loop reached it. `path` is the
+/// containing directory when the directory listing itself failed
+/// (`read_dir`), the specific entry's own path when only its metadata
+/// lookup failed, or the specific file's path for a post-walk read/oversize
+/// failure; `message` is the OS error text (e.g. "Permission denied (os
+/// error 13)") or, for oversize, a description of the size cap.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanError {
@@ -53,13 +60,20 @@ pub struct SearchResults {
     pub matches: Vec<SearchMatch>,
     pub truncated: bool,
     pub files_scanned: usize,
-    /// Directories or entries the walk could not read — each one means
+    /// Directories or entries the walk could not read, plus queued files
+    /// that could not be scanned once the walk finished — each one means
     /// `matches` above may be missing whatever matches that path contained.
-    /// Empty means the walk completed exhaustively; a non-empty list must
-    /// never be read as "no matches under that path" (issue #130). The root
-    /// folder itself failing to open is a harder failure than this —
-    /// `search_in_folder` returns `Err` outright instead of an
-    /// empty-looking result.
+    /// The latter covers both a queued file whose open/read failed after
+    /// the walk (e.g. it vanished, or permissions changed mid-walk) and a
+    /// queued file that grew past `MAX_FILE_SIZE` between
+    /// `collect_files`'s walk-time metadata check and the actual read
+    /// (issue #211's TOCTOU gap — the read itself stays bounded via
+    /// `Read::take`, so the grown content is never materialized; it is
+    /// reported here instead). Empty means the walk completed exhaustively;
+    /// a non-empty list must never be read as "no matches under that path"
+    /// (issue #130). The root folder itself failing to open is a harder
+    /// failure than this — `search_in_folder` returns `Err` outright
+    /// instead of an empty-looking result.
     pub scan_errors: Vec<ScanError>,
 }
 
@@ -113,6 +127,49 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>, scan_errors: &mut Vec<Sca
             files.push(path);
         }
     }
+}
+
+/// Read at most `MAX_FILE_SIZE + 1` bytes from `file` — bounds memory use
+/// even if the file grew after `collect_files`'s walk-time metadata check
+/// (issue #211, mirroring `replaceinfiles.rs`'s identical `bounded_read`).
+/// The `+ 1` sentinel turns "exactly at the cap" into a distinguishable "at
+/// least one more byte past it" without reading further to confirm it.
+fn bounded_read(file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(MAX_FILE_SIZE as usize + 1);
+    file.take(MAX_FILE_SIZE + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Open and bounded-read one already-queued file, returning `Err(ScanError)`
+/// instead of its bytes if it can no longer be scanned — issue #211:
+/// `collect_files`'s `meta.len() <= MAX_FILE_SIZE` filter only reflects a
+/// snapshot taken during the walk, so by the time the scan loop reaches a
+/// queued path it can still (a) fail to open or read at all (vanished,
+/// permissions changed since the walk) or (b) have grown past
+/// `MAX_FILE_SIZE` in the meantime. Using a single open handle for both the
+/// read and its bound — rather than the walk's separate `entry.metadata()`
+/// — means the size actually enforced can never be staler than the bytes
+/// actually read, mirroring `replaceinfiles.rs`'s identical
+/// open-then-`bounded_read`-then-oversize-check sequence in `scan_one_file`
+/// / `execute_one`. Split out from [`search_in_folder_with_extensions`] so
+/// every outcome — including the oversize sentinel, which
+/// `collect_files`'s own walk-time filter makes impractical to reach
+/// end-to-end without racing a real file growth — can be driven directly in
+/// tests.
+fn read_bounded_or_scan_error(path: &Path) -> Result<Vec<u8>, ScanError> {
+    let to_scan_error = |e: std::io::Error| ScanError {
+        path: path.to_string_lossy().into_owned(),
+        message: format!("Failed to read: {e}"),
+    };
+    let file = std::fs::File::open(path).map_err(to_scan_error)?;
+    let bytes = bounded_read(file).map_err(to_scan_error)?;
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        return Err(ScanError {
+            path: path.to_string_lossy().into_owned(),
+            message: "File exceeds the 5 MiB search cap".to_string(),
+        });
+    }
+    Ok(bytes)
 }
 
 fn looks_binary(bytes: &[u8]) -> bool {
@@ -236,8 +293,12 @@ pub fn search_in_folder_with_extensions(
     let mut matches = Vec::new();
     let mut files_scanned = 0usize;
     for file in &files {
-        let Ok(bytes) = std::fs::read(file) else {
-            continue;
+        let bytes = match read_bounded_or_scan_error(file) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                scan_errors.push(e);
+                continue;
+            }
         };
         if looks_binary(&bytes) {
             continue;
@@ -530,6 +591,142 @@ mod tests {
             Path::new(&results.scan_errors[0].path).ends_with("hidden.txt"),
             "scan error should name the specific entry whose metadata failed: {:?}",
             results.scan_errors[0]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Issue #211: per-file read path must be bounded and never swallow
+    // errors silently. `collect_files`'s `meta.len() <= MAX_FILE_SIZE`
+    // filter above is only a walk-time snapshot; the scan loop used to read
+    // each queued file with an unbounded `std::fs::read(file)` and silently
+    // `continue` past any error (vanished file, permission change, or the
+    // file having grown past the cap since the walk). See
+    // `read_bounded_or_scan_error`'s and `bounded_read`'s own doc comments
+    // above for the single-handle + `Read::take` pattern this mirrors from
+    // `replaceinfiles.rs::bounded_read`.
+
+    /// Issue #211 (failing-test-first): a *file* (as opposed to a
+    /// directory, covered by `unreadable_subdirectory_is_reported_not_silently_dropped`
+    /// above) that the walk queued successfully but that can no longer be
+    /// opened by the time the scan loop reaches it -- permissions revoked,
+    /// or vanished -- used to be silently dropped by `let Ok(bytes) =
+    /// std::fs::read(file) else { continue }`: `files_scanned` never
+    /// counted it, `scan_errors` never heard about it, and the whole search
+    /// looked like it had completed exhaustively. It must now be reported
+    /// in `scan_errors`, without stopping the rest of the tree from being
+    /// searched and reported normally.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_reported_not_silently_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fixture_dir("unreadable-file");
+        std::fs::write(dir.join("readable.txt"), "needle here\n").unwrap();
+        let locked = dir.join("locked.txt");
+        std::fs::write(&locked, "needle must never be seen\n").unwrap();
+        // No read bit at all: `std::fs::File::open(&locked)` itself fails.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let results = search_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "needle".into(),
+            true,
+            false,
+            &[],
+        );
+
+        // Restore permissions immediately -- before any assertion below can
+        // panic and leave a locked file behind for the next test run.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let results = results.expect("an unreadable file must not fail the whole search closed");
+        assert_eq!(
+            results.matches.len(),
+            1,
+            "the readable sibling file must still be searched: {:?}",
+            results.matches
+        );
+        assert_eq!(
+            results.scan_errors.len(),
+            1,
+            "the unreadable file must be surfaced, not silently dropped: {:?}",
+            results.scan_errors
+        );
+        assert!(
+            Path::new(&results.scan_errors[0].path).ends_with("locked.txt"),
+            "scan error should name the unreadable file: {:?}",
+            results.scan_errors[0]
+        );
+        assert!(
+            !results.scan_errors[0].message.is_empty(),
+            "scan error should carry the OS error text"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #211 (failing-test-first): `bounded_read` must never
+    /// materialize more than `MAX_FILE_SIZE + 1` bytes, even when the file
+    /// on disk is far larger -- the `+ 1` is the oversize sentinel
+    /// `read_bounded_or_scan_error` checks for, not an accident of a short
+    /// read. This is what actually bounds memory use for a file that grew
+    /// past the cap after `collect_files`'s walk-time metadata check ran
+    /// (the TOCTOU race the issue describes) -- unlike the walk-time
+    /// filter, this check is applied to bytes read through the same handle
+    /// that will be searched, so it can never be stale.
+    #[test]
+    fn bounded_read_never_reads_past_the_sentinel_byte() {
+        let dir = fixture_dir("bounded-read-sentinel");
+        let path = dir.join("huge.txt");
+        // Comfortably past MAX_FILE_SIZE + 1 so a buggy unbounded read
+        // (returning the whole file) is trivially distinguishable from a
+        // correctly-bounded one (returning exactly MAX_FILE_SIZE + 1).
+        let huge = vec![b'a'; MAX_FILE_SIZE as usize + 4096];
+        std::fs::write(&path, &huge).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let bytes = bounded_read(file).unwrap();
+        assert_eq!(
+            bytes.len() as u64,
+            MAX_FILE_SIZE + 1,
+            "bounded_read must stop at the sentinel byte regardless of the file's true size"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #211 (failing-test-first): a file whose bytes read exceed
+    /// `MAX_FILE_SIZE` -- whether it was already that large or grew past
+    /// the cap after `collect_files`'s walk-time metadata check ran -- must
+    /// be recorded as a scan error, not silently skipped and not searched
+    /// with a truncated view of its content. Exercised by calling
+    /// `read_bounded_or_scan_error` directly rather than through
+    /// `search_in_folder_with_extensions`, because `collect_files`'s own
+    /// `meta.len() <= MAX_FILE_SIZE` walk-time filter would otherwise
+    /// exclude an already-oversize fixture file before this code path is
+    /// ever reached -- the growth-after-walk race that filter can't see is
+    /// exactly the TOCTOU issue #211 describes, and isn't reproducible
+    /// deterministically without racing a real file write mid-walk.
+    #[test]
+    fn oversize_file_is_reported_as_scan_error_not_searched() {
+        let dir = fixture_dir("oversize-scan-error");
+        let path = dir.join("huge.txt");
+        let mut huge = vec![b'a'; MAX_FILE_SIZE as usize + 4096];
+        // A needle embedded well past the cap: proves the caller never even
+        // gets bytes to search, not merely that the result is marked
+        // truncated somewhere downstream.
+        huge.extend_from_slice(b"needle");
+        std::fs::write(&path, &huge).unwrap();
+
+        let err = read_bounded_or_scan_error(&path)
+            .expect_err("a file past the size cap must not return bytes to search");
+        assert!(
+            Path::new(&err.path).ends_with("huge.txt"),
+            "scan error should name the oversize file: {err:?}"
+        );
+        assert!(
+            err.message.contains("5 MiB") || err.message.to_lowercase().contains("exceed"),
+            "scan error should explain the file exceeded the size cap: {err:?}"
         );
 
         std::fs::remove_dir_all(&dir).ok();
