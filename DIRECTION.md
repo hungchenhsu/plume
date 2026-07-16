@@ -44,6 +44,21 @@ faster for text files, or is it IDE creep?*
 
 ## 2. Current state (2026-07-16)
 
+- **v0.6 feature cycle in progress** (planned 2026-07-16 under the
+  user's standing delegation, user away until 2026-07-22; same model as
+  v0.4/v0.5). Adversarially reviewed before start (AGREE-WITH-CHANGES,
+  all changes adopted — notably three CJK↔CJK mojibake candidates
+  dropped in planning as the reachable-but-wrong shape mojibake.rs
+  already rejects). Scope: the whole open bug queue (#225/#221/#217/
+  #223/#227/#203/#201 — the latter two placed by explicit user decision
+  of 2026-07-16), Document Info dialog, one narrowed mojibake pair,
+  command palette, line-op/recent-files comfort items, session
+  compat fixtures, IPC error-path audit, CHANGELOG + features guide.
+  See ROADMAP.md §v0.6.
+- **Housekeeping (2026-07-16, per explicit user decision):** the stale
+  v0.2.0-alpha.1 and v0.3.0-alpha.1 *draft* releases were deleted (notes
+  backed up first); both git tags kept. #89 stays open as the
+  good-first-issue surface.
 - **v0.5 feature cycle complete** (2026-07-15→16, PRs #156–#196 range):
   planned and executed autonomously under the user's 2026-07-15
   delegation (same model as v0.4), adversarially reviewed before start
