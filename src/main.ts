@@ -1168,12 +1168,20 @@ async function withLock(
  *  savemutex.ts's nextDrainStep always drains a pending reload before a
  *  pending save. Recurses (through withLock's own finally calling this
  *  again) until nothing is left pending, since draining one step can
- *  itself pick up a newer request that arrived while it ran. */
+ *  itself pick up a newer request that arrived while it ran.
+ *
+ *  isEffectivelyReadOnly(doc) (tabs.ts's pure truncated||userReadOnly
+ *  check, no dialog) is computed unconditionally on every call — cheap,
+ *  and it's savemutex.ts's nextDrainStep, not this glue, that decides
+ *  whether it actually matters for the branch taken (issue #217: it's
+ *  only consulted there once a pending save is confirmed still dirty, so
+ *  a dropSave outcome or a queued reload can never be affected by it). */
 async function drainLock(doc: Doc): Promise<void> {
   const step = nextDrainStep({
     pendingReload: doc.pendingReload,
     pendingSaveAs: doc.pendingSaveAs,
     dirty: doc.dirty,
+    blockedByReadOnly: isEffectivelyReadOnly(doc),
   });
   if (step.kind === "done") return;
   if (step.kind === "reload") {
@@ -1203,6 +1211,29 @@ async function drainLock(doc: Doc): Promise<void> {
     // .then(written) handler below).
     for (const resolve of resolvers) resolve(true);
     await drainLock(doc);
+    return;
+  }
+  if (step.kind === "rejectBlocked") {
+    // Issue #217: nextDrainStep has already decided this coalesced save is
+    // still dirty (something genuinely hasn't reached disk yet) *and*
+    // blocked (isEffectivelyReadOnly(doc), fed in above) as of this exact
+    // recheck — most plausibly doc.userReadOnly toggled during the defer
+    // window (a plain, ungated state flip never routed through this lock
+    // at all), or in principle doc.truncated (though every production path
+    // that sets it also clears dirty in the same call, which nextDrainStep
+    // already accounts for by checking dirty first — see savemutex.ts's
+    // own doc comment). saveFlow's own entry gate only ran once, at
+    // enqueue time, before any of that could have happened yet — without
+    // this recheck the save would run anyway and write doc's current
+    // (possibly now a preview-slice) buffer over the real file.
+    // blockedByReadOnly(doc) is called here purely for its dialog side
+    // effect — same rejection UX saveFlow's own entry gate shows; its
+    // boolean return is redundant with step.kind here and discarded.
+    // Resolved `false`, not `true` like dropSave above, since nothing was
+    // written this time.
+    blockedByReadOnly(doc);
+    for (const resolve of resolvers) resolve(false);
+    await drainLock(doc); // something else may have queued up meanwhile
     return;
   }
   let result = false;

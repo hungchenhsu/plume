@@ -45,47 +45,82 @@ describe("mustDefer — full branch table", () => {
 describe("nextDrainStep — full branch table", () => {
   it("nothing pending: done, regardless of dirty", () => {
     expect(
-      nextDrainStep({ pendingReload: false, pendingSaveAs: null, dirty: false }),
+      nextDrainStep({ pendingReload: false, pendingSaveAs: null, dirty: false, blockedByReadOnly: false }),
     ).toEqual({ kind: "done" });
     expect(
-      nextDrainStep({ pendingReload: false, pendingSaveAs: null, dirty: true }),
+      nextDrainStep({ pendingReload: false, pendingSaveAs: null, dirty: true, blockedByReadOnly: false }),
     ).toEqual({ kind: "done" });
   });
 
   it("pending reload only: reload, regardless of dirty", () => {
     expect(
-      nextDrainStep({ pendingReload: true, pendingSaveAs: null, dirty: false }),
+      nextDrainStep({ pendingReload: true, pendingSaveAs: null, dirty: false, blockedByReadOnly: false }),
     ).toEqual({ kind: "reload" });
     expect(
-      nextDrainStep({ pendingReload: true, pendingSaveAs: null, dirty: true }),
+      nextDrainStep({ pendingReload: true, pendingSaveAs: null, dirty: true, blockedByReadOnly: false }),
     ).toEqual({ kind: "reload" });
   });
 
-  it("pending save only, doc still dirty: runs it, carrying the pending saveAs flag", () => {
+  it("pending save only, doc still dirty, not blocked: runs it, carrying the pending saveAs flag", () => {
     expect(
-      nextDrainStep({ pendingReload: false, pendingSaveAs: false, dirty: true }),
+      nextDrainStep({ pendingReload: false, pendingSaveAs: false, dirty: true, blockedByReadOnly: false }),
     ).toEqual({ kind: "save", saveAs: false });
     expect(
-      nextDrainStep({ pendingReload: false, pendingSaveAs: true, dirty: true }),
+      nextDrainStep({ pendingReload: false, pendingSaveAs: true, dirty: true, blockedByReadOnly: false }),
     ).toEqual({ kind: "save", saveAs: true });
   });
 
-  it("pending save only, doc already clean: dropped as a redundant no-op write", () => {
+  it("pending save only, doc already clean: dropped as a redundant no-op write, regardless of blockedByReadOnly", () => {
     expect(
-      nextDrainStep({ pendingReload: false, pendingSaveAs: false, dirty: false }),
+      nextDrainStep({ pendingReload: false, pendingSaveAs: false, dirty: false, blockedByReadOnly: false }),
     ).toEqual({ kind: "dropSave" });
     expect(
-      nextDrainStep({ pendingReload: false, pendingSaveAs: true, dirty: false }),
+      nextDrainStep({ pendingReload: false, pendingSaveAs: true, dirty: false, blockedByReadOnly: false }),
     ).toEqual({ kind: "dropSave" });
   });
 
-  it("both a reload and a save pending: reload always drains first, regardless of the save's flag or dirty", () => {
+  it("both a reload and a save pending: reload always drains first, regardless of the save's flag, dirty, or blockedByReadOnly", () => {
     expect(
-      nextDrainStep({ pendingReload: true, pendingSaveAs: true, dirty: true }),
+      nextDrainStep({ pendingReload: true, pendingSaveAs: true, dirty: true, blockedByReadOnly: false }),
     ).toEqual({ kind: "reload" });
     expect(
-      nextDrainStep({ pendingReload: true, pendingSaveAs: false, dirty: false }),
+      nextDrainStep({ pendingReload: true, pendingSaveAs: false, dirty: false, blockedByReadOnly: false }),
     ).toEqual({ kind: "reload" });
+    expect(
+      nextDrainStep({ pendingReload: true, pendingSaveAs: true, dirty: true, blockedByReadOnly: true }),
+    ).toEqual({ kind: "reload" });
+  });
+
+  // Issue #217 (a critic-review finding against #208's own fix): a pending
+  // save that's still dirty when the doc is also blocked (truncated or
+  // userReadOnly) as of this exact recheck must be rejected, not run —
+  // running it would write doc's current buffer over the real file despite
+  // the doc having turned read-only during the defer window.
+  it("pending save, still dirty, blocked: rejectBlocked, carrying neither a write nor the saveAs flag", () => {
+    expect(
+      nextDrainStep({ pendingReload: false, pendingSaveAs: false, dirty: true, blockedByReadOnly: true }),
+    ).toEqual({ kind: "rejectBlocked" });
+    expect(
+      nextDrainStep({ pendingReload: false, pendingSaveAs: true, dirty: true, blockedByReadOnly: true }),
+    ).toEqual({ kind: "rejectBlocked" });
+  });
+
+  // The precedence question issue #217's own fix report calls out
+  // explicitly: dropSave (dirty=false) must win over blockedByReadOnly, not
+  // the other way around, because dirty=false means whatever just released
+  // the lock already covers this request (a matching-revision completion
+  // wrote it, or a consented reload discarded it) independent of the doc's
+  // read-only status a moment later — see nextDrainStep's own doc comment.
+  // A implementation that checked blockedByReadOnly before dirty would
+  // wrongly reject (and resolve `false` for) a request that in fact already
+  // succeeded or was already knowingly abandoned.
+  it("pending save, already clean, ALSO blocked: dropSave still wins — blockedByReadOnly never overrides a clean doc", () => {
+    expect(
+      nextDrainStep({ pendingReload: false, pendingSaveAs: false, dirty: false, blockedByReadOnly: true }),
+    ).toEqual({ kind: "dropSave" });
+    expect(
+      nextDrainStep({ pendingReload: false, pendingSaveAs: true, dirty: false, blockedByReadOnly: true }),
+    ).toEqual({ kind: "dropSave" });
   });
 });
 
@@ -144,8 +179,11 @@ interface SaveIpcResult {
 
 /** Minimal stand-in for the slice of tabs.ts's Doc this simulation
  *  exercises, plus the three new lock fields main.ts's saveFlow/
- *  reloadFromDisk read and write (issue #124), and the encoding/
- *  speculativeEncoding fields issue #161's scenarios below add. */
+ *  reloadFromDisk read and write (issue #124), the encoding/
+ *  speculativeEncoding fields issue #161's scenarios below add, and the
+ *  truncated/userReadOnly pair issue #217's scenarios further below add —
+ *  both default false, so every pre-#217 fixture that never mentions them
+ *  keeps hitting drainLock's normal "save" branch exactly as before. */
 function makeDocState() {
   return {
     dirty: false,
@@ -160,6 +198,8 @@ function makeDocState() {
     withBom: false,
     malformed: false,
     speculativeEncoding: null as { encoding: string; withBom: boolean } | null,
+    truncated: false,
+    userReadOnly: false,
   };
 }
 type DocState = ReturnType<typeof makeDocState>;
@@ -239,6 +279,14 @@ interface HarnessOptions {
    *  expect a stale rejection should never silently resolve one way or the
    *  other. */
   staleChoice?: () => Promise<"reload" | "overwrite" | "cancel">;
+  /** Issue #217: fired synchronously whenever drainLock's own read-only
+   *  recheck blocks a coalesced save. Stands in for main.ts's
+   *  blockedByReadOnly showing its rejection dialog (main.ts's own
+   *  messageDialog calls) — this harness has no reason to invoke a real
+   *  dialog, same convention as confirmReload/staleChoice standing in for
+   *  main.ts's other dialogs above. Optional and uncalled by default, since
+   *  most existing fixtures never expect to reach it at all. */
+  onReadOnlyBlocked?: () => void;
 }
 
 /** One doc's harness. `disk` backs the default fetch used whenever a test
@@ -381,11 +429,25 @@ function createHarness(doc: DocState, disk: FakeDisk, options: HarnessOptions = 
     }
   }
 
+  /** Pure truncated||userReadOnly check, no dialog — mirrors tabs.ts's real
+   *  isEffectivelyReadOnly (issue #217), which is what feeds nextDrainStep
+   *  its own blockedByReadOnly input in main.ts's real drainLock too. This
+   *  is deliberately NOT a decision of its own: unlike the previous attempt
+   *  at this fix, this harness must not re-decide whether a blocked doc
+   *  gets rejected — that decision belongs entirely to the real
+   *  nextDrainStep exercised in drainLock below, so a wrong or missing
+   *  branch there fails exactly like it would in production instead of
+   *  only failing a decision this file reimplemented independently. */
+  function isReadOnlyBlocked(): boolean {
+    return doc.truncated || doc.userReadOnly;
+  }
+
   async function drainLock(): Promise<void> {
     const step = nextDrainStep({
       pendingReload: doc.pendingReload,
       pendingSaveAs: doc.pendingSaveAs,
       dirty: doc.dirty,
+      blockedByReadOnly: isReadOnlyBlocked(),
     });
     if (step.kind === "done") return;
     if (step.kind === "reload") {
@@ -398,6 +460,17 @@ function createHarness(doc: DocState, disk: FakeDisk, options: HarnessOptions = 
     doc.pendingSaveAs = null;
     if (step.kind === "dropSave") {
       for (const resolve of resolvers) resolve(true);
+      await drainLock(); // something else may have queued up meanwhile
+      return;
+    }
+    if (step.kind === "rejectBlocked") {
+      // Issue #217's own fix: the real nextDrainStep above has already
+      // decided this drained save must not run — stands in for main.ts's
+      // own blockedByReadOnly dialog call at this branch (see
+      // onReadOnlyBlocked's own doc comment on HarnessOptions above).
+      // Resolves false (never written), never calls runSave.
+      options.onReadOnlyBlocked?.();
+      for (const resolve of resolvers) resolve(false);
       await drainLock(); // something else may have queued up meanwhile
       return;
     }
@@ -1254,10 +1327,21 @@ function createSharedSurfaceHarness(
       pendingReload: false,
       pendingSaveAs: doc.pendingSaveAs,
       dirty: doc.dirty,
+      // TabDoc carries no truncated/userReadOnly of its own — this harness
+      // is scoped to issue #208's shared-editor-surface concern only, never
+      // a blocked doc (see TabDoc's own definition above).
+      blockedByReadOnly: false,
     });
     if (step.kind === "done") return;
     if (step.kind === "reload") {
       throw new Error("this harness never issues a reload of its own — #208 is a save-only concern");
+    }
+    if (step.kind === "rejectBlocked") {
+      // Unreachable in practice — blockedByReadOnly is hardcoded false
+      // above, since TabDoc has no truncated/userReadOnly of its own — but
+      // TypeScript's DrainStep union still includes it here, same reasoning
+      // as the "reload" throw just above.
+      throw new Error("this harness never marks a doc blocked — #208 is a save-only concern");
     }
     const resolvers = pendingResolvers.get(doc.id) ?? [];
     pendingResolvers.delete(doc.id);
@@ -1964,5 +2048,257 @@ describe("issue #212 — Save with Encoding's finally must only clear its own sp
     // exactly the accidental protection the suite above doesn't rely on.
     expect(doc.encoding).toBe("UTF-8");
     expect(doc.withBom).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #217 — a critic-review finding against #208's own fix. saveFlow's
+// blockedByReadOnly gate (main.ts's blockedByReadOnly) runs exactly once, at
+// saveFlow's own entry, before deciding whether to run immediately or
+// coalesce into doc.pendingSaveAs because something else already holds the
+// per-doc lock (issue #124's own mechanism). Pre-fix, drainLock (main.ts's
+// drainLock) never reran that gate once the lock actually freed up and it
+// was time to run the coalesced request for real via runSaveFlow — so a doc
+// that turned read-only *during* the defer window had its now-current
+// read-only status silently ignored, and the drained save wrote doc's
+// current buffer over the real file regardless.
+//
+// Constructing a fully causally-realistic reproduction through an actual
+// reload turns out to be impossible with today's control flow, not just
+// awkward: applyOpenedForReload — the only place doc.truncated is ever set —
+// unconditionally clears doc.dirty in that very same synchronous call, and
+// nextDrainStep's own save-vs-dropSave choice (savemutex.ts:117-125) is
+// re-checked immediately afterward with no async gap in between for a fresh
+// edit to land (confirmed by reading both directly rather than assumed). So
+// a reload that actually applies and sets truncated=true always leaves
+// dirty=false for the very next drain check, which takes dropSave — a real
+// write never happens, just not for the reason this issue is about. The
+// tests below instead hold the lock with a second in-flight save (this
+// suite's own "double-save" skeleton, issue #124's own block above) and flip
+// the read-only flag via direct state mutation while the coalesced save sits
+// pending — same convention this file already uses for "the user types in
+// this window" (issue #124 critic-review P2's own describe block above) —
+// isolating the read-only recheck gap itself from whichever exact call chain
+// flips the flag. doc.userReadOnly's own toggle (View menu) is in fact
+// reachable exactly this directly in production: it's a plain, ungated state
+// flip never routed through the save/reload lock at all, so it can land in
+// this window for real, not just as a stand-in.
+//
+// The fix itself lives entirely in savemutex.ts's nextDrainStep (a new
+// blockedByReadOnly input, a new rejectBlocked step) — createHarness's own
+// drainLock below feeds it a plain isReadOnlyBlocked() predicate and then
+// branches on the real step.kind it returns, exactly like main.ts's real
+// drainLock does, rather than re-deciding anything on its own. That means
+// every scenario below actually exercises production's decision logic, not
+// a description of it: stashing savemutex.ts's fix reverts nextDrainStep to
+// its pre-#217 branch table and these tests fail for the same reason
+// production would. The last scenario below also pins the precedence
+// nextDrainStep resolves between dropSave and rejectBlocked when a
+// coalesced save is both clean *and* blocked — see nextDrainStep's own doc
+// comment for why dropSave must win.
+describe("issue #217 — drainLock must recheck blockedByReadOnly before executing a coalesced save, not just once at saveFlow's own entry (failing-test-first)", () => {
+  it("doc turns userReadOnly while a save sits coalesced behind an in-flight save: the drain blocks it instead of writing, and the coalesced caller sees false", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.buffer = "edit-1";
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "d0", fingerprint: "fp-0" };
+    let blockedCalls = 0;
+    const harness = createHarness(doc, disk, {
+      onReadOnlyBlocked: () => {
+        blockedCalls++;
+      },
+    });
+
+    // 1. save1 already holds the lock — its IPC round trip is still in
+    //    flight (e.g. a slow disk write).
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+    expect(doc.saveReloadInFlight).toBe("save");
+
+    // 2. A genuine edit lands, and the user hits Cmd+S again while save1 is
+    //    still in flight — saveFlow's own entry gate sees a normal,
+    //    writable doc at this exact moment and lets it through; mustDefer
+    //    then coalesces it into doc.pendingSaveAs (issue #124's own
+    //    mechanism) since save1 already holds the lock.
+    doc.revision += 1;
+    doc.buffer = "edit-2";
+    const p2 = harness.issueSave(false, () =>
+      Promise.resolve({
+        written: true,
+        stale: false,
+        fingerprint: "fp-should-not-be-used",
+        writtenContent: "edit-2-should-not-reach-disk",
+      }),
+    );
+    expect(doc.pendingSaveAs).toBe(false); // coalesced, not run yet
+
+    // 3. While the coalesced save sits pending, the user toggles View >
+    //    Read-Only for this tab — a plain state flip, never routed through
+    //    the save/reload lock, so it can land in exactly this window.
+    doc.userReadOnly = true;
+
+    // 4. save1 resolves; #112's revision guard keeps dirty (edit-2 landed
+    //    after save1's own snapshot), so drainLock's nextDrainStep picks
+    //    "save" for the coalesced request, not "dropSave".
+    save1.resolve({ written: true, stale: false, fingerprint: "fp-1", writtenContent: "edit-1" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    // FAIL target pre-fix: drainLock ran the coalesced save's own ipc
+    // unconditionally, writing "edit-2-should-not-reach-disk" over disk
+    // despite doc.userReadOnly having turned true while it sat pending.
+    expect(r2).toBe(false);
+    expect(blockedCalls).toBe(1);
+    expect(disk.content).toBe("edit-1"); // the coalesced save never wrote
+    expect(doc.saveReloadInFlight).toBeNull(); // lock not stuck
+    expect(doc.pendingSaveAs).toBeNull(); // no zombie pending left behind
+  });
+
+  it("doc turns truncated (large-file preview) while a save sits coalesced behind an in-flight save: the drain blocks it instead of writing a preview slice over the real file", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.buffer = "edit-1";
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "d0", fingerprint: "fp-0" };
+    let blockedCalls = 0;
+    const harness = createHarness(doc, disk, {
+      onReadOnlyBlocked: () => {
+        blockedCalls++;
+      },
+    });
+
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+    expect(doc.saveReloadInFlight).toBe("save");
+
+    doc.revision += 1;
+    doc.buffer = "edit-2-preview-slice";
+    const p2 = harness.issueSave(false, () =>
+      Promise.resolve({
+        written: true,
+        stale: false,
+        fingerprint: "fp-should-not-be-used",
+        writtenContent: "edit-2-preview-slice-should-not-reach-disk",
+      }),
+    );
+    expect(doc.pendingSaveAs).toBe(false);
+
+    // Simulates the *effect* of a watcher-triggered reload discovering the
+    // file grew past the large-file threshold during the defer window
+    // (issue #217's own report) — see this describe block's own header
+    // comment for why a real reload chain can't actually reach this drain
+    // branch with dirty still true, and why direct mutation is used here
+    // instead.
+    doc.truncated = true;
+
+    save1.resolve({ written: true, stale: false, fingerprint: "fp-1", writtenContent: "edit-1" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    // FAIL target pre-fix: drainLock ran the coalesced save's own ipc
+    // unconditionally, writing the preview-slice buffer over disk despite
+    // doc.truncated having turned true while it sat pending.
+    expect(r2).toBe(false);
+    expect(blockedCalls).toBe(1);
+    expect(disk.content).toBe("edit-1");
+    expect(doc.saveReloadInFlight).toBeNull();
+    expect(doc.pendingSaveAs).toBeNull();
+  });
+
+  it("control — a coalesced save that drains while the doc is still perfectly writable runs normally, unaffected by the new recheck", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.buffer = "edit-1";
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "d0", fingerprint: "fp-0" };
+    let blockedCalls = 0;
+    const harness = createHarness(doc, disk, {
+      onReadOnlyBlocked: () => {
+        blockedCalls++;
+      },
+    });
+
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+
+    doc.revision += 1;
+    doc.buffer = "edit-2";
+    const p2 = harness.issueSave(false, () =>
+      Promise.resolve({ written: true, stale: false, fingerprint: "fp-2", writtenContent: "edit-2" }),
+    );
+
+    save1.resolve({ written: true, stale: false, fingerprint: "fp-1", writtenContent: "edit-1" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    expect(r2).toBe(true);
+    expect(blockedCalls).toBe(0);
+    expect(disk.content).toBe("edit-2");
+    expect(doc.dirty).toBe(false);
+    expect(doc.saveReloadInFlight).toBeNull();
+  });
+
+  it("a coalesced save that comes out of the lock already clean (dropSave) resolves true even if the doc also turned read-only while it sat pending — dropSave wins, no rejection dialog fires", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.buffer = "edit-1";
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "d0", fingerprint: "fp-0" };
+    let blockedCalls = 0;
+    const harness = createHarness(doc, disk, {
+      onReadOnlyBlocked: () => {
+        blockedCalls++;
+      },
+    });
+
+    // 1. save1 holds the lock, in flight.
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+    expect(doc.saveReloadInFlight).toBe("save");
+
+    // 2. A second, redundant Save request — no new edit; main.ts's save
+    //    action has no dirty guard — coalesces behind save1's lock at the
+    //    SAME revision. Its own ipc mock must never actually run.
+    const p2 = harness.issueSave(false, () =>
+      Promise.resolve({
+        written: true,
+        stale: false,
+        fingerprint: "fp-should-not-be-used",
+        writtenContent: "should-not-reach-disk",
+      }),
+    );
+    expect(doc.pendingSaveAs).toBe(false); // coalesced, not run yet
+
+    // 3. While the coalesced save sits pending, the doc turns read-only —
+    //    same trigger as the userReadOnly scenario above.
+    doc.userReadOnly = true;
+
+    // 4. save1 resolves, writing "edit-1". doc.revision never moved (no
+    //    edit landed after save1's own snapshot), so decideSaveCompletion's
+    //    revisionMatches clears dirty — nextDrainStep sees pendingSaveAs !==
+    //    null && dirty === false and takes dropSave *before* ever
+    //    consulting blockedByReadOnly (nextDrainStep's own precedence).
+    save1.resolve({ written: true, stale: false, fingerprint: "fp-1", writtenContent: "edit-1" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    // dropSave, not rejectBlocked: save1 already wrote exactly what the
+    // coalesced request wanted, so it's told `true` (covered) — unlike the
+    // dirty scenarios above, and the rejection dialog must not fire, since
+    // nothing about this request was actually rejected.
+    expect(r2).toBe(true);
+    expect(blockedCalls).toBe(0);
+    expect(disk.content).toBe("edit-1"); // save1's own write only — save2's ipc never ran
+    expect(doc.saveReloadInFlight).toBeNull();
+    expect(doc.pendingSaveAs).toBeNull();
   });
 });
