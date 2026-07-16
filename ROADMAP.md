@@ -1372,7 +1372,7 @@ for incoming contributors.
   full cross-page decoder-state carry was evaluated in planning and
   rejected as a high-risk redesign of the paging offset family)
   [danger]
-- [ ] #221: Save with Encoding racing another in-flight save/reload
+- [x] #221: Save with Encoding racing another in-flight save/reload
   while the doc stays dirty=false can still dropSave the new encoding —
   encoding mutation bumps the revision and forces dirty, re-adjudicating
   #161's two existing confirm-dialog tests under the new semantics

@@ -891,6 +891,15 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
     doc.encoding = target.encoding;
     doc.withBom = target.withBom;
     doc.speculativeEncoding = original;
+    // Issue #221: forces dirty=true when the doc was fully clean, mirroring
+    // main.ts's saveWithEncoding action's own fix alongside its #210
+    // revision bump (this helper predates #210/#221 and never modeled
+    // revision — see the #210/#221 describe blocks' own separate helpers
+    // below for that). A drained reload landing later while this save is
+    // still in flight now sees a dirty doc, same as a real edit would —
+    // exercised by the two tests right below, which route through exactly
+    // that path.
+    if (!doc.dirty) doc.dirty = true;
     const written = await harness.issueSave(false, ipc);
     if (!written && doc.speculativeEncoding === original) {
       doc.encoding = original.encoding;
@@ -921,8 +930,18 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
       fingerprint: "fp-1",
       trueEncoding: "Big5",
     };
+    // Issue #221: saveWithEncoding above now forces doc.dirty = true before
+    // ever calling issueSave, so the drained reload's own dirty-check finds
+    // a dirty doc (same as a real edit would) and walks the confirm dialog
+    // instead of applying silently — confirmReload must be supplied or the
+    // harness's default throws (see createHarness's own doc comment).
+    let confirmReloadCalls = 0;
     const harness = createHarness(doc, disk, {
       staleChoice: () => Promise.resolve("reload"),
+      confirmReload: () => {
+        confirmReloadCalls++;
+        return Promise.resolve(true);
+      },
     });
 
     const written = await saveWithEncoding(
@@ -933,14 +952,20 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
     );
 
     expect(written).toBe(false);
-    // FAIL target pre-fix: reevaluateReload/fetchAndApplyReload passed
+    // Issue #221: the dirty-confirm dialog was actually consulted once —
+    // pins the new second-confirmation behavior in place rather than
+    // leaving it to pass incidentally.
+    expect(confirmReloadCalls).toBe(1);
+    // FAIL target pre-#161-fix: reevaluateReload/fetchAndApplyReload passed
     // doc.encoding as it stood at that moment — still the speculative
     // "UTF-8" nothing on disk had adopted — so fetchDisk's stand-in
     // returned the wrong-decode mojibake fixture with malformed: true,
     // exactly mirroring encoding_rs decoding real Big5 bytes as UTF-8.
     // Post-fix, reloadEncodingFor resolves the protected original "Big5"
     // instead, so the buffer is the real (correctly "decoded") external
-    // content and malformed is false.
+    // content and malformed is false — unchanged by #221's later dirty
+    // force, since the user's consent above is what gates applying at all,
+    // not *which* encoding a since-consented apply then reads with.
     expect(doc.buffer).toBe("big5-externally-edited-content");
     expect(doc.malformed).toBe(false);
   });
@@ -964,8 +989,15 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
       fingerprint: "fp-1",
       trueEncoding: "Big5",
     };
+    // Issue #221: same dirty-force-forces-the-confirm-dialog consequence as
+    // the test above — see its own comment for the full explanation.
+    let confirmReloadCalls = 0;
     const harness = createHarness(doc, disk, {
       staleChoice: () => Promise.resolve("reload"),
+      confirmReload: () => {
+        confirmReloadCalls++;
+        return Promise.resolve(true);
+      },
     });
 
     const written = await saveWithEncoding(
@@ -976,6 +1008,7 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
     );
 
     expect(written).toBe(false);
+    expect(confirmReloadCalls).toBe(1);
     // The reload already established a fully coherent state from one
     // single disk read: buffer, fingerprint, encoding, and withBom all
     // agree with each other (issue #161's own "(b) fingerprint 與 buffer
@@ -1553,6 +1586,124 @@ describe("issue #210 — Save with Encoding must bump doc.revision so an in-flig
     expect(doc.withBom).toBe(true);
     expect(doc.speculativeEncoding).toBeNull();
     expect(disk.content).toBe("content-as-utf16");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #221 — a residual gap in #210's own fix: bumping doc.revision alone
+// stops decideSaveCompletion from wrongly *clearing* dirty on an unrelated
+// in-flight save/reload's completion, but does nothing when dirty was never
+// true to begin with. A doc that's fully clean (dirty=false) start to finish
+// — the blocking save/reload is itself a no-op re-save/no-op reload, and the
+// Save with Encoding mutation only ever bumps revision, never dirty — comes
+// out of the lock still clean, so savemutex.ts's nextDrainStep (117-125)
+// sees pendingSaveAs !== null && dirty === false and drops the coalesced
+// Save with Encoding request outright (dropSave) instead of running it: the
+// caller is told it succeeded and the tab shows the new encoding, but disk
+// never receives the new bytes. Same reasoning, and the same fix shape
+// (setLineEnding's own clean->dirty force, main.ts:1985-1992, issue #160),
+// as #210's revision bump — see that block's own doc comment for why this
+// was deliberately left to its own issue rather than folded into #210's fix
+// directly. Reuses createHarness/makeDocState/FakeDisk from the #124/#161
+// harness above; own local saveWithEncoding helper, same deliberate-
+// duplication reasoning as #210's own block above.
+describe("issue #221 — Save with Encoding on a fully clean doc must force dirty=true, not just bump revision, or an in-flight save/reload's drain still drops it (failing-test-first)", () => {
+  /** Mirrors main.ts's saveWithEncoding menu action as it stood right after
+   *  #210's own fix (revision bump, no dirty force) — see issue #210's own
+   *  local helper above, same shape. The dirty-force line below is this
+   *  issue's own fix, added once main.ts's mutation point gets it too (same
+   *  "doc.revision += 1; // the fix" convention #210's own helper uses). */
+  async function saveWithEncoding(
+    doc: DocState,
+    harness: ReturnType<typeof createHarness>,
+    target: { encoding: string; withBom: boolean },
+    ipc: () => Promise<SaveIpcResult>,
+  ): Promise<boolean> {
+    const original = { encoding: doc.encoding, withBom: doc.withBom };
+    doc.encoding = target.encoding;
+    doc.withBom = target.withBom;
+    doc.speculativeEncoding = original;
+    doc.revision += 1; // issue #210's own fix
+    if (!doc.dirty) doc.dirty = true; // issue #221's own fix
+    const written = await harness.issueSave(false, ipc);
+    if (!written && doc.speculativeEncoding === original) {
+      doc.encoding = original.encoding;
+      doc.withBom = original.withBom;
+    }
+    if (doc.speculativeEncoding === original) {
+      doc.speculativeEncoding = null;
+    }
+    return written;
+  }
+
+  it("a redundant save already in flight on a fully clean doc: the coalesced Save with Encoding request is not dropped, and actually writes the new encoding once drained", async () => {
+    const doc = makeDocState();
+    doc.dirty = false; // clean start to finish — no real edit anywhere
+    doc.buffer = "clean-content";
+    doc.encoding = "UTF-8";
+    doc.withBom = false;
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "clean-content", fingerprint: "fp-0" };
+    const harness = createHarness(doc, disk);
+
+    // 1. A redundant manual save on the already-clean doc (main.ts's "save"
+    //    action has no dirty guard — a duplicate Cmd+S is allowed) takes the
+    //    lock; its IPC round trip is still in flight.
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+    expect(doc.saveReloadInFlight).toBe("save");
+    expect(doc.dirty).toBe(false);
+
+    // 2. While save1 is in flight, the user opens Save with Encoding and
+    //    picks UTF-16LE — applied speculatively right away regardless of the
+    //    lock (main.ts mutates doc state before ever consulting saveFlow's
+    //    own mustDefer), same as #210's own test above. Only the underlying
+    //    saveFlow(false) call defers.
+    const p2 = saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-16LE", withBom: true },
+      () =>
+        Promise.resolve({
+          written: true,
+          stale: false,
+          fingerprint: "fp-enc",
+          writtenContent: "clean-content-as-utf16",
+        }),
+    );
+    expect(doc.pendingSaveAs).toBe(false); // deferred behind save1's lock
+    expect(doc.encoding).toBe("UTF-16LE"); // speculative mutation, not deferred
+
+    // 3. save1 resolves: it wrote the same clean content back out (a
+    //    genuine no-op write). decideSaveCompletion sees its own
+    //    revisionAtStart no longer matches doc.revision (the encoding
+    //    mutation's #210 bump), so it correctly refuses to re-clear dirty —
+    //    but dirty was false the whole time anyway, so that refusal is
+    //    itself a no-op (the #221 gap: #210's fix alone can't protect a
+    //    dirty flag that was never turned on in the first place).
+    save1.resolve({
+      written: true,
+      stale: false,
+      fingerprint: "fp-1",
+      writtenContent: "clean-content",
+    });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    expect(r2).toBe(true);
+    // FAIL target pre-fix: drainLock's nextDrainStep saw pendingSaveAs !==
+    // null and dirty still false (the #210 revision bump never touches
+    // dirty), so it took the dropSave branch — the coalesced request's own
+    // ipc callback above was never invoked, disk never received the new
+    // encoding's bytes, and the caller was told `true` anyway.
+    expect(disk.content).toBe("clean-content-as-utf16");
+    expect(doc.fingerprint).toBe("fp-enc");
+    expect(doc.dirty).toBe(false);
+    expect(doc.encoding).toBe("UTF-16LE");
+    expect(doc.withBom).toBe(true);
+    expect(doc.speculativeEncoding).toBeNull();
   });
 });
 
