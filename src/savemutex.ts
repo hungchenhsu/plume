@@ -81,6 +81,25 @@ export interface DrainInput {
   /** doc.dirty right now, i.e. after whatever just released the lock (a
    *  completed save or reload) has already applied its own effects. */
   dirty: boolean;
+  /** Issue #217 (a critic-review finding against #208's own fix): main.ts's
+   *  blockedByReadOnly(doc) — i.e. doc.truncated || doc.userReadOnly,
+   *  tabs.ts's isEffectivelyReadOnly — evaluated fresh right now, not the
+   *  snapshot saveFlow's own entry gate took when the pending save was
+   *  first enqueued. A doc can turn read-only *during* the defer window:
+   *  most plausibly doc.userReadOnly, a plain state flip (View menu) never
+   *  routed through the save/reload lock at all, so it can land at any
+   *  point while a save sits coalesced. doc.truncated in principle too,
+   *  though every production path that actually sets it (applyOpenedForReload)
+   *  also clears dirty in that same synchronous call — nextDrainStep below
+   *  checks dirty first for exactly this reason, so that case is already
+   *  handled correctly by dropSave without ever reaching this field. Only
+   *  consulted when a pending save is both present and still dirty — the
+   *  caller is expected to only pay for computing this when it can
+   *  actually change the outcome, since main.ts's blockedByReadOnly has a
+   *  rejection-dialog side effect that would be actively misleading to
+   *  show for a request nextDrainStep is about to drop as already-covered
+   *  rather than reject. */
+  blockedByReadOnly: boolean;
 }
 
 export type DrainStep =
@@ -94,8 +113,26 @@ export type DrainStep =
    *  instead (issue #124: "若 revision 沒變...否則丟棄，save1 已寫最新內容").
    *  Callers still waiting on the pending save's outcome are told it's
    *  covered (see main.ts's drainLock) — dropping the write doesn't mean
-   *  failing the request. */
+   *  failing the request. Takes precedence over blockedByReadOnly (issue
+   *  #217) whenever both would otherwise apply: a doc that's clean has
+   *  nothing left to write regardless of its read-only status a moment
+   *  later, so there is nothing to reject — see nextDrainStep's own doc
+   *  comment for why getting this ordering backwards would be wrong, not
+   *  just redundant. */
   | { kind: "dropSave" }
+  /** A save was pending and the doc is still genuinely dirty — it has
+   *  content that hasn't reached disk under any interpretation — but the
+   *  doc is blocked (truncated or userReadOnly) as of this exact recheck
+   *  (issue #217). Unlike dropSave, nothing already covers this request:
+   *  running it anyway would write doc's current buffer (possibly a
+   *  large-file preview slice) over the real file, exactly what saveFlow's
+   *  own entry gate exists to prevent for a non-deferred save — this is
+   *  that same gate, re-run at the one other point content can actually
+   *  reach disk. Callers still waiting on the pending save's outcome are
+   *  told `false` (see main.ts's drainLock), not `true` like dropSave: no
+   *  write of any kind happened this time, so nothing covers what they
+   *  asked for. */
+  | { kind: "rejectBlocked" }
   | { kind: "done" };
 
 /**
@@ -112,14 +149,29 @@ export type DrainStep =
  * and doesn't say what a doc with *both* a pending reload and a pending
  * save should do — this picks reload first as the one reasonable
  * resolution: reconcile with external truth before deciding whether the
- * queued save is still meaningful, rather than the other way around.
+ * queued save is still meaningful, rather than the other way around. A
+ * pending reload's own presence also short-circuits blockedByReadOnly
+ * entirely for this call — it's only ever consulted once control actually
+ * reaches the save branch below.
+ *
+ * For a pending save, dirty is checked before blockedByReadOnly (issue
+ * #217): dirty=false means whatever just released the lock already covers
+ * this request — either its own matching-revision completion wrote this
+ * exact content, or a reload the user explicitly consented to discarded it
+ * — and that stays true independent of the doc's read-only status a moment
+ * later. Rejecting a request that already succeeded (or was already
+ * knowingly abandoned) would be actively wrong, not just redundant, so
+ * dropSave takes it before blockedByReadOnly is even consulted. Only a
+ * save that's *still* dirty — genuinely has content that hasn't reached
+ * disk under any interpretation — reaches the blockedByReadOnly check at
+ * all.
  */
 export function nextDrainStep(input: DrainInput): DrainStep {
   if (input.pendingReload) return { kind: "reload" };
   if (input.pendingSaveAs !== null) {
-    return input.dirty
-      ? { kind: "save", saveAs: input.pendingSaveAs }
-      : { kind: "dropSave" };
+    if (!input.dirty) return { kind: "dropSave" };
+    if (input.blockedByReadOnly) return { kind: "rejectBlocked" };
+    return { kind: "save", saveAs: input.pendingSaveAs };
   }
   return { kind: "done" };
 }

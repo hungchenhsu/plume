@@ -1377,7 +1377,7 @@ for incoming contributors.
   encoding mutation bumps the revision and forces dirty, re-adjudicating
   #161's two existing confirm-dialog tests under the new semantics
   [danger]
-- [ ] #217: drainLock re-runs blockedByReadOnly immediately before
+- [x] #217: drainLock re-runs blockedByReadOnly immediately before
   executing a deferred save — a doc that became truncated during the
   defer window must not write its preview slice as the whole file
   [danger]
