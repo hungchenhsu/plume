@@ -1406,7 +1406,31 @@ async function reevaluateReload(doc: Doc): Promise<void> {
     // still held across that dialog — see savemutex.ts's mustDefer doc
     // comment) — most likely to run *during* Save with Encoding's
     // speculative window, so it's the call site most exposed to this bug.
+    //
+    // This opening fetch is its own await gap too (issue #223): captured
+    // before it starts and validated once it resolves, the same
+    // captureIdentity/validateIdentity contract as every other guarded
+    // fetch in this file, applied manually here rather than via
+    // fetchAndApplyGuarded — that helper's synchronous `apply` callback
+    // can't host what has to run between this fetch resolving and
+    // applyOpenedForReload below (the fingerprint/dirty branching, and on
+    // the dirty branch a whole dialog plus a second guarded fetch). Only
+    // "closed" needs a special case: a same-tab edit ("edited") is already
+    // handled correctly below without one, because the fingerprint/dirty
+    // checks just below read doc's state fresh, after this await, not
+    // anything captured before it — a keystroke landing during this fetch
+    // is already reflected in doc.dirty by the time the dirty branch below
+    // runs, routing into its own guarded confirm+re-fetch same as always.
+    // A closed tab is different: nothing below re-checks tab membership,
+    // so without this, applyOpenedForReload would mutate (and dropBackup)
+    // a detached Doc — reachable only for a clean doc whose tab closed
+    // while this fetch was in flight (a dirty doc's tab close is instead
+    // caught by the dirty branch's own guarded second fetch below, #209).
+    const guard = captureIdentity(doc);
     const opened = await openDocument(path, reloadEncodingFor(doc));
+    if (validateIdentity(guard, doc, tabs.docs.includes(doc)) === "closed") {
+      return;
+    }
     if (fingerprintsEqual(opened.fingerprint, doc.fingerprint)) return;
     if (doc.dirty) {
       // Same one-dialog-per-path guard as handleExternalChange: if the

@@ -173,6 +173,17 @@ function createHarness(doc: DocState, hooks: DialogHooks = {}) {
       );
     });
   const calls = { busyNotices: 0, reevaluateReload: 0, reevaluateReopen: 0 };
+  // Mirrors main.ts's module-level reloadPrompts Set (one-dialog-per-path
+  // guard) — scoped per-harness here instead of module-level, since this
+  // harness only ever manages a single doc/path and each test wants its
+  // own isolated state, unlike the real app's single shared instance
+  // across every open tab. Only reevaluateReload's dirty branch below
+  // consults it; this harness has no handleExternalChange equivalent to
+  // race it against, so the only interaction under test is a recursive
+  // reevaluateReload round (via fetchAndApplyGuarded's "edited" verdict)
+  // finding this path already marked by an outer round (issue #223's
+  // named test gap).
+  const reloadPrompts = new Set<string>();
 
   async function notifyBusy(): Promise<void> {
     calls.busyNotices += 1;
@@ -205,13 +216,43 @@ function createHarness(doc: DocState, hooks: DialogHooks = {}) {
    *  reevaluateReload: re-fetches fresh (never trusts the pre-await
    *  snapshot) and only re-asks the user when the doc is actually dirty
    *  right now — a spurious wake (fingerprint unchanged) is a silent
-   *  no-op, exactly like #124's own reevaluateReload. */
+   *  no-op, exactly like #124's own reevaluateReload.
+   *
+   *  This opening fetch is its own await gap too (issue #223): captured
+   *  before it starts and validated once it resolves, the same
+   *  captureIdentity/validateIdentity contract as fetchAndApplyGuarded
+   *  above, applied manually since the decision after this fetch isn't a
+   *  plain apply-or-not (it also runs the fingerprint/dirty branching, and
+   *  on the dirty branch a dialog plus a second guarded fetch) — not a
+   *  shape fetchAndApplyGuarded's synchronous `apply` callback can host.
+   *  Only "closed" gets a special case: a same-tab edit ("edited") is
+   *  already handled correctly below without one, since the fingerprint/
+   *  dirty checks read doc's state fresh, after this await — a keystroke
+   *  landing here is already reflected in doc.dirty by the time the dirty
+   *  branch runs, routing into its own guarded confirm+re-fetch as usual. */
   async function reevaluateReload(fetchOpen: () => Promise<OpenedFixture>): Promise<void> {
     calls.reevaluateReload += 1;
+    const guard = captureIdentity(doc);
     const opened = await fetchOpen();
+    if (validateIdentity(guard, doc, tabs.includes(doc)) === "closed") return;
     if (fingerprintsEqual(opened.fingerprint, doc.fingerprint)) return;
     if (doc.dirty) {
-      const reload = await confirmDiscard();
+      // Mirrors main.ts's one-dialog-per-path guard (reloadPrompts): defer
+      // entirely to an already-showing dialog for this path instead of
+      // stacking a second one. The delete happens in `finally`, right
+      // after this dialog settles and BEFORE the guarded second fetch
+      // below even starts — so a recursive round reached through that
+      // second fetch's own "edited" verdict never finds a stale leftover
+      // entry here (issue #223's named test gap — see the dedicated test
+      // below for the scenario this ordering has to survive).
+      if (reloadPrompts.has(doc.path)) return;
+      reloadPrompts.add(doc.path);
+      let reload: boolean;
+      try {
+        reload = await confirmDiscard();
+      } finally {
+        reloadPrompts.delete(doc.path);
+      }
       if (!reload) return;
       // Guarded (issue #209): this second fetch is its own await gap, same
       // hazard as fetchAndApplyReload's own openDocument call.
@@ -275,6 +316,17 @@ function createHarness(doc: DocState, hooks: DialogHooks = {}) {
     calls,
     async issueReload(fetchOpen: () => Promise<OpenedFixture>): Promise<void> {
       await withLock(doc, "reload", () => fetchAndApplyReload(fetchOpen));
+    },
+    /** Mirrors drainLock's reload branch (main.ts): a pending reload,
+     *  drained once whatever held the save/reload lock releases it, runs
+     *  reevaluateReload directly — no same-tab edit needed first, unlike
+     *  issueReload's own route in (which only ever reaches reevaluateReload
+     *  via fetchAndApplyReload's "edited" verdict, and a same-tab edit
+     *  always sets doc.dirty true). This is the only way this harness can
+     *  land reevaluateReload's own opening fetch with doc.dirty still
+     *  false — issue #223's clean-doc fast path. */
+    async issueDrainedReload(fetchOpen: () => Promise<OpenedFixture>): Promise<void> {
+      await withLock(doc, "reload", () => reevaluateReload(fetchOpen));
     },
     /** Mirrors reopenWithEncoding (issue #169): mustDefer-checked at
      *  entry, and again right after the discard-confirm dialog — that
@@ -786,6 +838,131 @@ describe("issue #209 — reevaluateReload/reevaluateReopen's own post-confirm fe
   // discard, and the resulting post-confirm fetch resolves with zero further
   // interference — so they double as this section's regression control:
   // still green and unchanged post-#209 is the assertion.
+});
+
+describe("issue #223 — reevaluateReload's own opening fetch (clean-doc fast path) races a tab close", () => {
+  it("closing the tab during reevaluateReload's own opening fetch — reached via a drained pending reload, doc still clean: discards the result with no mutation to the detached doc", async () => {
+    // doc.dirty stays false the whole way through: the only reachable gap
+    // #223 reports. issueReload can't reach this — its only route into
+    // reevaluateReload is via a same-tab edit, which always sets dirty
+    // true first (see issueDrainedReload's own doc comment) — so this
+    // goes through the drained-pending-reload entry directly, exactly
+    // like drainLock would for, say, a watcher-triggered reload that got
+    // deferred behind an unrelated save.
+    const doc = makeDocState({ revision: 5, fingerprint: "fp-old", buffer: "original", dirty: false });
+    const harness = createHarness(doc); // no confirmDiscard hook: dirty stays false, never reached
+
+    const openCall = deferred<OpenedFixture>();
+    const reloadPromise = harness.issueDrainedReload(() => openCall.promise);
+
+    harness.tabs.length = 0; // tab closed while this opening fetch is in flight
+    openCall.resolve({ content: "external-new", fingerprint: "fp-new", encoding: "UTF-8" });
+
+    await reloadPromise;
+
+    expect(doc.buffer).toBe("original");
+    expect(doc.dirty).toBe(false);
+    expect(doc.fingerprint).toBe("fp-old");
+    expect(doc.revision).toBe(5); // applyOpenedForReload never ran — revision unbumped
+  });
+
+  it("typing during reevaluateReload's own opening fetch — reached via a drained pending reload: still routes into the dirty-confirm branch normally (control — the already-safe typing path stays safe after the closed-tab guard is added)", async () => {
+    const doc = makeDocState({ revision: 5, fingerprint: "fp-old", buffer: "original", dirty: false });
+    let confirmCalls = 0;
+    const harness = createHarness(doc, {
+      confirmDiscard: () => {
+        confirmCalls += 1;
+        return Promise.resolve(true);
+      },
+    });
+
+    let fetchCount = 0;
+    const openCall = deferred<OpenedFixture>();
+    const fetchOpen = () => {
+      fetchCount += 1;
+      if (fetchCount === 1) return openCall.promise;
+      // reevaluateReload's own guarded post-confirm second fetch (issue #209).
+      return Promise.resolve({ content: "external-v2", fingerprint: "fp-v2", encoding: "UTF-8" });
+    };
+
+    const reloadPromise = harness.issueDrainedReload(fetchOpen);
+
+    // A same-tab edit lands while this opening fetch is in flight — must
+    // NOT be treated as "closed" by the new guard.
+    doc.revision = 6;
+    doc.dirty = true;
+    doc.buffer = "typing";
+    openCall.resolve({ content: "external-new", fingerprint: "fp-new", encoding: "UTF-8" });
+
+    await reloadPromise;
+
+    expect(confirmCalls).toBe(1); // reached the dirty-confirm dialog, not silently dropped as "closed"
+    expect(doc.buffer).toBe("external-v2");
+    expect(doc.fingerprint).toBe("fp-v2");
+    expect(doc.dirty).toBe(false);
+  });
+
+  // Test gap named alongside #223 itself: the harness had no reloadPrompts
+  // model at all before this file's own createHarness gained one above, so
+  // "a recursive 'edited' round's confirm isn't blocked by a leftover
+  // reloadPrompts entry from the round that spawned it" previously had only
+  // a static argument (the finally's delete runs before the guarded second
+  // fetch is even called) and no test pinning it. This drives two full
+  // reevaluateReload rounds for the SAME path and asserts round 2 actually
+  // reaches its own confirmDiscard call rather than silently returning at
+  // `if (reloadPrompts.has(path)) return;` — which is exactly what would
+  // happen if a future edit moved the `finally` to wrap the guarded fetch
+  // too instead of just the dialog.
+  it("a second recursive round's dirty-confirm dialog is not blocked by the first round's already-cleared reloadPrompts entry for the same path", async () => {
+    const doc = makeDocState({ revision: 5, fingerprint: "fp-old", buffer: "original", dirty: true });
+    let confirmCalls = 0;
+    const harness = createHarness(doc, {
+      confirmDiscard: () => {
+        confirmCalls += 1;
+        return Promise.resolve(true); // both rounds confirm
+      },
+    });
+
+    const firstFetch = deferred<OpenedFixture>(); // round 1's own opening fetch
+    const secondFetch = deferred<OpenedFixture>(); // round 1's guarded post-confirm fetch
+    let fetchCount = 0;
+    const fetchOpen = () => {
+      fetchCount += 1;
+      if (fetchCount === 1) return firstFetch.promise;
+      if (fetchCount === 2) return secondFetch.promise;
+      // Round 2's own opening fetch: disk still doesn't match doc's
+      // baseline (nothing has ever actually applied), so it re-enters the
+      // dirty branch instead of no-oping on a fingerprint match.
+      if (fetchCount === 3) {
+        return Promise.resolve({ content: "external-3", fingerprint: "fp-3", encoding: "UTF-8" });
+      }
+      // Round 2's own guarded post-confirm fetch.
+      return Promise.resolve({ content: "external-4", fingerprint: "fp-4", encoding: "UTF-8" });
+    };
+
+    const reloadPromise = harness.issueDrainedReload(fetchOpen);
+    firstFetch.resolve({ content: "external-1", fingerprint: "fp-1", encoding: "UTF-8" });
+
+    await waitUntil(() => fetchCount >= 2 && confirmCalls >= 1);
+    // Round 1's dialog has already resolved and reloadPrompts.delete(path)
+    // has already run in `finally` — before round 1's own second fetch
+    // (fetchCount 2, awaited just above) even settles.
+
+    // A fresh keystroke lands while round 1's guarded second fetch is in
+    // flight — routes into round 2 via that fetch's own "edited" verdict.
+    doc.revision = 6;
+    secondFetch.resolve({ content: "premature", fingerprint: "fp-premature", encoding: "UTF-8" });
+
+    await reloadPromise;
+
+    // If reloadPrompts still held round 1's entry, round 2 would have
+    // returned at its own reloadPrompts.has(path) check without ever
+    // calling confirmDiscard again or fetching a 4th time.
+    expect(confirmCalls).toBe(2);
+    expect(fetchCount).toBe(4);
+    expect(doc.fingerprint).toBe("fp-4");
+    expect(doc.buffer).toBe("external-4");
+  });
 });
 
 // ---------------------------------------------------------------------------

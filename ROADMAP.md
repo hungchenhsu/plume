@@ -1381,7 +1381,7 @@ for incoming contributors.
   executing a deferred save — a doc that became truncated during the
   defer window must not write its preview slice as the whole file
   [danger]
-- [ ] #223: reevaluateReload's opening clean-doc fetch gets the same
+- [x] #223: reevaluateReload's opening clean-doc fetch gets the same
   identity guard as the post-confirm path (detached-doc mutation,
   benign but off-contract); models the reloadPrompts path in the
   asyncguard tests while there
