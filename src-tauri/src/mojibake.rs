@@ -23,7 +23,9 @@
 //! responsibility, this module only ever computes the candidate/result.
 
 use chardetng::EncodingDetector;
-use encoding_rs::{Encoding, BIG5, EUC_KR, GB18030, GBK, SHIFT_JIS, UTF_8, WINDOWS_1252};
+use encoding_rs::{
+    Encoding, BIG5, EUC_KR, GB18030, GBK, KOI8_R, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1252,
+};
 use serde::Serialize;
 
 /// Candidate "wrong" encodings bytes may have been mis-decoded with.
@@ -42,11 +44,16 @@ use serde::Serialize;
 /// distinct candidate here; listing both labels would just enter the
 /// identical hypothesis twice.
 /// The `(intermediate, original)` hypotheses worth testing, restricted to
-/// the two mis-decode shapes that actually occur in the wild:
+/// mis-decode shapes that actually occur in the wild:
 ///
 /// 1. East Asian or UTF-8 bytes opened by a Western tool whose default is
-///    Windows-1252 (the dominant real-world case), and
-/// 2. UTF-8 bytes opened on a system defaulting to a CJK legacy encoding.
+///    Windows-1252 (the dominant real-world case),
+/// 2. UTF-8 bytes opened on a system defaulting to a CJK legacy encoding,
+///    and
+/// 3. Windows-1251 bytes opened by a tool defaulting to KOI8-R (issue
+///    #182) -- the classic Runet "кракозябры" mojibake, from the decades
+///    where Unix/Fidonet mail and web tooling defaulted to KOI8-R while
+///    Windows defaulted to windows-1251.
 ///
 /// Legacy-CJK ↔ legacy-CJK pairs (e.g. GBK-encode → Big5-decode) are
 /// deliberately absent: adversarial review demonstrated that perfectly
@@ -59,9 +66,48 @@ use serde::Serialize;
 /// the result is full-screen garbage nobody keeps working in. Narrow and
 /// right beats broad and wrong for a repair tool.
 ///
+/// `(WINDOWS_1251, KOI8_R)` -- the reverse of the pair below, i.e. genuine
+/// KOI8-R bytes mis-decoded as windows-1251 -- is deliberately absent, and
+/// for a *structural*, not just statistical, reason this time: chardetng
+/// 0.1.17 has no KOI8-R candidate in its detection model at all, only
+/// KOI8-U (its README's "Notes About Encodings" lists "KOI8-R: Detected as
+/// KOI8-U (Always guessing the U variant is less likely to corrupt
+/// non-box drawing characters.)"; confirmed directly against the crate's
+/// `SINGLE_BYTE_DATA` table, which has 21 candidates and no `KOI8_R_INIT`
+/// among them; `src/encodings.ts`'s `MANUAL_ONLY_ENCODINGS` documents the
+/// identical fact for this app's own open-file auto-detect). Gate (c)
+/// below requires chardetng's cold guess on the recovered bytes to equal
+/// `original`; when `original` is `KOI8_R` that comparison can *never*
+/// succeed, for any input whatsoever -- verified empirically too: genuine
+/// KOI8-R text mis-decoded as windows-1251 structurally passes gates (a)
+/// and (b) (clean encode, clean decode) but chardetng still guesses
+/// KOI8-U on the recovered bytes, so gate (c) rejects it every time. Since
+/// this wizard's UI only ever offers candidates `detect_mojibake` returns
+/// (`src/mojibake.ts`'s `showMojibakeWizard` has no manual pair picker),
+/// an `original: KOI8_R` entry would be permanently unreachable dead code
+/// -- not a working-but-rare hypothesis, a candidate that can *never*
+/// appear.
+///
+/// ISO-8859-5 hypotheses (`windows-1251`/`KOI8-R` ↔ `ISO-8859-5`) were
+/// evaluated for issue #182 and left out too: ISO-8859-5 is the least
+/// common of the three encodings in real-world Cyrillic mojibake (curated
+/// per E1 mainly for IANA mail-standard completeness), and empirically the
+/// (windows-1251, ISO-8859-5) / (ISO-8859-5, windows-1251) pairing is
+/// actively ambiguous rather than merely lower-priority: genuine
+/// ISO-8859-5 bytes mis-decoded as windows-1251 pass every gate --
+/// including chardetng agreement -- under *both* the correct hypothesis
+/// and the reversed, wrong one, and the wrong one recovers a different,
+/// incorrect text. Two structurally-clean-but-contradictory candidates for
+/// the same input is exactly the ambiguity the CJK exclusion above avoids;
+/// adding this pairing would reintroduce that failure mode rather than
+/// widen coverage, and would do so specifically for the rarest of the
+/// three encodings. See this module's
+/// `windows1251_iso88595_hypotheses_are_mutually_ambiguous` test for the
+/// reproducing case.
+///
 /// `pub(crate)` so `fuzz_roundtrip.rs`'s reversibility fuzz can iterate
 /// this exact list instead of maintaining a separately-drifting copy.
-pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 8] = [
+pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 9] = [
     (WINDOWS_1252, UTF_8),
     (WINDOWS_1252, BIG5),
     (WINDOWS_1252, GB18030),
@@ -70,6 +116,9 @@ pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 8] = [
     (BIG5, UTF_8),
     (GBK, UTF_8),
     (SHIFT_JIS, UTF_8),
+    // Issue #182: genuine windows-1251 bytes mis-decoded as KOI8-R --
+    // see the doc comment above for why only this direction is listed.
+    (KOI8_R, WINDOWS_1251),
 ];
 
 /// `detect_mojibake` samples at most this many bytes of `content`.
@@ -351,6 +400,20 @@ mod tests {
     /// katakana, mirroring `BIG5_TEXT`'s shape for Shift_JIS.
     const SHIFT_JIS_TEXT: &str = "日本語文字エンコーディングの検出テストです。これは自動検出機能を検証するための文章であり、句読点や一般的な語彙も含まれています。";
 
+    /// Realistic Russian sample for the Cyrillic hypothesis (issue #182):
+    /// a classic Russian pangram ("Съешь же ещё этих мягких французских
+    /// булок, да выпей чаю" -- "Eat some more of these soft French rolls,
+    /// and drink some tea", used precisely because it exercises every
+    /// letter of the modern Cyrillic alphabet) plus a second sentence for
+    /// length, mirroring `BIG5_TEXT`/`SHIFT_JIS_TEXT`'s "realistic amount
+    /// of text" reasoning. Deliberately ASCII-punctuation-only (plain `.`
+    /// and `,`, no curly quotes or "№") so it is exactly representable in
+    /// windows-1251, KOI8-R, *and* ISO-8859-5 alike -- confirmed
+    /// empirically while evaluating this issue, and depended on by the
+    /// ISO-8859-5-ambiguity regression test below, which needs the same
+    /// text clean-encodable in all three.
+    const RUSSIAN_TEXT: &str = "Съешь же ещё этих мягких французских булок, да выпей чаю. Это пример текста для проверки кодировки после перекодирования.";
+
     /// Western-European accented text built only from lowercase Latin-1
     /// Supplement characters U+00E1..=U+00FF. Restricting to this range is
     /// deliberate: each such character is exactly 2 UTF-8 bytes `C3 xx`
@@ -474,6 +537,37 @@ mod tests {
         assert_eq!(repaired, original_text);
     }
 
+    /// Issue #182: genuine windows-1251 bytes wrongly opened as KOI8-R --
+    /// the classic Runet "кракозябры" mojibake shape (KOI8-R was the
+    /// standard Unix/Fidonet encoding, windows-1251 the standard Windows
+    /// one; tools defaulting to the wrong one produced this constantly).
+    #[test]
+    fn repairs_windows1251_misdecoded_as_koi8r() {
+        let (bytes, _, unmappable) = WINDOWS_1251.encode(RUSSIAN_TEXT);
+        assert!(!unmappable, "fixture must be fully windows-1251-encodable");
+        let (mojibake, malformed) = KOI8_R.decode_without_bom_handling(&bytes);
+        assert!(
+            !malformed,
+            "fixture bytes must also decode cleanly as KOI8-R"
+        );
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, RUSSIAN_TEXT, "fixture must actually look garbled");
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "KOI8-R" && c.original == "windows-1251")
+            .unwrap_or_else(|| {
+                panic!("expected a (KOI8-R, windows-1251) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, RUSSIAN_TEXT);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "KOI8-R".to_string(), "windows-1251".to_string())
+                .unwrap();
+        assert_eq!(repaired, RUSSIAN_TEXT);
+    }
+
     #[test]
     fn pure_ascii_yields_no_candidates() {
         let text = "Hello, World! This is plain ASCII text with no accents at all.".to_string();
@@ -529,6 +623,19 @@ mod tests {
         );
     }
 
+    /// Same shape again for Cyrillic: correct Russian text, in its native
+    /// UTF-8 form and never touched by any encoding round-trip, must never
+    /// produce a content-changing candidate.
+    #[test]
+    fn no_candidates_for_normal_cyrillic() {
+        let candidates = detect_mojibake(RUSSIAN_TEXT.to_string());
+        assert_eq!(
+            candidates,
+            Vec::new(),
+            "correct Russian text must not be mistaken for mojibake"
+        );
+    }
+
     /// Adversarial-review regression: the 64 KiB sample cut lands
     /// mid-character in the *recovered* byte stream about half the time
     /// for CJK mojibake, and gate (b) used to reject the whole hypothesis
@@ -558,6 +665,95 @@ mod tests {
                 "large mojibake (~{target} bytes) must still be detected, got {candidates:?}"
             );
         }
+    }
+
+    /// Issue #182 evaluation: documents/locks in *why* `(WINDOWS_1251,
+    /// KOI8_R)` is excluded from `REPAIR_PAIRS` (see that const's doc
+    /// comment). Gates (a) and (b) of `try_repair` pass cleanly for a
+    /// genuine KOI8-R-as-windows-1251 mis-decode -- the encode/decode
+    /// round trip itself is perfectly reversible -- but gate (c)'s
+    /// chardetng cross-check can never confirm `KOI8_R` as `original`,
+    /// because chardetng has no KOI8-R candidate in its statistical model
+    /// at all (only KOI8-U). This is a structural rejection, not a
+    /// judgment call about this particular fixture.
+    #[test]
+    fn koi8_r_can_never_be_confirmed_as_original_by_chardetng() {
+        let (real_bytes, _, unmappable) = KOI8_R.encode(RUSSIAN_TEXT);
+        assert!(!unmappable, "fixture must be fully KOI8-R-encodable");
+        let (mojibake, malformed) = WINDOWS_1251.decode_without_bom_handling(&real_bytes);
+        assert!(
+            !malformed,
+            "windows-1251 must decode the KOI8-R bytes cleanly"
+        );
+        let mojibake = mojibake.into_owned();
+
+        // Gates (a)+(b) alone (plain encode/decode, no chardetng): the
+        // round trip is perfectly clean and recovers the exact original
+        // bytes and text.
+        let (recovered_bytes, _, unmappable) = WINDOWS_1251.encode(&mojibake);
+        assert!(!unmappable);
+        assert_eq!(recovered_bytes.as_ref(), real_bytes.as_ref());
+        let (recovered_text, malformed) = KOI8_R.decode_without_bom_handling(&recovered_bytes);
+        assert!(!malformed);
+        assert_eq!(recovered_text, RUSSIAN_TEXT);
+
+        // But try_repair -- which also runs gate (c) -- must still reject
+        // it, because chardetng can never guess KOI8_R specifically.
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1251, KOI8_R),
+            None,
+            "chardetng cannot confirm KOI8-R as `original`, so this \
+             hypothesis must never pass even though the encode/decode \
+             round trip itself is perfectly clean"
+        );
+
+        // Pin the specific reason: chardetng guesses KOI8-U, never KOI8-R.
+        let mut detector = EncodingDetector::new();
+        detector.feed(&real_bytes, true);
+        assert_eq!(detector.guess(None, true).name(), "KOI8-U");
+    }
+
+    /// Issue #182 evaluation: documents/locks in *why* ISO-8859-5
+    /// hypotheses were left out of `REPAIR_PAIRS` (see that const's doc
+    /// comment). Genuine ISO-8859-5 bytes mis-decoded as windows-1251 pass
+    /// every one of `try_repair`'s gates -- including chardetng agreement
+    /// -- under *both* the correct hypothesis, (windows-1251, ISO-8859-5),
+    /// *and* the reversed, wrong one, (ISO-8859-5, windows-1251), which
+    /// recovers different, incorrect text. Shipping this pairing would
+    /// show the wizard user two structurally-clean candidates for the
+    /// same mojibake, one of them wrong.
+    #[test]
+    fn windows1251_iso88595_hypotheses_are_mutually_ambiguous() {
+        use encoding_rs::ISO_8859_5;
+
+        let (real_bytes, _, unmappable) = ISO_8859_5.encode(RUSSIAN_TEXT);
+        assert!(!unmappable, "fixture must be fully ISO-8859-5-encodable");
+        let (mojibake, malformed) = WINDOWS_1251.decode_without_bom_handling(&real_bytes);
+        assert!(
+            !malformed,
+            "windows-1251 must decode the ISO-8859-5 bytes cleanly"
+        );
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, RUSSIAN_TEXT, "fixture must actually look garbled");
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1251, ISO_8859_5)
+            .expect("the correct (windows-1251, ISO-8859-5) hypothesis must pass every gate");
+        assert_eq!(
+            correct_text, RUSSIAN_TEXT,
+            "the correct hypothesis must recover the real text"
+        );
+
+        let (wrong_text, _) = try_repair(&mojibake, ISO_8859_5, WINDOWS_1251).expect(
+            "the reversed (ISO-8859-5, windows-1251) hypothesis ALSO passes every \
+             gate -- this is exactly the ambiguity that keeps it out of REPAIR_PAIRS",
+        );
+        assert_ne!(
+            wrong_text, RUSSIAN_TEXT,
+            "the reversed hypothesis passing every gate while recovering the WRONG \
+             text is the documented collision -- if this ever starts recovering the \
+             right text too, the ambiguity argument in REPAIR_PAIRS's doc comment \
+             needs re-checking before adding ISO-8859-5 pairs"
+        );
     }
 
     #[test]
