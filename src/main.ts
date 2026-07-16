@@ -1277,6 +1277,58 @@ async function fetchAndApplyReload(doc: Doc): Promise<void> {
 }
 
 /**
+ * Shared guard for reevaluateReload/reevaluateReopen's own post-confirm
+ * fetch (issue #209). Both functions reach a point where the user has
+ * already agreed to discard whatever the buffer held, and re-fetch the
+ * file to carry that decision out — but until this fix that fetch was
+ * itself an unguarded await gap, unlike fetchAndApplyReload/
+ * fetchAndApplyReopen's own openDocument call just above (issue #159): a
+ * same-tab edit or a tab close landing between the discard-confirm
+ * resolving and this call resolving was applied (or dropBackup'd)
+ * unconditionally. Same capture-before-IPC / validate-after-IPC shape as
+ * those two, reused here instead of re-derived a third and fourth time.
+ *
+ * "closed": the tab closed while this fetch was in flight — discard
+ * outright, same as fetchAndApplyReload/fetchAndApplyReopen's own "closed".
+ * No mutation of the detached doc, no dropBackup.
+ *
+ * "edited": the user typed again after already consenting to discard once.
+ * Applying this fetch's result would silently discard THOSE keystrokes with
+ * no second confirmation — the exact bug issue #209 reports. Simply
+ * keeping the old (pre-consent) buffer would be just as wrong: the user
+ * already said discard once, and disk may have moved further while this
+ * fetch ran. `onEdited` re-runs the caller's own reevaluateReload/
+ * reevaluateReopen from the top against doc's now-current state, rather
+ * than patching this one fetch's result in place — both functions' own
+ * dirty/fingerprint checks need to see the LATEST doc, not stale locals
+ * this call captured before the race. This can only recurse as many times
+ * as the user actually lands a fresh keystroke inside one of these guarded
+ * windows: each round re-captures identity and re-awaits a real IPC round
+ * trip (and typically a real confirm dialog), so there is no path back
+ * into this function without an actual async gap and an actual edit in
+ * between — it cannot spin without user input.
+ *
+ * "apply": nothing raced this fetch — call `apply` with the result, same
+ * as either reevaluate* function's pre-#209 unconditional call.
+ */
+async function fetchAndApplyGuarded(
+  doc: Doc,
+  fetchOpen: () => Promise<OpenedDocument>,
+  apply: (doc: Doc, opened: OpenedDocument) => void,
+  onEdited: () => Promise<void>,
+): Promise<void> {
+  const guard = captureIdentity(doc);
+  const opened = await fetchOpen();
+  const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
+  if (verdict === "closed") return;
+  if (verdict === "edited") {
+    await onEdited();
+    return;
+  }
+  apply(doc, opened);
+}
+
+/**
  * Drained pending reload (issue #124's drainLock, once whatever held the
  * lock — a save, or another reload — releases it): re-validate against
  * disk instead of blindly applying the reload that was requested earlier.
@@ -1351,8 +1403,15 @@ async function reevaluateReload(doc: Doc): Promise<void> {
       // Still reloadEncodingFor: doc.speculativeEncoding, if any, is only
       // cleared once applyOpenedForReload below actually runs, so this
       // second (post-consent) fetch is still inside the same protected
-      // window as the first.
-      applyOpenedForReload(doc, await openDocument(path, reloadEncodingFor(doc)));
+      // window as the first. Guarded via fetchAndApplyGuarded (issue
+      // #209): this fetch is its own await gap, same hazard as
+      // fetchAndApplyReload's own openDocument call above.
+      await fetchAndApplyGuarded(
+        doc,
+        () => openDocument(path, reloadEncodingFor(doc)),
+        applyOpenedForReload,
+        () => reevaluateReload(doc),
+      );
       return;
     }
     applyOpenedForReload(doc, opened);
@@ -1827,9 +1886,15 @@ async function fetchAndApplyReopen(doc: Doc, encoding: string): Promise<void> {
  * a SECOND fresh read — not the one fetchAndApplyReopen already fetched —
  * since the disk and the buffer may have moved again while any dialog
  * here was open (same reasoning as reevaluateReload's own post-consent
- * re-fetch). No try/catch of its own: fetchAndApplyReopen's already wraps
+ * re-fetch), guarded via fetchAndApplyGuarded (issue #209) exactly like
+ * reevaluateReload's own second fetch — see that helper's doc comment for
+ * the closed/edited/apply handling and the recursion's termination
+ * argument. No try/catch of its own: fetchAndApplyReopen's already wraps
  * this call, and reopen's errors are meant to surface to the user (unlike
- * reloadFromDisk's silent swallow) via that same catch.
+ * reloadFromDisk's silent swallow) via that same catch — including any
+ * error a recursive call (fetchAndApplyGuarded's "edited" path) propagates,
+ * since every recursive invocation of this function runs inside that same
+ * catch.
  */
 async function reevaluateReopen(doc: Doc, encoding: string): Promise<void> {
   const path = doc.path;
@@ -1842,7 +1907,14 @@ async function reevaluateReopen(doc: Doc, encoding: string): Promise<void> {
     });
     if (!discard) return;
   }
-  applyOpenedForReopen(doc, await openDocument(path, encoding));
+  // Guarded via fetchAndApplyGuarded (issue #209): this fetch is its own
+  // await gap, same hazard as fetchAndApplyReopen's own openDocument call.
+  await fetchAndApplyGuarded(
+    doc,
+    () => openDocument(path, encoding),
+    applyOpenedForReopen,
+    () => reevaluateReopen(doc, encoding),
+  );
 }
 
 /** Shared state mutation once a freshly-opened `opened` (decoded with a

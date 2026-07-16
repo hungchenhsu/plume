@@ -178,6 +178,28 @@ function createHarness(doc: DocState, hooks: DialogHooks = {}) {
     calls.busyNotices += 1;
   }
 
+  /** Mirrors main.ts's fetchAndApplyGuarded (issue #209): the shared guard
+   *  reevaluateReload/reevaluateReopen's own post-confirm fetch goes
+   *  through, instead of applying that fetch's result unconditionally.
+   *  'closed' discards outright; 'edited' hands back to the caller's own
+   *  re-evaluation function (called again from the top, not patched in
+   *  place — see main.ts's fetchAndApplyGuarded doc comment for why);
+   *  'apply' is the untouched fast path. */
+  async function fetchAndApplyGuarded(
+    fetchOpen: () => Promise<OpenedFixture>,
+    onEdited: () => Promise<void>,
+  ): Promise<void> {
+    const guard = captureIdentity(doc);
+    const opened = await fetchOpen();
+    const verdict = validateIdentity(guard, doc, tabs.includes(doc));
+    if (verdict === "closed") return;
+    if (verdict === "edited") {
+      await onEdited();
+      return;
+    }
+    applyOpened(doc, opened);
+  }
+
   // --- reload (issue #159) -------------------------------------------
   /** Drained/in-place re-validation, shared shape with main.ts's
    *  reevaluateReload: re-fetches fresh (never trusts the pre-await
@@ -191,7 +213,9 @@ function createHarness(doc: DocState, hooks: DialogHooks = {}) {
     if (doc.dirty) {
       const reload = await confirmDiscard();
       if (!reload) return;
-      applyOpened(doc, await fetchOpen());
+      // Guarded (issue #209): this second fetch is its own await gap, same
+      // hazard as fetchAndApplyReload's own openDocument call.
+      await fetchAndApplyGuarded(fetchOpen, () => reevaluateReload(fetchOpen));
       return;
     }
     applyOpened(doc, opened);
@@ -227,7 +251,9 @@ function createHarness(doc: DocState, hooks: DialogHooks = {}) {
       const discard = await confirmDiscard();
       if (!discard) return;
     }
-    applyOpened(doc, await fetchOpen());
+    // Guarded (issue #209): this fetch is its own await gap, same hazard as
+    // fetchAndApplyReopen's own openDocument call.
+    await fetchAndApplyGuarded(fetchOpen, () => reevaluateReopen(fetchOpen));
   }
 
   /** Mirrors fetchAndApplyReopen (issue #159): same capture/validate shape
@@ -534,6 +560,232 @@ describe("issue #169 — reopenWithEncoding defers to an in-flight save instead 
     saveCall.resolve();
     await savePromise;
   });
+});
+
+describe("issue #209 — reevaluateReload/reevaluateReopen's own post-confirm fetch races a same-tab edit or a tab close", () => {
+  describe("reload", () => {
+    it("typing again after confirming discard, while reevaluateReload's own second fetch is in flight: the fresh keystrokes are not clobbered, and a stale/premature read is never applied", async () => {
+      const doc = makeDocState({ revision: 5, fingerprint: "fp-old", buffer: "original" });
+      let confirmCalls = 0;
+      const harness = createHarness(doc, {
+        // Round 1 (inside reevaluateReload, reached via fetchAndApplyReload's
+        // own "edited" verdict) agrees to discard; round 2 (the recursive
+        // re-evaluation triggered by typing AGAIN during round 1's own
+        // guarded second fetch) declines — proving the decline path leaves
+        // everything from round 2's typing untouched.
+        confirmDiscard: () => {
+          confirmCalls += 1;
+          return Promise.resolve(confirmCalls === 1);
+        },
+      });
+
+      const firstOuterFetch = deferred<OpenedFixture>(); // fetchAndApplyReload's own await
+      const secondFetch = deferred<OpenedFixture>(); // reevaluateReload's guarded post-confirm fetch
+      let fetchCount = 0;
+      const fetchOpen = () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstOuterFetch.promise;
+        // reevaluateReload's own first (fingerprint-check) fetch, reached
+        // via the "edited" verdict above — must mismatch doc.fingerprint
+        // ("fp-old") so the dirty-confirm branch fires.
+        if (fetchCount === 2) {
+          return Promise.resolve({ content: "external-1", fingerprint: "fp-1", encoding: "UTF-8" });
+        }
+        if (fetchCount === 3) return secondFetch.promise;
+        // The recursive reevaluateReload's own first fetch (round 2) — disk
+        // still hasn't moved from doc's perspective (still mismatches
+        // fp-old), so it re-prompts instead of silently no-oping.
+        if (fetchCount === 4) {
+          return Promise.resolve({ content: "external-2", fingerprint: "fp-2", encoding: "UTF-8" });
+        }
+        throw new Error("must not fetch a 5th time — round 2's confirm was declined");
+      };
+
+      const reloadPromise = harness.issueReload(fetchOpen);
+
+      // Round 1: user types while fetchAndApplyReload's own outer await is
+      // in flight — routes into reevaluateReload via the "edited" verdict.
+      doc.revision = 6;
+      doc.dirty = true;
+      doc.buffer = "typing-1";
+      doc.backupName = "bk-1.txt";
+      firstOuterFetch.resolve({ content: "stale-outer", fingerprint: "fp-stale", encoding: "UTF-8" });
+
+      await waitUntil(() => fetchCount >= 3);
+      expect(confirmCalls).toBe(1); // sanity: round 1's confirm already resolved, second fetch under way
+
+      // Round 2: user types AGAIN while reevaluateReload's own guarded
+      // second fetch (the one issue #209 reports as unguarded) is in
+      // flight.
+      doc.revision = 7;
+      doc.buffer = "typing-2";
+      doc.backupName = "bk-2.txt";
+      secondFetch.resolve({
+        content: "premature-should-not-apply",
+        fingerprint: "fp-premature",
+        encoding: "UTF-8",
+      });
+
+      await reloadPromise;
+
+      expect(fetchCount).toBe(4); // round 2 declined before its own second fetch
+      expect(confirmCalls).toBe(2); // re-confirmed once per round — not silently dropped, not silently applied
+      expect(doc.buffer).toBe("typing-2");
+      expect(doc.dirty).toBe(true);
+      expect(doc.backupName).toBe("bk-2.txt");
+      expect(doc.fingerprint).toBe("fp-old"); // nothing ever actually applied
+    });
+
+    it("closing the tab while reevaluateReload's own second fetch is in flight: discards the result with no mutation to the detached doc and no backup deletion", async () => {
+      const doc = makeDocState({
+        revision: 5,
+        fingerprint: "fp-old",
+        buffer: "original",
+        dirty: true,
+        backupName: "bk-1.txt",
+      });
+      const harness = createHarness(doc, { confirmDiscard: () => Promise.resolve(true) });
+
+      const firstOuterFetch = deferred<OpenedFixture>();
+      const secondFetch = deferred<OpenedFixture>();
+      let fetchCount = 0;
+      const fetchOpen = () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstOuterFetch.promise;
+        if (fetchCount === 2) {
+          return Promise.resolve({ content: "external-1", fingerprint: "fp-1", encoding: "UTF-8" });
+        }
+        if (fetchCount === 3) return secondFetch.promise;
+        throw new Error("must not fetch again — the tab is closed, nothing left to re-evaluate for");
+      };
+
+      const reloadPromise = harness.issueReload(fetchOpen);
+      doc.revision = 6; // same-tab edit routes fetchAndApplyReload into reevaluateReload
+      firstOuterFetch.resolve({ content: "stale-outer", fingerprint: "fp-stale", encoding: "UTF-8" });
+
+      await waitUntil(() => fetchCount >= 3);
+
+      harness.tabs.length = 0; // tab closed mid-flight, during reevaluateReload's own second fetch
+      secondFetch.resolve({
+        content: "premature-should-not-apply",
+        fingerprint: "fp-premature",
+        encoding: "UTF-8",
+      });
+
+      await reloadPromise;
+
+      expect(doc.buffer).toBe("original");
+      expect(doc.dirty).toBe(true);
+      expect(doc.backupName).toBe("bk-1.txt"); // dropBackup never reached the detached doc
+      expect(doc.fingerprint).toBe("fp-old");
+    });
+  });
+
+  describe("reopen", () => {
+    it("typing again after confirming discard, while reevaluateReopen's own second fetch is in flight: the fresh keystrokes are not clobbered, and a stale/premature read is never applied", async () => {
+      const doc = makeDocState({ revision: 5, fingerprint: "fp-old", buffer: "original", dirty: false });
+      let confirmCalls = 0;
+      const harness = createHarness(doc, {
+        confirmDiscard: () => {
+          confirmCalls += 1;
+          return Promise.resolve(confirmCalls === 1);
+        },
+      });
+
+      const firstOuterFetch = deferred<OpenedFixture>(); // fetchAndApplyReopen's own await
+      const secondFetch = deferred<OpenedFixture>(); // reevaluateReopen's guarded fetch
+      let fetchCount = 0;
+      const fetchOpen = () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstOuterFetch.promise;
+        if (fetchCount === 2) return secondFetch.promise;
+        throw new Error("must not fetch a 3rd time — round 2's confirm was declined");
+      };
+
+      // doc starts clean, so reopenWithEncoding's own entry dirty-check
+      // never fires — the user only types after the IPC is under way,
+      // exactly like the existing #159 reopen tests above.
+      const reopenPromise = harness.issueReopenWithEncoding(fetchOpen);
+
+      doc.revision = 6;
+      doc.dirty = true;
+      doc.buffer = "typing-1";
+      doc.backupName = "bk-1.txt";
+      firstOuterFetch.resolve({ content: "big5-decoded", fingerprint: "fp-new", encoding: "Big5" });
+
+      await waitUntil(() => fetchCount >= 2);
+      expect(confirmCalls).toBe(1);
+
+      doc.revision = 7;
+      doc.buffer = "typing-2";
+      doc.backupName = "bk-2.txt";
+      secondFetch.resolve({
+        content: "premature-should-not-apply",
+        fingerprint: "fp-premature",
+        encoding: "Big5",
+      });
+
+      await reopenPromise;
+
+      expect(fetchCount).toBe(2);
+      expect(confirmCalls).toBe(2);
+      expect(doc.buffer).toBe("typing-2");
+      expect(doc.dirty).toBe(true);
+      expect(doc.backupName).toBe("bk-2.txt");
+      expect(doc.encoding).toBe("UTF-8"); // never switched to the requested encoding
+    });
+
+    it("closing the tab while reevaluateReopen's own second fetch is in flight: discards the result with no mutation to the detached doc and no backup deletion", async () => {
+      const doc = makeDocState({
+        revision: 5,
+        fingerprint: "fp-old",
+        buffer: "original",
+        dirty: false,
+        backupName: "bk-1.txt",
+      });
+      const harness = createHarness(doc, { confirmDiscard: () => Promise.resolve(true) });
+
+      const firstOuterFetch = deferred<OpenedFixture>();
+      const secondFetch = deferred<OpenedFixture>();
+      let fetchCount = 0;
+      const fetchOpen = () => {
+        fetchCount += 1;
+        if (fetchCount === 1) return firstOuterFetch.promise;
+        if (fetchCount === 2) return secondFetch.promise;
+        throw new Error("must not fetch again — the tab is closed, nothing left to re-evaluate for");
+      };
+
+      const reopenPromise = harness.issueReopenWithEncoding(fetchOpen);
+      doc.revision = 6;
+      doc.dirty = true;
+      firstOuterFetch.resolve({ content: "big5-decoded", fingerprint: "fp-new", encoding: "Big5" });
+
+      await waitUntil(() => fetchCount >= 2);
+
+      harness.tabs.length = 0;
+      secondFetch.resolve({
+        content: "premature-should-not-apply",
+        fingerprint: "fp-premature",
+        encoding: "Big5",
+      });
+
+      await reopenPromise;
+
+      expect(doc.buffer).toBe("original");
+      expect(doc.encoding).toBe("UTF-8");
+      expect(doc.backupName).toBe("bk-1.txt");
+    });
+  });
+
+  // No separate control test here for "confirm, then no further interference
+  // during the second fetch": issue #159's own "typing during the IPC, then
+  // confirming" tests above (reload: "applies a SECOND fresh read, not the
+  // pre-await snapshot"; reopen: "applies a SECOND fresh read with the
+  // requested encoding") already exercise exactly that window — a same-tab
+  // edit routes into reevaluateReload/reevaluateReopen, the user confirms
+  // discard, and the resulting post-confirm fetch resolves with zero further
+  // interference — so they double as this section's regression control:
+  // still green and unchanged post-#209 is the assertion.
 });
 
 // ---------------------------------------------------------------------------
