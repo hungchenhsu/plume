@@ -1290,6 +1290,178 @@ mod tests {
         );
     }
 
+    // --- Issue #227: `trim_truncated_legacy_head`'s one genuinely
+    // ambiguous shape (see its doc comment) made concrete as an
+    // executable backward-paging scenario, rather than only inferred from
+    // the probe tests above. When a backward window's raw start lands
+    // exactly on an ASCII byte immediately followed by a clean run of
+    // complete multibyte characters, the byte's own value alone can never
+    // tell the algorithm whether it is a genuine standalone character or
+    // an orphaned trailing fragment whose lead byte was cut into the
+    // previous page -- both readings decode without error from `bytes`
+    // alone. The algorithm is documented to break the tie by preferring
+    // the deeper (post-ASCII) boundary, *shifting* the ASCII byte into
+    // the neighboring backward page rather than ever dropping it. -------
+
+    /// A Big5 file engineered so a backward window's raw start lands
+    /// exactly on a single ASCII byte ('a', 0x61 -- inside Big5's low
+    /// trail-byte range 0x40-0x7E, so the "orphaned trail fragment"
+    /// reading is genuinely plausible, not merely mechanically
+    /// triggered) immediately followed by a uniform run of
+    /// `BIG5_SELF_SAFE_CHAR`. Layout: `"head\npad" + 'a' + (BIG5_SELF_
+    /// SAFE_CHAR repeated) + '\n'`, with the run length chosen so the
+    /// file's total length is exactly `p1 + CHUNK_BYTES` (`p1` = the 'a'
+    /// byte's offset, returned alongside) -- so the *first* natural
+    /// backward read in an EOF-anchored paging loop (`end` = file length)
+    /// computes `start = end - CHUNK_BYTES == p1` with no hand-picked
+    /// `end` needed, exactly mirroring how a real large file reaches this
+    /// shape. The window's only terminator sits at its very last byte
+    /// (the run's own closing `\n`), so `align_start` cannot realign past
+    /// it -- `read_document_chunk_before`'s "non-empty remainder" guard
+    /// falls back to the raw window -- and 'a' is preceded by "pad", not
+    /// a terminator, so `at_line_start` is false too: this is a raw
+    /// mid-content cut, not a coincidental line start.
+    fn ascii_before_cjk_big5_boundary_fixture() -> (String, Vec<u8>, u64) {
+        let prefix = "head\npad";
+        let p1 = prefix.len() as u64; // offset of the ambiguous 'a' byte
+        let window_tail_len = 2u64; // 'a' itself + the run's closing '\n'
+        let run_bytes = CHUNK_BYTES as u64 - window_tail_len;
+        assert_eq!(run_bytes % 2, 0, "must be a whole number of 2-byte chars");
+        let run_chars = (run_bytes / 2) as usize;
+
+        let mut text = String::from(prefix);
+        text.push('a');
+        for _ in 0..run_chars {
+            text.push(BIG5_SELF_SAFE_CHAR);
+        }
+        text.push('\n');
+        let (bytes, unmappable) = encoding::encode(&text, "Big5", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in Big5"
+        );
+        assert_eq!(
+            bytes.len() as u64,
+            p1 + CHUNK_BYTES as u64,
+            "file length must place the ambiguous boundary exactly \
+             CHUNK_BYTES before EOF"
+        );
+        (text, bytes, p1)
+    }
+
+    /// Forward `Next` chain over the fixture: `trim_truncated_legacy_head`
+    /// is never on this path (only the tail trim is), so this is a plain
+    /// completeness check that the fixture itself round-trips, mirroring
+    /// `pages_through_an_overlong_big5_line_losslessly`.
+    #[test]
+    fn pages_through_an_ascii_before_cjk_big5_boundary_losslessly() {
+        let (original_text, bytes, _p1) = ascii_before_cjk_big5_boundary_fixture();
+        let path = std::env::temp_dir().join("plume-chunk-ascii-before-cjk-big5-fwd.txt");
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut assembled = String::new();
+        let mut offset = Some(0u64);
+        let mut pages = 0;
+        while let Some(at) = offset {
+            let chunk = read_document_chunk(
+                path_str.clone(),
+                at,
+                "Big5".into(),
+                OffsetKind::Continuation,
+            )
+            .unwrap();
+            assert!(
+                !chunk.malformed,
+                "a chunk boundary must never manufacture a decode error out \
+                 of a valid Big5 file"
+            );
+            assert!(
+                !chunk.content.contains('\u{FFFD}'),
+                "a raw chunk cut must never split a Big5 multibyte character"
+            );
+            assembled.push_str(&chunk.content);
+            offset = chunk.next_offset;
+            pages += 1;
+            assert!(pages < 200, "paging must terminate");
+        }
+        assert_eq!(assembled, original_text);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Backward `Prev` chain: pins the exact shift issue #227 asks for.
+    /// The first (EOF-anchored) page's raw window starts exactly on the
+    /// ambiguous 'a' byte; `trim_truncated_legacy_head` must resolve the
+    /// ambiguity by skipping it (the deeper, CJK-lead-byte boundary is the
+    /// only *trustworthy* clean candidate), so this page's reported
+    /// `offset` lands one byte past the raw window start and its content
+    /// excludes 'a' entirely -- proof that a trim actually fired, not
+    /// merely that reassembly happens to work out. The second (final)
+    /// page then reaches file start in one more read, and its content
+    /// ends with exactly that same 'a' byte: the trimmed byte reappears
+    /// whole at the adjacent page's edge, never dropped. Concatenating
+    /// both pages in order reproduces the original file byte-for-byte --
+    /// the invariant's actual statement (#213's doc comment: "shifting
+    /// (never losing)").
+    #[test]
+    fn pages_backward_through_an_ascii_before_cjk_big5_boundary_shifts_the_ambiguous_byte() {
+        let (original_text, bytes, p1) = ascii_before_cjk_big5_boundary_fixture();
+        let path = std::env::temp_dir().join("plume-chunk-ascii-before-cjk-big5-back.txt");
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        // First page: the raw backward window starts exactly at `p1`, the
+        // 'a' byte -- see the fixture's doc comment for why.
+        let end = bytes.len() as u64;
+        let start = end - CHUNK_BYTES as u64;
+        assert_eq!(
+            start, p1,
+            "sanity: fixture must place the window start on 'a'"
+        );
+
+        let page1 = read_document_chunk_before(path_str.clone(), end, "Big5".into()).unwrap();
+        assert_eq!(page1.next_offset, Some(end));
+        assert!(!page1.malformed);
+        assert!(!page1.content.contains('\u{FFFD}'));
+        assert_eq!(
+            page1.offset,
+            start + 1,
+            "the ambiguous 'a' byte must be trimmed from this page's head \
+             -- offset lands one byte past the raw window start, not at it"
+        );
+        assert!(
+            !page1.content.starts_with('a'),
+            "trim must actually have fired: page content must not start \
+             with the ambiguous ASCII byte"
+        );
+        assert!(
+            page1.content.starts_with(BIG5_SELF_SAFE_CHAR),
+            "page must resume exactly at the CJK run's first character"
+        );
+
+        // Second page: reaches file start; the trimmed 'a' must reappear
+        // as this page's very last byte/character, never dropped.
+        let page2 =
+            read_document_chunk_before(path_str.clone(), page1.offset, "Big5".into()).unwrap();
+        assert_eq!(page2.offset, 0);
+        assert_eq!(page2.next_offset, Some(page1.offset));
+        assert!(!page2.malformed);
+        assert!(!page2.content.contains('\u{FFFD}'));
+        assert!(
+            page2.content.ends_with('a'),
+            "the byte trimmed from page1's head must reappear as page2's \
+             own trailing byte -- shifted, never lost"
+        );
+
+        let assembled = format!("{}{}", page2.content, page1.content);
+        assert_eq!(
+            assembled, original_text,
+            "full backward reassembly must be byte-exact despite the shift \
+             -- the invariant's actual statement: absorbed, never dropped"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
     /// `OffsetKind::LineStart`'s stale-offset fallback (the `align_start`
     /// UTF-8-only branch this issue also extends) must realign cleanly for
     /// a legacy multi-byte encoding too: a goto landing mid-character deep

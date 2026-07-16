@@ -1385,7 +1385,7 @@ for incoming contributors.
   identity guard as the post-confirm path (detached-doc mutation,
   benign but off-contract); models the reloadPrompts path in the
   asyncguard tests while there
-- [ ] #227: dedicated test pinning the head-trim displacement-absorption
+- [x] #227: dedicated test pinning the head-trim displacement-absorption
   invariant (backward window start landing exactly on an ASCII+CJK
   boundary; trim fires and whole-file reassembly stays byte-exact)
 - [ ] #203: de-flake the two large-file streaming tests (fingerprint
