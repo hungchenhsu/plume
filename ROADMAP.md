@@ -1345,6 +1345,114 @@ byte-preservation machinery)
   it could ship), six issues closed, six follow-ups filed, tests
   333/572 → 423/763.
 
+## v0.6 — feature cycle (planned 2026-07-16, delegated)
+
+Scope planned autonomously under the user's standing delegation (user
+away until 2026-07-22; same model as v0.4/v0.5: plan the cycle, merge on
+green CI, post-merge review). The plan passed an adversarial review
+before work started (AGREE-WITH-CHANGES; every requested change
+adopted): three CJK↔CJK mojibake-pair candidates were dropped in
+planning as the exact reachable-but-wrong shape mojibake.rs already
+documents and rejects, E1's line-ending scan was bounded, C1 gained a
+dispatch-safety acceptance criterion, and C3/V1 are marked first-to-cut.
+Theme: clear the bug queue first, then extend the trust story from file
+contents to behavior visibility (Document Info, command palette, user
+docs), plus robustness groundwork. Items marked **[danger]** follow
+judgment overlay §1: failing-test-first, round-trip tests where encoding
+behavior changes, adversarial review before commit; danger items are
+never worked in parallel. #89 stays open as the good-first-issue surface
+for incoming contributors.
+
+**Track R — debt & correctness** (bug queue first; ordered by execution)
+- [ ] #225: ISO-2022-JP overlong-line chunk paging silently mis-decodes
+  continuation pages (each page's fresh decoder loses the previous
+  page's shift-state; JIS two-byte content reads as ASCII with
+  malformed=false) — exclude ISO-2022-JP from chunk paging, following
+  the existing UTF-16 exclusion pattern; correctness over breadth (the
+  full cross-page decoder-state carry was evaluated in planning and
+  rejected as a high-risk redesign of the paging offset family)
+  [danger]
+- [ ] #221: Save with Encoding racing another in-flight save/reload
+  while the doc stays dirty=false can still dropSave the new encoding —
+  encoding mutation bumps the revision and forces dirty, re-adjudicating
+  #161's two existing confirm-dialog tests under the new semantics
+  [danger]
+- [ ] #217: drainLock re-runs blockedByReadOnly immediately before
+  executing a deferred save — a doc that became truncated during the
+  defer window must not write its preview slice as the whole file
+  [danger]
+- [ ] #223: reevaluateReload's opening clean-doc fetch gets the same
+  identity guard as the post-confirm path (detached-doc mutation,
+  benign but off-contract); models the reloadPrompts path in the
+  asyncguard tests while there
+- [ ] #227: dedicated test pinning the head-trim displacement-absorption
+  invariant (backward window start landing exactly on an ASCII+CJK
+  boundary; trim fires and whole-file reassembly stays byte-exact)
+- [ ] #203: de-flake the two large-file streaming tests (fingerprint
+  false positives under load) with a load-independent
+  external-modification simulation instead of wall-clock-sensitive
+  timing
+- [ ] #201: auto-detect on a truncated preview of a huge single-line
+  legacy file can misclassify the window as single-byte with
+  malformed=false — lower detection confidence for truncated samples
+  and surface a "detected from a truncated sample" hint in the
+  detection diagnostics [danger]
+
+**Track E — encoding transparency**
+- [ ] E1 Document Info dialog: one read-only trust surface (File menu) —
+  path/size/mtime, encoding + detection evidence (reusing the
+  detection-diagnostics data), BOM, line-ending distribution counts
+  (LF/CRLF/CR via linebreak.rs semantics; bounded scan — exact counts
+  up to the large-file threshold, an explicitly-labeled sample beyond
+  it, never an unlabeled partial total), line/word/char counts (reusing
+  textstats). i18n across en/zh-TW/ja/zh-CN
+- [ ] E2 mojibake repair pair, narrowed by planning review: evaluate
+  (WINDOWS_1252, EUC_JP) only — the CJK↔CJK candidates are the
+  documented reachable-but-wrong dead end. Gate upgraded from "prove
+  reachable" to "prove reachable AND the reverse hypothesis does not
+  also pass" (mutual-ambiguity test, ISO-8859-5 precedent); if either
+  leg fails, record the dead end in mojibake.rs's pair notes and
+  withdraw the pair — a withdrawal is a valid outcome [danger]
+
+**Track C — comfort**
+- [ ] C1 Command palette (Mod+Shift+P): a Rust command exposes menu.rs's
+  LABELS as (id, current-locale label) pairs; frontend palette overlay
+  with a hand-rolled subsequence fuzzy match (no new dependency);
+  selection dispatches into the existing menu switch. Danger-lite:
+  acceptance includes verifying that commands without their own
+  read-only/truncated/no-doc guards no-op cleanly (or gain a guard)
+  when dispatched from the palette in an invalid state; v1 lists all
+  commands with no per-command enabled filtering (documented trade-off)
+- [ ] C2 join lines / reverse lines: lineops.ts pure functions + Edit >
+  Line Operations entries + i18n ×4 + pinned translation tests
+- [ ] C3 sort variants: case-insensitive sort and numeric sort (same
+  family as C2) — first to cut if the cycle runs long
+- [ ] C4 clear recent files: clear_recent_files command + a File > Open
+  Recent > Clear entry (recent.rs currently has only load/add)
+
+**Track V — robustness**
+- [ ] V1 session forward-compat fixtures: hand-written old-shape session
+  JSONs (v0.1-era field sets) must load with correct defaults — pins
+  the serde-default compatibility contract; no version field added
+  (YAGNI) — first to cut if the cycle runs long
+- [ ] V2 IPC error-path audit: inventory every #[tauri::command]'s
+  frontend call sites for catch/error surfacing; findings report plus
+  fixes for the gaps found
+
+**Track H — outward** (positioning red lines apply: no competitor names)
+- [ ] H1 CHANGELOG.md: Keep-a-Changelog backfill from v0.1.0-alpha.1
+  through v0.5.0-alpha.2; DIRECTION §7 release checklist gains "update
+  CHANGELOG in the same PR"
+- [ ] H2 docs/features.md: encoding-features guide (detection,
+  reopen/save with encoding, mojibake wizard, batch conversion,
+  side-by-side preview, hex preview, character inspector,
+  normalization, large-file mode, find/replace in files); English; no
+  screenshots (agents must not launch the GUI)
+
+- [ ] Cycle close-out: DIRECTION §2 refresh, session-handoff memory,
+  tag v0.6.0-alpha.1 with zh-TW notes, prerelease published under the
+  standing delegation (final releases remain user-gated)
+
 ## Explicit non-goals
 
 These are out of scope — not "later", but **not what this project is**:
