@@ -32,6 +32,19 @@
 //! no-op/skip rules. This is scan-time visibility only; `convert_one`'s own
 //! behavior (silently canonicalize, still succeed) is unchanged.
 //!
+//! Issue #96 (3/3) only covered the `alreadyTarget` (both axes untouched)
+//! half of this risk, though — issue #176 closes the other half it left
+//! documented but unimplemented: a `convertible` file whose *encoding*
+//! axis is untouched but whose *line-ending* axis was asked to change
+//! (`target_encoding: "keep"`, or an explicit target equal to the file's
+//! own encoding, with `line_ending` set to something the file isn't
+//! already) still re-encodes that file, and re-encoding is exactly what
+//! silently canonicalizes non-canonical legacy bytes — a user who asked
+//! only "unify my line endings" gets an uninvited encoding
+//! canonicalization bundled in, with nothing in the report distinguishing
+//! it from the line-ending change they actually asked for. `byte_drift`
+//! now covers both cases; see `BatchEntry::byte_drift`'s doc comment.
+//!
 //! Folder walking mirrors `search.rs`'s find-in-files traversal (same
 //! `SKIP_DIRS`, same dotdir/symlink skip rules) so batch conversion never
 //! descends into VCS metadata or dependency trees either.
@@ -108,31 +121,51 @@ pub struct BatchEntry {
     /// entries, since a malformed multi-byte sequence elsewhere in the
     /// file doesn't prevent detecting `\r`/`\n` bytes.
     pub line_ending: String,
-    /// Issue #96 (3/3): true when this is an `alreadyTarget` entry (both
-    /// axes already match what was asked for — a "no-op" conversion) whose
-    /// bytes would nonetheless change if executed, because re-encoding
-    /// canonicalizes a non-injective legacy byte sequence (Big5, Shift_JIS,
-    /// GBK — see `encoding.rs`'s "Round-trip contract" module doc). This is
-    /// the "keep" + "keep" caveat from this module's own doc comment made
-    /// visible in the report, computed by rebuilding the exact
-    /// `commit_conversion` pipeline against the scan's already-decoded
-    /// bytes and comparing to the original (see [`rebuild_output_bytes`]).
+    /// True when the *encoding* axis specifically is unchanged from this
+    /// file's own on-disk encoding (`target_encoding: "keep"`, or an
+    /// explicit target that already equals the file's own detected
+    /// encoding and BOM state) yet re-encoding would nonetheless change
+    /// these bytes, because it canonicalizes a non-injective legacy byte
+    /// sequence (Big5, Shift_JIS, GBK — see `encoding.rs`'s "Round-trip
+    /// contract" module doc). Two scenarios trigger it, both computed by
+    /// rebuilding the exact `commit_conversion` pipeline against the
+    /// scan's already-decoded bytes and comparing to the original (see
+    /// [`rebuild_output_bytes`]):
+    ///
+    /// - Issue #96 (3/3): `status` is `alreadyTarget` — the line-ending
+    ///   axis is *also* unchanged, so this is a full no-op the user never
+    ///   asked to touch at all (the "keep" + "keep" caveat from this
+    ///   module's own doc comment made visible in the report).
+    /// - Issue #176 (#96 3/3's other half): `status` is `convertible` and
+    ///   the *only* reason it isn't `alreadyTarget` is that the
+    ///   line-ending axis was asked to change — a "just unify my line
+    ///   endings" request that still bundles in an uninvited encoding
+    ///   canonicalization. The verdict here isolates the encoding step
+    ///   from the requested line-ending change (rebuilds with
+    ///   `line_ending: "keep"`, not the requested target, before
+    ///   comparing) so it flags only the canonicalization, never the
+    ///   line-ending bytes the user did ask to change.
     ///
     /// Deliberately narrower than "any file whose bytes might drift":
-    /// always `false` for every status other than `alreadyTarget`, because
-    /// a `convertible`/`lossy` entry's bytes are *expected* to change — the
-    /// user explicitly asked for a different encoding or line ending, so a
+    /// `false` whenever the *encoding* axis itself was asked to change (a
+    /// different target encoding, or the same encoding with a different
+    /// BOM state) — the user explicitly asked for that byte change, so a
     /// drift verdict there would carry no signal (batch's semantics differ
     /// from `bytedrift.rs`'s save-path check here: that check's target is
     /// always the *unchanged* save pipeline, so any drift it finds is
     /// inherently unrequested; batch's target is whatever the user picked,
-    /// so only the no-op case is). Also `false` (skipped, not computed)
-    /// when the file's own on-disk line ending is `"Mixed"` — same
-    /// precedent as `bytedrift.rs`'s `SKIP_MIXED_LINE_ENDING`: a rebuild
-    /// can only re-apply one pure line-ending style, so it can never
-    /// reproduce a mixed-style file and any verdict on it would conflate
-    /// line-ending unification with encoding canonicalization.
-    /// `undecodable`/`tooLarge` entries never reach a decode at all.
+    /// so only an encoding-axis-unchanged request is). Also `false`
+    /// (skipped, not computed) when the file's own on-disk line ending is
+    /// `"Mixed"` — same precedent as `bytedrift.rs`'s
+    /// `SKIP_MIXED_LINE_ENDING`, kept consistent across both scenarios
+    /// above even though the `convertible` scenario's `"keep"`-based
+    /// rebuild could technically reproduce a mixed file (it hands
+    /// `decoded.content` through untouched either way): a mixed source is
+    /// what makes this file `convertible` at all against a concrete
+    /// LF/CRLF target, and a verdict on it would still conflate
+    /// line-ending unification with encoding canonicalization the same
+    /// way it would for `alreadyTarget`. `undecodable`/`tooLarge` entries
+    /// never reach a decode at all, so it's always `false` for those too.
     pub byte_drift: bool,
 }
 
@@ -471,15 +504,69 @@ fn classify_file(
             }
         }
     };
+
+    // Issue #176 (#96 3/3's other half): reaching here with
+    // `encoding_axis_unchanged` true means the *only* reason this file
+    // isn't `alreadyTarget` is that the line-ending axis was asked to
+    // change (the branch above already returned when both axes agreed) —
+    // a pure "keep the encoding, just unify line endings" request. That
+    // still re-encodes the file, and re-encoding is exactly what
+    // silently canonicalizes a non-injective legacy byte sequence (Big5,
+    // Shift_JIS, GBK) — the same risk the `alreadyTarget` branch's
+    // `byte_drift` above exists to surface, just reached from the other
+    // side of the line-ending axis. `encoding_axis_unchanged` also proves
+    // `status` above can only be `STATUS_CONVERTIBLE` here (re-encoding
+    // into the exact encoding the content was just decoded from cannot be
+    // lossy — see the doc comment right above `status`), so this never
+    // races the lossy branch.
+    //
+    // Isolating the line-ending change from the drift verdict is the
+    // whole trick: rebuild with `target`/`target_with_bom` (the requested,
+    // encoding-axis-unchanged target) but `line_ending: "keep"` instead of
+    // `target_line_ending` — `rebuild_output_bytes`'s "keep" path hands
+    // `decoded.content` through completely untouched, bypassing
+    // `normalize_to_lf`/`apply_line_ending` entirely rather than relying
+    // on them round-tripping a pure style back to itself. Any mismatch
+    // against the original `bytes` that remains after subtracting the
+    // requested line-ending change out this way can only come from the
+    // encoding step — precisely `bytedrift.rs`'s R1b question ("would an
+    // encoding-preserving re-save reproduce these bytes?") asked here at
+    // scan time instead of at save time.
+    //
+    // Skipped (stays `false`) for a Mixed on-disk line ending, same
+    // precedent as the `alreadyTarget` branch's own skip: a Mixed file is
+    // what pushed this file into `convertible` in the first place (it can
+    // never equal a concrete "LF"/"CRLF" target), but a drift verdict
+    // still isn't meaningful for it — not because the rebuild can't
+    // reproduce it (the "keep" path above hands any content through
+    // as-is, mixed or not) but to stay consistent with every other
+    // byte_drift skip rule rather than carve out a special case that
+    // treats Mixed differently here than everywhere else.
+    //
+    // Deliberately narrower than "any convertible entry": `false` whenever
+    // `encoding_axis_unchanged` is false, i.e. whenever this file is
+    // `convertible`/`lossy` because the *encoding* axis changed (or both
+    // axes changed) — the user explicitly asked for that byte change, so
+    // (matching the `alreadyTarget` branch's own doc comment) a drift
+    // verdict there would carry no signal and must stay `false` (pinned by
+    // `non_injective_pair_converting_to_a_different_encoding_is_not_flagged`).
+    let byte_drift = encoding_axis_unchanged
+        && detected_line_ending != "Mixed"
+        && rebuild_output_bytes(&decoded, target, target_with_bom, "keep")
+            .expect(
+                "encoding axis unchanged means target is the file's own already-valid \
+                 encoding, which always round-trips and never rejects its own decoded \
+                 text as unmappable",
+            )
+            .0
+            != bytes;
+
     BatchEntry {
         path: path_str,
         detected: decoded.encoding,
         status: status.to_string(),
         line_ending: detected_line_ending,
-        // Not a no-op: the user explicitly asked for this axis to change,
-        // so any byte change here is requested, not drift (see
-        // `BatchEntry::byte_drift`'s doc comment).
-        byte_drift: false,
+        byte_drift,
     }
 }
 
@@ -681,10 +768,15 @@ fn read_for_conversion(path: &str) -> Result<(Vec<u8>, Fingerprint), BatchConver
 /// resolved target axis (`target`/`with_bom`, `target: None` keeps the
 /// file's own detected encoding and BOM state, mirroring `classify_file`'s
 /// own resolution). Shared by [`commit_conversion`] (the real execute path)
-/// and `classify_file`'s byte-drift probe (issue #96 3/3) so a scan-time
-/// drift verdict can never quietly diverge from what execute actually
-/// writes — both call sites decode independently (scan and execute never
-/// trust each other's snapshot) but funnel through this one transform.
+/// and `classify_file`'s two byte-drift probes — the `alreadyTarget`
+/// no-op case (issue #96 3/3) and the `convertible`,
+/// encoding-axis-unchanged-but-line-ending-changed case (issue #176),
+/// which deliberately calls this with `line_ending: "keep"` rather than
+/// its own requested target so the rebuild isolates the encoding step
+/// from the line-ending change being asked for — so a scan-time drift
+/// verdict can never quietly diverge from what execute actually writes —
+/// all call sites decode independently (scan and execute never trust each
+/// other's snapshot) but funnel through this one transform.
 fn rebuild_output_bytes(
     decoded: &encoding::DecodedText,
     target: Option<&'static Encoding>,
@@ -1437,12 +1529,18 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// (4) Big5 -> Big5 (encoding axis unchanged) but LF -> CRLF (line
-    /// ending explicitly asked to change): not a no-op either, so
-    /// `byte_drift` must stay `false` even with the same non-injective
-    /// pair present — bytes changing here is what the user asked for.
+    /// (4) Issue #176 (#96 3/3's other half): Big5 -> Big5 (encoding axis
+    /// unchanged) but LF -> CRLF (line ending explicitly asked to change).
+    /// This *is* the requested-line-ending-change case, but the encoding
+    /// axis is untouched, so it's exactly as much a candidate for silent
+    /// canonicalization as the `alreadyTarget` no-op case above — the user
+    /// asked only for line endings to change, not for these legacy bytes to
+    /// be normalized. `byte_drift` must therefore be `true`: before issue
+    /// #176's fix this asserted `false` (green), which is why this test
+    /// case is the failing-test-first pin for that fix (was named
+    /// `..._is_not_flagged`; flipped to `..._is_flagged` here).
     #[test]
-    fn non_injective_pair_with_a_requested_line_ending_change_is_not_flagged() {
+    fn non_injective_pair_with_a_requested_line_ending_change_is_flagged() {
         let dir = fixture_dir("byte-drift-line-ending-change");
         let (mut bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
         assert!(!unmappable);
@@ -1456,6 +1554,68 @@ mod tests {
             Encoding::for_label(b"Big5"),
             false,
             "CRLF",
+        );
+        assert_eq!(result.status, STATUS_CONVERTIBLE, "{result:?}");
+        assert!(result.byte_drift, "{result:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// (4b) Issue #176 twin of (4): an ordinary, canonical Big5 file (no
+    /// non-injective bytes) going through the exact same requested
+    /// LF -> CRLF conversion must *not* false-positive — the line-ending
+    /// bytes changing is expected (that's what was asked for), and there is
+    /// no non-canonical sequence for the encoding step to silently
+    /// canonicalize. Same "no false alarm on the common case" role as (2)
+    /// plays for the `alreadyTarget` branch.
+    #[test]
+    fn clean_bytes_with_a_requested_line_ending_change_reports_no_byte_drift() {
+        let dir = fixture_dir("byte-drift-line-ending-change-clean");
+        let (bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!unmappable);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(
+            Path::new(&path),
+            Encoding::for_label(b"Big5"),
+            false,
+            "CRLF",
+        );
+        assert_eq!(result.status, STATUS_CONVERTIBLE, "{result:?}");
+        assert!(!result.byte_drift, "{result:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// (4c) Issue #176: a Mixed on-disk line ending forces `convertible`
+    /// against any concrete LF/CRLF target (it can never equal "Mixed"),
+    /// with the encoding axis otherwise unchanged — the same shape as (4)
+    /// but with a source line ending `rebuild_output_bytes` can't
+    /// reproduce. Must skip (`byte_drift: false`) exactly like the
+    /// `alreadyTarget` branch's own Mixed skip (5) above, even though the
+    /// fixture embeds the same non-injective pair (4) proves would
+    /// otherwise be flagged — proving the Mixed skip takes precedence
+    /// rather than this being a coincidental false.
+    #[test]
+    fn mixed_source_with_a_requested_line_ending_change_skips_byte_drift() {
+        let dir = fixture_dir("byte-drift-line-ending-change-mixed");
+        let (mut bytes, unmappable) = encoding::encode(BIG5_TEXT_A, "Big5", false).unwrap();
+        assert!(!unmappable);
+        bytes.extend_from_slice(&[0x8E, 0x69]);
+        let (tail, unmappable) =
+            encoding::encode("second line ends CRLF\r\n", "Big5", false).unwrap();
+        assert!(!unmappable);
+        bytes.extend_from_slice(&tail);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, &bytes).unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let result = classify_file(Path::new(&path), Encoding::for_label(b"Big5"), false, "LF");
+        assert_eq!(
+            result.line_ending, "Mixed",
+            "fixture must actually mix line-ending styles"
         );
         assert_eq!(result.status, STATUS_CONVERTIBLE, "{result:?}");
         assert!(!result.byte_drift, "{result:?}");
