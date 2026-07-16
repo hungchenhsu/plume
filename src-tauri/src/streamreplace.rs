@@ -793,8 +793,31 @@ pub fn stream_replace_in_file(
 mod tests {
     use super::*;
 
+    /// Scoped by PID as well as `name`: `std::env::temp_dir()` is the
+    /// process-wide OS temp directory, shared by every `cargo test`
+    /// invocation on the machine (including other git worktrees of this
+    /// same repo, which is exactly what full-scale multi-agent development
+    /// on one machine looks like). Without the PID suffix, two concurrent
+    /// runs of the same test -- e.g. two worktrees' test suites overlapping
+    /// -- resolve to the identical fixture path, and whichever one's
+    /// multi-second stream (see `replaces_in_big5_file_preserving_encoding`,
+    /// which alone runs well over a minute) finishes first renames its own
+    /// output over the file the other is still mid-stream reading. The
+    /// second process's post-stream fingerprint recheck then correctly --
+    /// but spuriously, from the test's perspective -- reports "file changed
+    /// on disk", because it really did, just courtesy of a sibling test
+    /// process rather than any genuine external actor. Confirmed by direct
+    /// reproduction (issue #203) against the sibling large-fixture test in
+    /// `streamconvert.rs`: running it as two concurrent processes reliably
+    /// reproduced exactly this failure, with the "after" fingerprint's size
+    /// and inode matching the other process's completed output
+    /// byte-for-byte. PID alone is sufficient (no nanos/counter needed,
+    /// unlike `tmp_candidate_path`'s in-process collision concern in
+    /// `lib.rs`) because distinct OS processes never share a PID while both
+    /// are alive.
     fn fixture_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("plume-streamreplace-{name}"));
+        let dir =
+            std::env::temp_dir().join(format!("plume-streamreplace-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
