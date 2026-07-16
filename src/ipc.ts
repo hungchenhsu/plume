@@ -844,6 +844,16 @@ export function previewTwoEncodings(
 export interface StreamReplaceReport {
   replacements: number;
   bytesWritten: number;
+  /** True when at least one chunk containing zero search matches was still
+   *  re-encoded rather than copied byte-identical to the output — some
+   *  region the user did not ask to change may have had its on-disk byte
+   *  representation canonicalized by one of `encoding_rs`'s non-injective
+   *  legacy encoding mappings (carry/decoder-pending entanglement with a
+   *  neighboring matching chunk, or chunk 0 under a BOM). Always `false`
+   *  when `replacements` is 0 (the file is never touched at all then) — see
+   *  `src-tauri/src/streamreplace.rs`'s `StreamReplaceReport` doc comment.
+   *  Drives `streamreplace.ts`'s result-message note (issue #175). */
+  unmatchedRegionReencoded: boolean;
 }
 
 /**

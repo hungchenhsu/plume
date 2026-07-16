@@ -23,6 +23,28 @@ function basename(path: string): string {
 }
 
 /**
+ * Pure composition of the streaming-replace result text — split out from
+ * the DOM-driving runReplace below so it's vitest-covered without a WebView
+ * (mirrors lossysave.ts's buildLossySaveDialogContent / textstats.ts's own
+ * pure/DOM split). Appends a note when `unmatchedRegionReencoded` is true
+ * (issue #175; StreamReplaceReport's field of the same name — see its doc
+ * comment in ipc.ts): the file was correctly changed, but at least one
+ * region the user didn't ask to touch may have had its on-disk byte
+ * representation canonicalized along the way. Never fires in practice when
+ * `replacements` is 0 (the field is always false then), but this makes no
+ * such assumption itself.
+ */
+export function buildStreamReplaceResultMessage(
+  replacements: number,
+  unmatchedRegionReencoded: boolean,
+): string {
+  const base = t("streamReplace.resultMessage", replacements);
+  return unmatchedRegionReencoded
+    ? `${base} ${t("streamReplace.unmatchedRegionReencodedNote")}`
+    : base;
+}
+
+/**
  * Show the streaming replace overlay for `path` (the active large-file
  * document's file on disk), operating in `encoding` (the document's own
  * detected encoding — this command never converts between encodings).
@@ -135,7 +157,10 @@ export function showStreamReplace(
         encoding,
         caseBox.checked,
       );
-      const resultMessage = t("streamReplace.resultMessage", report.replacements);
+      const resultMessage = buildStreamReplaceResultMessage(
+        report.replacements,
+        report.unmatchedRegionReencoded,
+      );
       if (report.replacements > 0) {
         status.textContent = "";
         await messageDialog(resultMessage, { title, kind: "info" });
