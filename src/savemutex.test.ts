@@ -896,7 +896,13 @@ describe("issue #161 — Save with Encoding's speculative doc.encoding must not 
       doc.encoding = original.encoding;
       doc.withBom = original.withBom;
     }
-    doc.speculativeEncoding = null;
+    // Ownership-checked (issue #212): only this call's own marker, not one
+    // a newer overlapping Save with Encoding request already replaced it
+    // with — see that issue's own describe block further down for the
+    // scenario this guards against.
+    if (doc.speculativeEncoding === original) {
+      doc.speculativeEncoding = null;
+    }
     return written;
   }
 
@@ -1411,7 +1417,10 @@ describe("issue #210 — Save with Encoding must bump doc.revision so an in-flig
       doc.encoding = original.encoding;
       doc.withBom = original.withBom;
     }
-    doc.speculativeEncoding = null;
+    // Ownership-checked (issue #212) — see issue #161's own helper above.
+    if (doc.speculativeEncoding === original) {
+      doc.speculativeEncoding = null;
+    }
     return written;
   }
 
@@ -1544,5 +1553,265 @@ describe("issue #210 — Save with Encoding must bump doc.revision so an in-flig
     expect(doc.withBom).toBe(true);
     expect(doc.speculativeEncoding).toBeNull();
     expect(disk.content).toBe("content-as-utf16");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #212 — main.ts's saveWithEncoding menu action attaches
+// .then(rollback).finally(clear) to its own saveFlow(false) call. The
+// .then() rollback is guarded by *reference* equality against this call's
+// own `original` (issue #161's own fix, mirrored by both saveWithEncoding
+// helpers above) — but the .finally() right below it drops
+// doc.speculativeEncoding unconditionally, with no such guard. Two
+// overlapping Save with Encoding calls each install their own marker (the
+// later one replacing the earlier one's — working as intended, same as the
+// #161/#210 scenarios above); each also attaches its own independent
+// .then().finally() pair to its own saveFlow(false) call. Since .finally()
+// never checks whether the marker it's about to null is still its own,
+// whichever of the two calls' chains happens to run its .finally() first
+// wipes the marker out from under the *other* one — even while that other
+// call is still genuinely in flight and still needs it: for its own
+// eventual .then() rollback decision (which reads a now-null marker and
+// silently skips a rollback it should have performed) and for any reload
+// landing in the same window (reloadEncodingFor falls back to doc.encoding
+// directly, which at that point is the *other* call's own not-yet-written
+// speculative target, not disk truth).
+//
+// savemutex.ts's own withLock/drainLock nesting (the #124/#161 harness
+// above) happens to make this hard to observe through createHarness's own
+// issueSave: a request coalesced behind another one via doc.pendingSaveAs
+// always has its *entire* .then().finally() chain settle before the request
+// it coalesced behind gets to run its own — drainLock is awaited from
+// inside withLock's own finally, so the outer call's promise can't resolve
+// until everything queued behind it, recursively, already has (see this
+// suite's own "real mutex" control test at the bottom, which records and
+// pins down that observed order). That's a real property of *today's*
+// specific coalescing implementation, but main.ts's own action never
+// actually relies on it — that's exactly why its .then() already carries a
+// defensive reference-equality check instead of trusting call order — so
+// this suite tests the .then().finally() ownership contract directly, by
+// controlling each call's own saveFlow(false) stand-in independently. A
+// real save's IPC round trip can legitimately settle in either order (a
+// big file, a slow disk, or a lossy-encode/stale-file dialog awaiting the
+// user can all make one overlapping call outlast another), so the fix must
+// hold regardless of which of the two settles first — this suite checks
+// both directions rather than assuming one.
+describe("issue #212 — Save with Encoding's finally must only clear its own speculativeEncoding marker, not one a newer overlapping request already installed (failing-test-first)", () => {
+  /** Mirrors main.ts's saveWithEncoding menu action's actual
+   *  .then().finally() shape — issue #161's and #210's own saveWithEncoding
+   *  helpers above use a plain sequential `await` instead, which behaves
+   *  identically for a single non-overlapping call but can't express two
+   *  overlapping calls settling in a caller-chosen order the way this suite
+   *  needs. `saveFlow` stands in for the real saveFlow(false) call; callers
+   *  control exactly when it settles via their own deferred(). */
+  function saveWithEncoding(
+    doc: DocState,
+    target: { encoding: string; withBom: boolean },
+    saveFlow: () => Promise<boolean>,
+  ): Promise<void> {
+    const original = { encoding: doc.encoding, withBom: doc.withBom };
+    doc.encoding = target.encoding;
+    doc.withBom = target.withBom;
+    doc.speculativeEncoding = original;
+    return saveFlow()
+      .then((written) => {
+        if (!written && doc.speculativeEncoding === original) {
+          doc.encoding = original.encoding;
+          doc.withBom = original.withBom;
+        }
+      })
+      .finally(() => {
+        // The fix (issue #212): only clear a marker that's still this
+        // call's own. A newer overlapping call may already have replaced
+        // it with its own (issue #161's own "coalesce" scenario above), or
+        // a reload that landed and applied in between may already have
+        // cleared it (applyOpened's own *unconditional* clear above is
+        // correct there, since an applied reload always establishes
+        // fresher, disk-verified truth no pending speculative save's own
+        // rollback may second-guess — this finally has no such standing
+        // over a *different*, still-pending call's own marker).
+        if (doc.speculativeEncoding === original) {
+          doc.speculativeEncoding = null;
+        }
+      });
+  }
+
+  it("a request that settles while a second, still-pending overlapping request is in flight: its finally must not clear the second's still-live marker", async () => {
+    const doc = makeDocState();
+    doc.encoding = "Big5";
+    doc.withBom = false;
+    doc.dirty = true;
+
+    const firstFlow = deferred<boolean>();
+    const first = saveWithEncoding(doc, { encoding: "UTF-8", withBom: false }, () => firstFlow.promise);
+    expect(doc.speculativeEncoding).toEqual({ encoding: "Big5", withBom: false });
+
+    // The second request overlaps while the first is still genuinely in
+    // flight (its own saveFlow(false) hasn't settled yet) — same as issue
+    // #161's own "coalesce" scenario: it installs its own marker,
+    // protecting the value the first request's own speculative apply left
+    // behind, not the true pre-first-click original.
+    const secondFlow = deferred<boolean>();
+    const second = saveWithEncoding(doc, { encoding: "UTF-16LE", withBom: true }, () => secondFlow.promise);
+    expect(doc.speculativeEncoding).toEqual({ encoding: "UTF-8", withBom: false });
+
+    // The first request settles now — its own save succeeded, which is
+    // irrelevant to what happens to the *marker*, since a written:true
+    // result never even reaches the .then()'s reference-equality check.
+    // The second request's own saveFlow(false) is still unresolved.
+    firstFlow.resolve(true);
+    await first;
+
+    // FAIL target pre-fix: the first's finally cleared
+    // doc.speculativeEncoding unconditionally, even though it currently
+    // holds the second request's own marker, not the first's — the second
+    // request is still genuinely in flight and still needs it.
+    expect(doc.speculativeEncoding).toEqual({ encoding: "UTF-8", withBom: false });
+
+    // The second request now fails to write.
+    secondFlow.resolve(false);
+    await second;
+
+    // Its own rollback must fire, using its own protected original — not
+    // silently skipped because some other request's finally already wiped
+    // the marker it was reading.
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(false);
+    expect(doc.speculativeEncoding).toBeNull(); // the second's own finally cleans up its own marker
+  });
+
+  it("coalesced failure — both overlapping requests resolve false: the doc ends up on the value right before the SECOND request, not stuck on its own never-written target", async () => {
+    const doc = makeDocState();
+    doc.encoding = "Big5"; // the true original, before either request
+    doc.withBom = false;
+    doc.dirty = true;
+
+    const firstFlow = deferred<boolean>();
+    const first = saveWithEncoding(doc, { encoding: "UTF-8", withBom: false }, () => firstFlow.promise);
+    const secondFlow = deferred<boolean>();
+    const second = saveWithEncoding(doc, { encoding: "UTF-16LE", withBom: true }, () => secondFlow.promise);
+
+    firstFlow.resolve(false); // the first request's own save also failed/was cancelled
+    await first;
+    secondFlow.resolve(false);
+    await second;
+
+    // Not "Big5" (the true original — the *first* request's own baseline,
+    // not the second's) and not stuck on "UTF-16LE" (the second request's
+    // own never-written target) — the second request's own `original`
+    // recorded doc.encoding as it stood right before *its own* action ran,
+    // i.e. "UTF-8", the first request's speculative target.
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(false);
+    expect(doc.speculativeEncoding).toBeNull();
+  });
+
+  it("a reload landing after the first request's finally has run, while the second request is still pending, must still decode with the second's protected original — not the second's own not-yet-written speculative target", async () => {
+    const doc = makeDocState();
+    doc.encoding = "Big5";
+    doc.withBom = false;
+    doc.dirty = true;
+
+    const firstFlow = deferred<boolean>();
+    const first = saveWithEncoding(doc, { encoding: "UTF-8", withBom: false }, () => firstFlow.promise);
+    const secondFlow = deferred<boolean>();
+    const second = saveWithEncoding(doc, { encoding: "UTF-16LE", withBom: true }, () => secondFlow.promise);
+
+    // The first request's own save actually succeeds and writes UTF-8
+    // bytes to disk — so by the time it settles, "UTF-8" (the second
+    // request's own protected original, captured as doc.encoding right
+    // after the first request's own speculative apply) is exactly what a
+    // reload landing now should decode with.
+    firstFlow.resolve(true);
+    await first;
+
+    // FAIL target pre-fix: the marker the second request still needs is
+    // already gone, so a reload landing in exactly this window falls back
+    // to doc.encoding directly — currently "UTF-16LE", the second
+    // request's own not-yet-written target, not what's actually on disk.
+    expect(reloadEncodingFor(doc)).toBe("UTF-8");
+
+    secondFlow.resolve(false);
+    await second;
+    expect(doc.speculativeEncoding).toBeNull();
+  });
+
+  it("control — a lone, non-overlapping Save with Encoding still cleans up its own marker on both success and failure", async () => {
+    const successDoc = makeDocState();
+    successDoc.encoding = "Big5";
+    successDoc.withBom = false;
+    await saveWithEncoding(successDoc, { encoding: "UTF-8", withBom: true }, () => Promise.resolve(true));
+    expect(successDoc.encoding).toBe("UTF-8");
+    expect(successDoc.withBom).toBe(true);
+    expect(successDoc.speculativeEncoding).toBeNull();
+
+    const failDoc = makeDocState();
+    failDoc.encoding = "Big5";
+    failDoc.withBom = false;
+    await saveWithEncoding(failDoc, { encoding: "UTF-8", withBom: true }, () => Promise.resolve(false));
+    expect(failDoc.encoding).toBe("Big5");
+    expect(failDoc.withBom).toBe(false);
+    expect(failDoc.speculativeEncoding).toBeNull();
+  });
+
+  it("control — the real mutex's own coalescing (createHarness) settles a request queued behind an in-flight one before the in-flight one's own finally runs, so the ownership check is a no-op there today; pinned down so a future change to that ordering doesn't silently reopen issue #212 unnoticed", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.encoding = "Big5";
+    doc.withBom = false;
+    doc.fingerprint = "fp-0";
+    doc.buffer = "content";
+    const disk: FakeDisk = { content: "old-content", fingerprint: "fp-0" };
+    const harness = createHarness(doc, disk);
+    const settleOrder: string[] = [];
+
+    function saveWithEncodingViaHarness(
+      label: string,
+      target: { encoding: string; withBom: boolean },
+      ipc: () => Promise<SaveIpcResult>,
+    ): Promise<void> {
+      const original = { encoding: doc.encoding, withBom: doc.withBom };
+      doc.encoding = target.encoding;
+      doc.withBom = target.withBom;
+      doc.speculativeEncoding = original;
+      return harness
+        .issueSave(false, ipc)
+        .then((written) => {
+          if (!written && doc.speculativeEncoding === original) {
+            doc.encoding = original.encoding;
+            doc.withBom = original.withBom;
+          }
+        })
+        .finally(() => {
+          settleOrder.push(label);
+          if (doc.speculativeEncoding === original) doc.speculativeEncoding = null;
+        });
+    }
+
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = saveWithEncodingViaHarness("first", { encoding: "UTF-8", withBom: false }, () => save1.promise);
+    const p2 = saveWithEncodingViaHarness("second", { encoding: "UTF-16LE", withBom: true }, () =>
+      Promise.resolve({ written: false, stale: false, fingerprint: null, writtenContent: "" }),
+    );
+
+    save1.resolve({ written: false, stale: false, fingerprint: null, writtenContent: "" });
+    await Promise.all([p1, p2]);
+
+    // Empirically observed order (not merely asserted): the request
+    // coalesced behind the in-flight one (drainLock's own nested
+    // withLock/finally, see this file's module doc comment) fully settles
+    // — .then() *and* .finally() — before the in-flight one's own .then()
+    // ever runs, because withLock's finally awaits drainLock() before its
+    // own promise resolves, and drainLock's "save" branch awaits the
+    // coalesced request's entire nested withLock call before returning.
+    expect(settleOrder).toEqual(["second", "first"]);
+    // Both requests failed to write; the doc still lands on the second
+    // request's own baseline ("UTF-8", the first request's target) —
+    // correct today even with the pre-#212-fix unconditional clear, since
+    // by the time "first"'s finally runs, "second" has already used its
+    // own still-valid marker to roll itself back and self-cleaned. This is
+    // exactly the accidental protection the suite above doesn't rely on.
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(false);
   });
 });
