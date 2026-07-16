@@ -268,8 +268,9 @@ pub fn is_utf8_label(label: &str) -> bool {
 }
 
 /// Whether an encoding label names one of the legacy multi-byte encodings
-/// `trim_truncated_legacy_tail` knows how to trim a truncated preview tail
-/// for: Big5, Shift_JIS, GBK, gb18030, EUC-JP, EUC-KR. Resolved through
+/// `trim_truncated_legacy_tail` / `trim_truncated_legacy_head` know how to
+/// trim a truncated preview tail or an orphaned chunk-paging head for:
+/// Big5, Shift_JIS, GBK, gb18030, EUC-JP, EUC-KR. Resolved through
 /// `Encoding::for_label` exactly like `is_utf8_label`, so a caller (the
 /// `open_document` trim gate) can never disagree with what `decode_with`
 /// is about to do for the same label.
@@ -295,7 +296,8 @@ pub fn is_legacy_multibyte_label(label: &str) -> bool {
 
 /// The longest byte length of a single character's encoded sequence in
 /// one of the legacy multi-byte encodings `is_legacy_multibyte_label` /
-/// `trim_truncated_legacy_tail` support, or `None` for every other
+/// `trim_truncated_legacy_tail` / `trim_truncated_legacy_head` support, or
+/// `None` for every other
 /// encoding (see `is_legacy_multibyte_label`'s doc comment for why each
 /// is excluded). Per the WHATWG Encoding Standard's index tables: Big5,
 /// Shift_JIS, GBK, and EUC-KR are 1 or 2 bytes per character; EUC-JP is
@@ -481,6 +483,166 @@ pub fn trim_truncated_legacy_tail<'a>(bytes: &'a [u8], label: &str) -> &'a [u8] 
     // unchanged rather than guess further; the real decode below then
     // reports `malformed` truthfully instead of this function silently
     // picking a boundary it isn't sure of.
+    bytes
+}
+
+/// Mirror of `trim_truncated_utf8_head` for the legacy multi-byte
+/// encodings `trim_truncated_legacy_tail` covers (Big5, Shift_JIS, GBK,
+/// gb18030, EUC-JP, EUC-KR): drop leading bytes that are the orphaned
+/// trailing fragment of a character whose lead byte was discarded in a
+/// previous chunk. This exists for large-file chunk paging's raw
+/// (no-terminator) cuts in either direction (`chunk.rs`, issue #213,
+/// following #118's UTF-8 fix and #165's legacy tail-only fix for the
+/// large-file preview path).
+///
+/// Unlike UTF-8, these encodings are not self-synchronizing:
+/// continuation/trail byte ranges overlap lead-byte ranges (e.g. many
+/// Big5 trail bytes are themselves valid Big5 lead bytes), so —
+/// unlike `trim_truncated_utf8_head`'s simple "scan for 0x80-0xBF" — a
+/// local byte-range check cannot tell an orphaned trail fragment from an
+/// ordinary lead byte. There is consequently no way to *prove* the right
+/// cut point from `bytes` alone the way the UTF-8 case or even this
+/// function's own tail-trimming sibling can (`trim_truncated_legacy_tail`
+/// leans on `encoding_rs` only ever flagging a *forced-final* decode's
+/// dangling tail as malformed — there is no equivalent directional
+/// oracle for a *missing prefix*, since a streaming decoder has no
+/// "bytes might be missing from the start" mode to ask it for). A wrong
+/// guess could, in principle, still decode without error by accidentally
+/// resyncing onto a different (wrong) character stream.
+///
+/// This uses the same decode-retry idea as the tail trim, strengthened as
+/// far as a bounded check can go: try dropping 0, 1, ...,
+/// `max_legacy_seq_len(enc) - 1` leading bytes — a real character can
+/// never be missing *all* of its own bytes, so the true boundary is
+/// always within that many bytes of `bytes`'s start — and require the
+/// *entire remainder* to decode without error, not just its first
+/// character. For realistic text a wrong phase alignment desyncs within
+/// the first few characters, so demanding a clean decode across what is
+/// typically a multi-hundred-KB-to-MiB remainder makes an accidental
+/// false match vanishingly unlikely (the same residual-risk class
+/// `trim_truncated_legacy_tail`'s own doc comment already accepts as
+/// "should not be reachable in practice").
+///
+/// One specific false-match shape is *not* vanishingly unlikely, though,
+/// and gets a dedicated check rather than resting on that same
+/// probabilistic argument: every one of these encodings is
+/// ASCII-transparent, so whenever a candidate's very first byte is, on
+/// its own, already a complete valid character (trivially true for any
+/// ASCII byte; also true for Shift_JIS's single-byte half-width
+/// katakana, 0xA1-0xDF), a decoder reads it as one short, standalone
+/// "character" and simply resumes fresh from the next byte — which means
+/// a candidate that is one byte *short* of the true boundary decodes
+/// just as cleanly as the true boundary itself, differing only by that
+/// one spurious leading character. This is not a coincidence that
+/// desyncs over distance the way a genuine wrong-phase resync does: the
+/// two candidates agree on every byte from the second one onward by
+/// construction, so scanning a longer remainder never catches it. Worse,
+/// for gb18030 specifically this is not even an edge case: every 4-byte
+/// sequence's second and fourth bytes are, by construction of the
+/// encoding itself, always ASCII digits (`0x30`-`0x39`) — so roughly half
+/// of all possible cut positions land on exactly this shape. A candidate
+/// whose first byte is trivially standalone is therefore untrustworthy
+/// *on its own* — it is kept only as a fallback, never preferred over a
+/// candidate one byte deeper that is not just clean but starts with a
+/// byte that cannot be read as a complete character by itself (checked
+/// via the same decode primitive, on a 1-byte slice). Scanning
+/// shallowest-first as before and preferring the first *trustworthy*
+/// clean candidate, falling back to the shallowest clean-but-untrustworthy
+/// one only if no trustworthy candidate exists at all, resolves every
+/// shape this function's own tests construct (skip needed of 0 through 3)
+/// correctly, including when the fallback itself is the right answer (a
+/// `bytes` that already starts cleanly with, say, plain ASCII prose is
+/// never wrongly passed over just because nothing deeper is trustworthy
+/// either — nothing deeper ever decodes cleanly in that case, so the
+/// fallback is all that is ever recorded). One genuinely ambiguous shape
+/// remains: when the first byte both decodes standalone *and* is a valid
+/// trail byte (ASCII inside Big5's trail range, say) while the candidate
+/// one deeper is also clean and trustworthy, the two readings cannot be
+/// distinguished from `bytes` alone, and this bias picks the deeper
+/// boundary — shifting (never losing) a real leading standalone character
+/// into the neighboring window: every caller's offset arithmetic tiles
+/// the file exactly, so the skipped bytes always reappear at the adjacent
+/// page's edge, and reassembly stays byte-exact.
+///
+/// `tail_is_boundary` tells the per-candidate decode check whether
+/// `bytes`'s own tail is already known to land on a real character
+/// boundary, exactly the way `streamcodec::decode_chunk`'s `is_last`
+/// parameter distinguishes "this is really the end" from "more input may
+/// follow":
+/// - `read_document_chunk_before` (`chunk.rs`) passes `true`: its buffer
+///   always ends at the caller's line-aligned `end`, so a forced-final
+///   check is the *stronger* one — it correctly rejects a wrong-phase
+///   candidate that happens to dangle an incomplete sequence right at
+///   that already-known-good edge, a class of false positive a lenient
+///   check would miss.
+/// - `read_document_chunk`'s stale-offset (`OffsetKind::LineStart`)
+///   fallback must pass `false`: its buffer is a raw `CHUNK_BYTES` read
+///   that can *itself* end mid-character when the overlong line
+///   continues past this window too (that tail is a separate concern,
+///   handled independently by the forward tail-trim once this head-trim
+///   returns) — a forced-final check would then wrongly flag even the
+///   correct candidate as malformed just because of its own honestly
+///   incomplete tail. `false` ("more input might follow") tolerates that
+///   while still catching any other invalid byte.
+///
+/// Cost: up to `max_legacy_seq_len(enc)` whole-remainder decodes (at most
+/// 4, for gb18030) of a buffer up to `chunk::CHUNK_BYTES` — bounded and
+/// only ever paid on the narrow raw-cut path inside a single line longer
+/// than one chunk, not a hot path for ordinary files.
+pub fn trim_truncated_legacy_head<'a>(
+    bytes: &'a [u8],
+    label: &str,
+    tail_is_boundary: bool,
+) -> &'a [u8] {
+    let Some(enc) = Encoding::for_label(label.as_bytes()) else {
+        return bytes;
+    };
+    let Some(max_len) = max_legacy_seq_len(enc) else {
+        return bytes;
+    };
+    if bytes.is_empty() {
+        return bytes;
+    }
+    let max_skip = max_len.saturating_sub(1).min(bytes.len());
+    let mut fallback: Option<usize> = None;
+    for skip in 0..=max_skip {
+        let candidate = &bytes[skip..];
+        let mut probe = enc.new_decoder_without_bom_handling();
+        let (_, malformed) =
+            crate::streamcodec::decode_chunk(&mut probe, candidate, tail_is_boundary);
+        if malformed {
+            continue;
+        }
+        if candidate.is_empty() {
+            // No first byte to judge trustworthiness by; the call sites
+            // already guard against ever actually returning this (never
+            // trust a trim that consumes the entire window), so just
+            // record it as a fallback like any other untrustworthy match.
+            fallback.get_or_insert(skip);
+            continue;
+        }
+        // Forced-final ("this one byte is the whole input") decode of
+        // just the candidate's first byte: malformed means it cannot
+        // stand alone (a lead byte awaiting its trail — trustworthy),
+        // not malformed means it trivially can (ASCII, or Shift_JIS
+        // half-width katakana — untrustworthy on its own, see doc
+        // comment above).
+        let mut single = enc.new_decoder_without_bom_handling();
+        let (_, first_byte_alone_malformed) =
+            crate::streamcodec::decode_chunk(&mut single, &candidate[..1], true);
+        if first_byte_alone_malformed {
+            return candidate;
+        }
+        fallback.get_or_insert(skip);
+    }
+    if let Some(skip) = fallback {
+        return &bytes[skip..];
+    }
+    // Every candidate up to the encoding's own max character length still
+    // failed — leave `bytes` unchanged rather than guess further, exactly
+    // `trim_truncated_legacy_tail`'s same defensive fallback: the real
+    // decode then reports `malformed` truthfully instead of this function
+    // silently picking a boundary it isn't sure of.
     bytes
 }
 
@@ -1484,6 +1646,185 @@ mod tests {
         assert_eq!(trim_truncated_legacy_tail(cut, "UTF-8"), cut);
         assert_eq!(trim_truncated_legacy_tail(cut, "windows-1252"), cut);
         assert_eq!(trim_truncated_legacy_tail(cut, "not-a-real-label"), cut);
+    }
+
+    // --- Issue #213: `trim_truncated_legacy_head`, the leading-edge
+    // mirror of `trim_truncated_legacy_tail` for large-file chunk
+    // paging's raw cuts (`chunk.rs`), following #118's UTF-8-only
+    // `trim_truncated_utf8_head`. ---------------------------------------
+
+    #[test]
+    fn trim_truncated_legacy_head_big5_drops_only_orphaned_trailing_fragment() {
+        // "測" and "試" are each 2-byte Big5 characters; a chunk starting
+        // after "測"'s lead byte was consumed by the previous one begins
+        // with 1 orphaned trailing-fragment byte, then resumes with
+        // "試". `tail_is_boundary: true` (the `read_document_chunk_before`
+        // case, where the buffer's own tail is independently guaranteed
+        // complete) is unambiguous for this short a fixture.
+        let (full, unmappable) = encode("測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        let orphaned = &full[1..]; // 測's trail byte, then all of 試
+        assert_eq!(
+            trim_truncated_legacy_head(orphaned, "Big5", true),
+            &full[2..],
+            "must drop the single orphaned byte, keeping only 試"
+        );
+    }
+
+    #[test]
+    fn trim_truncated_legacy_head_tail_is_boundary_false_tolerates_a_genuinely_dangling_tail() {
+        // The `tail_is_boundary: false` case (`read_document_chunk`'s
+        // stale-offset fallback) exists specifically because its own
+        // buffer can legitimately end mid-character -- the overlong line
+        // continues past the window, handled separately by the forward
+        // tail-trim once this head-trim returns (see the doc comment).
+        // Construct exactly that: an orphaned head (1 byte), a complete
+        // character in the middle, and a genuinely incomplete dangling
+        // lead byte at the very end -- with `tail_is_boundary: false`
+        // this must still find the correct head boundary and must NOT be
+        // rejected just because of its own honestly-incomplete tail (a
+        // `tail_is_boundary: true` check, by contrast, would correctly
+        // reject every candidate here, since none of them are complete --
+        // that strictness is exactly why `read_document_chunk_before`
+        // gets to use it and this fallback cannot).
+        //
+        // Uses U+4E9E "亞" throughout rather than a second, different
+        // character: Big5 is dense enough that two arbitrary common Hanzi
+        // (this fixture originally used "測"/"試") can have a coincidentally
+        // valid cross-pairing of one's trail byte with the other's lead
+        // byte, which would wrongly make the *wrong* head candidate look
+        // clean too (see `chunk.rs`'s `BIG5_SELF_SAFE_CHAR`, found by
+        // direct scan for a character whose own *reversed* byte pair is
+        // proven not to be a valid Big5 character -- reused here for the
+        // same reason).
+        let (char_bytes, unmappable) = encode("亞", "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_eq!(char_bytes.len(), 2);
+        let mut orphaned = vec![char_bytes[1]]; // orphaned trail byte
+        orphaned.extend_from_slice(&char_bytes); // one complete "亞"
+        orphaned.push(char_bytes[0]); // a dangling, genuinely incomplete lead byte
+        assert_eq!(
+            trim_truncated_legacy_head(&orphaned, "Big5", false),
+            &orphaned[1..],
+            "must drop only the leading orphaned byte; the trailing \
+             dangling lead byte is a separate, legitimate incompleteness \
+             tail_is_boundary: false must tolerate, not a reason to \
+             reject the correct head boundary"
+        );
+    }
+
+    #[test]
+    fn trim_truncated_legacy_head_keeps_valid_and_ascii_and_empty_unchanged() {
+        let (full, unmappable) = encode("測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_eq!(trim_truncated_legacy_head(&full, "Big5", true), &full[..]);
+        assert_eq!(
+            trim_truncated_legacy_head(b"plain ascii", "Big5", true),
+            b"plain ascii"
+        );
+        assert_eq!(trim_truncated_legacy_head(b"", "Big5", true), b"");
+    }
+
+    #[test]
+    fn trim_truncated_legacy_head_keeps_interior_invalid_unchanged() {
+        // 0xFF is never a valid Big5 lead or trail byte; placed as the
+        // very last byte, well past Big5's max head-trim depth (1 byte),
+        // so no head-trim candidate can route around it by dropping only
+        // leading bytes -- #136/#165's interior-malformed principle,
+        // carried over to the leading edge: this must come back
+        // unchanged and surface as malformed via the real decode instead
+        // of being silently swallowed by a trim search that isn't sure
+        // what it's looking at.
+        let (mut full, unmappable) = encode("ab測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        let last = full.len() - 1;
+        full[last] = 0xFF;
+        assert_eq!(trim_truncated_legacy_head(&full, "Big5", true), &full[..]);
+    }
+
+    #[test]
+    fn trim_truncated_legacy_head_gb18030_drops_orphaned_fragment_at_each_split_position() {
+        // U+20010 and U+20011 are adjacent gb18030 supplementary-plane
+        // characters sharing the same first two bytes (gb18030's linear
+        // mapping puts consecutive code points in the same "row"): U+20010
+        // = 95 32 84 32, U+20011 = 95 32 84 33. For each of the 3 possible
+        // orphan lengths (1, 2, or 3 trailing bytes of U+20010 left
+        // dangling in front of a complete U+20011), the true boundary is
+        // exactly at U+20011's own start.
+        let (char_a, unmappable_a) = encode("\u{20010}", "gb18030", false).unwrap();
+        assert!(!unmappable_a);
+        assert_eq!(char_a.len(), 4, "fixture assumes U+20010 is 4 bytes");
+        let (char_b, unmappable_b) = encode("\u{20011}", "gb18030", false).unwrap();
+        assert!(!unmappable_b);
+        assert_eq!(char_b.len(), 4, "fixture assumes U+20011 is 4 bytes");
+        for orphan_len in 1..=3 {
+            let mut orphaned = char_a[4 - orphan_len..].to_vec();
+            orphaned.extend_from_slice(&char_b);
+            assert_eq!(
+                trim_truncated_legacy_head(&orphaned, "gb18030", true),
+                &char_b[..],
+                "{orphan_len}-of-4 orphaned trailing byte(s) of U+20010 must \
+                 all be dropped, keeping only U+20011"
+            );
+        }
+    }
+
+    #[test]
+    fn trim_truncated_legacy_head_gb18030_prefers_trustworthy_candidate_over_ascii_escape() {
+        // U+20010's gb18030 encoding is 95 32 84 32 -- its last byte
+        // (0x32, ASCII '2') is, by construction of gb18030's 4-byte form
+        // itself, always an ASCII digit (the same is true of every
+        // 4-byte gb18030 character's 2nd and 4th bytes). An orphaned copy
+        // of just that last byte, followed by a second character's
+        // *complete* encoding, must not be misread as "one spurious
+        // standalone ASCII '2' character, then the second character" --
+        // technically malformed-free, since ASCII '2' trivially decodes
+        // alone -- when the true boundary is obviously one byte later, at
+        // the second character's own genuine (non-ASCII-starting) start.
+        // This is the regression this test pins: earlier versions of
+        // `trim_truncated_legacy_head` preferred the shallowest
+        // malformed-free candidate unconditionally and got this wrong.
+        let (char_a, unmappable_a) = encode("\u{20010}", "gb18030", false).unwrap();
+        assert!(!unmappable_a);
+        let (char_b, unmappable_b) = encode("\u{20011}tail", "gb18030", false).unwrap();
+        assert!(!unmappable_b);
+        let orphaned_byte = char_a[3];
+        assert!(
+            orphaned_byte.is_ascii(),
+            "fixture assumption: gb18030's 4th byte is always an ASCII digit"
+        );
+        let mut orphaned = vec![orphaned_byte];
+        orphaned.extend_from_slice(&char_b);
+        assert_eq!(
+            trim_truncated_legacy_head(&orphaned, "gb18030", true),
+            &char_b[..],
+            "must skip the orphaned ASCII-looking byte and land on the \
+             second character's true boundary, not stop early just \
+             because treating the orphan as a standalone character also \
+             happens to decode without error"
+        );
+    }
+
+    #[test]
+    fn trim_truncated_legacy_head_unknown_or_non_legacy_label_is_noop() {
+        let (full, unmappable) = encode("測試", "Big5", false).unwrap();
+        assert!(!unmappable);
+        let orphaned = &full[1..];
+        // Same defensive no-op contract as `trim_truncated_legacy_tail`'s
+        // own equivalent test: a label this function doesn't own must
+        // never be trimmed.
+        assert_eq!(
+            trim_truncated_legacy_head(orphaned, "UTF-8", true),
+            orphaned
+        );
+        assert_eq!(
+            trim_truncated_legacy_head(orphaned, "windows-1252", true),
+            orphaned
+        );
+        assert_eq!(
+            trim_truncated_legacy_head(orphaned, "not-a-real-label", true),
+            orphaned
+        );
     }
 
     #[test]
