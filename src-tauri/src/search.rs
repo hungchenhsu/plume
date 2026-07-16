@@ -35,18 +35,27 @@ pub struct SearchMatch {
 }
 
 /// A directory, entry, or queued file that could not be scanned — recorded
-/// instead of silently skipped. Two generations of the same fix: issue
+/// instead of silently skipped. Three generations of the same fix: issue
 /// #130 covers the walk itself failing to read a directory or entry (the
 /// same fix issue #116 applied to `batch.rs::collect_files`; the two walks
 /// are twin implementations, see that module's doc comment); issue #211
 /// extends this to a file the walk *did* queue successfully but that
 /// [`read_bounded_or_scan_error`] could no longer open, read, or that grew
-/// past `MAX_FILE_SIZE` by the time the scan loop reached it. `path` is the
-/// containing directory when the directory listing itself failed
-/// (`read_dir`), the specific entry's own path when only its metadata
-/// lookup failed, or the specific file's path for a post-walk read/oversize
-/// failure; `message` is the OS error text (e.g. "Permission denied (os
-/// error 13)") or, for oversize, a description of the size cap.
+/// past `MAX_FILE_SIZE` by the time the scan loop reached it; issue #214
+/// extends it again to a file that opened and read fine but whose bytes
+/// didn't *decode* cleanly (`encoding::DecodedText::malformed`) — mirroring
+/// `replaceinfiles.rs::execute_one`'s `STATUS_DECODE_ERROR` handling of the
+/// same flag, since a malformed decode's content is real text interleaved
+/// with U+FFFD standing in for whatever bytes didn't decode, and neither a
+/// "no match" nor a match found in it can be trusted (ARCHITECTURE.md's
+/// hard constraint that decode errors must be surfaced, never silently
+/// rendered as if the text were fine). `path` is the containing directory
+/// when the directory listing itself failed (`read_dir`), the specific
+/// entry's own path when only its metadata lookup failed, or the specific
+/// file's path for a post-walk read/oversize/decode failure; `message` is
+/// the OS error text (e.g. "Permission denied (os error 13)"), a
+/// description of the size cap for oversize, or the detected encoding name
+/// for a decode failure.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanError {
@@ -63,17 +72,20 @@ pub struct SearchResults {
     /// Directories or entries the walk could not read, plus queued files
     /// that could not be scanned once the walk finished — each one means
     /// `matches` above may be missing whatever matches that path contained.
-    /// The latter covers both a queued file whose open/read failed after
-    /// the walk (e.g. it vanished, or permissions changed mid-walk) and a
-    /// queued file that grew past `MAX_FILE_SIZE` between
-    /// `collect_files`'s walk-time metadata check and the actual read
-    /// (issue #211's TOCTOU gap — the read itself stays bounded via
-    /// `Read::take`, so the grown content is never materialized; it is
-    /// reported here instead). Empty means the walk completed exhaustively;
-    /// a non-empty list must never be read as "no matches under that path"
-    /// (issue #130). The root folder itself failing to open is a harder
-    /// failure than this — `search_in_folder` returns `Err` outright
-    /// instead of an empty-looking result.
+    /// The latter covers a queued file whose open/read failed after the
+    /// walk (e.g. it vanished, or permissions changed mid-walk), a queued
+    /// file that grew past `MAX_FILE_SIZE` between `collect_files`'s
+    /// walk-time metadata check and the actual read (issue #211's TOCTOU
+    /// gap — the read itself stays bounded via `Read::take`, so the grown
+    /// content is never materialized; it is reported here instead), and a
+    /// queued file that read fine but didn't decode cleanly (issue #214 —
+    /// its content is never searched, since a malformed decode's U+FFFD
+    /// stand-ins for the undecodable bytes can't be trusted as a "no
+    /// match" or trusted as a genuine match either). Empty means the walk
+    /// completed exhaustively; a non-empty list must never be read as "no
+    /// matches under that path" (issue #130). The root folder itself
+    /// failing to open is a harder failure than this — `search_in_folder`
+    /// returns `Err` outright instead of an empty-looking result.
     pub scan_errors: Vec<ScanError>,
 }
 
@@ -303,9 +315,33 @@ pub fn search_in_folder_with_extensions(
         if looks_binary(&bytes) {
             continue;
         }
-        files_scanned += 1;
         let ext_hint = crate::prefs::extension_encoding_for(extension_encodings, file);
         let decoded = encoding::decode_auto_with_extension(&bytes, ext_hint.as_deref());
+        // Issue #214: a decode that doesn't come back clean must not be
+        // searched at all -- `decoded.content` for a malformed decode is
+        // real text interleaved with U+FFFD standing in for whatever
+        // bytes didn't decode, so neither a "no match" nor a match found
+        // in it can be trusted. This mirrors
+        // `replaceinfiles::execute_one`'s `STATUS_DECODE_ERROR` handling
+        // of the same `decoded.malformed` flag; ARCHITECTURE.md's hard
+        // constraint ("decode errors must be surfaced, never silently
+        // rendered as if the text were fine") applies to a read-only
+        // search exactly as it does to a write. Recorded as a
+        // `ScanError`, like every other reason a queued file didn't get
+        // searched, rather than a distinct field -- the frontend's
+        // generic `renderScanErrors` already surfaces any entry here
+        // without needing to know why.
+        if decoded.malformed {
+            scan_errors.push(ScanError {
+                path: file.to_string_lossy().into_owned(),
+                message: format!(
+                    "File does not decode cleanly as {}; skipped, not searched",
+                    decoded.encoding
+                ),
+            });
+            continue;
+        }
+        files_scanned += 1;
         search_text(
             &decoded.content,
             &matcher,
@@ -727,6 +763,152 @@ mod tests {
         assert!(
             err.message.contains("5 MiB") || err.message.to_lowercase().contains("exceed"),
             "scan error should explain the file exceeded the size cap: {err:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Issue #214: a file that opens, reads, and stays under the size
+    // cap can still fail to *decode* cleanly (`decoded.malformed`). The
+    // scan loop used to hand `decoded.content` straight to `search_text`
+    // regardless -- for a malformed decode that content is real text
+    // interleaved with U+FFFD replacement characters standing in for
+    // whatever bytes didn't decode, so a "no match" result is not
+    // trustworthy (the query could be sitting in the unrecoverable bytes)
+    // and a match against a U+FFFD run could be reporting a decoder
+    // artifact as if it were real file content. ARCHITECTURE.md's hard
+    // constraint -- decode errors must be surfaced, never silently
+    // rendered as if the text were fine -- already governs the editor and
+    // `replaceinfiles.rs::execute_one` (`STATUS_DECODE_ERROR`); this is
+    // find-in-files' own version of the same rule.
+    //
+    // Fixture technique: a UTF-8 BOM (`EF BB BF`) followed by a trailing
+    // 0xFF byte, which is never valid UTF-8 in any position (not a legal
+    // lead byte, not a legal continuation byte). A BOM pins `chosen` via
+    // `detect_with_extension`'s rule 1 ("a BOM always wins") *before*
+    // chardetng's statistical guess ever runs, so unlike a bare legacy-
+    // encoding fixture (tried first, and rejected below) this can't flake
+    // on exactly which encoding chardetng happens to pick for a given
+    // sample -- confirmed the hard way: an earlier Big5-plus-stray-byte
+    // fixture here was statistically misdetected as windows-1252 by
+    // chardetng, under which the stray byte (0x80) is simply "€", not
+    // malformed at all, so the fixture-precondition assertion below
+    // caught its own fixture being wrong before it could produce a
+    // false-green test.
+
+    /// Issue #214 (failing-test-first): a malformed file must be recorded
+    /// in `scan_errors` and never searched at all -- not searched with a
+    /// U+FFFD-laden approximation of its content. The needle sits well
+    /// before the trailing bad byte, so this also proves the old
+    /// behavior wasn't merely "sometimes misses a mangled match": with
+    /// today's (pre-fix) code this exact needle decodes untouched and
+    /// *is* found, which is precisely the false confidence issue #214
+    /// describes -- a clean-looking zero-`scan_errors` result that hides
+    /// a file that was never trustworthy to begin with.
+    #[test]
+    fn malformed_file_is_recorded_as_scan_error_and_excluded_from_matches() {
+        let dir = fixture_dir("malformed");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+        bytes.extend_from_slice("before 測試字串 after".as_bytes());
+        bytes.push(0xFF); // never valid UTF-8, in any position
+
+        // Fixture precondition, verified directly rather than assumed:
+        // these exact bytes must actually come back `malformed` from the
+        // same auto-detection pipeline `search_in_folder_with_extensions`
+        // uses, or this test doesn't exercise the bug at all.
+        let baseline = encoding::decode_auto_with_extension(&bytes, None);
+        assert_eq!(
+            baseline.encoding, "UTF-8",
+            "fixture precondition: the BOM must pin UTF-8 deterministically"
+        );
+        assert!(
+            baseline.malformed,
+            "fixture precondition: bytes must not decode cleanly under \
+             auto-detection: {:?}",
+            baseline.content
+        );
+
+        std::fs::write(dir.join("bad.txt"), &bytes).unwrap();
+
+        let results = search_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "測試字串".into(),
+            true,
+            false,
+            &[],
+        )
+        .unwrap();
+
+        assert!(
+            results.matches.is_empty(),
+            "a malformed file must never be searched, even for a needle \
+             that would survive decoding around the bad byte: {:?}",
+            results.matches
+        );
+        assert_eq!(
+            results.scan_errors.len(),
+            1,
+            "the malformed file must be surfaced in scan_errors, not \
+             silently treated as a clean zero-match scan: {:?}",
+            results.scan_errors
+        );
+        assert!(
+            Path::new(&results.scan_errors[0].path).ends_with("bad.txt"),
+            "scan error should name the malformed file: {:?}",
+            results.scan_errors[0]
+        );
+        assert!(
+            !results.scan_errors[0].message.is_empty(),
+            "scan error should explain why the file was skipped"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #214 (failing-test-first), the coexistence half: a malformed
+    /// file elsewhere in the tree must not stop an unrelated, cleanly
+    /// decodable sibling from being searched and reported normally --
+    /// mirrors the same "isolate the bad path, keep going" shape already
+    /// proven for unreadable files/directories (#130/#211) above.
+    #[test]
+    fn malformed_file_does_not_prevent_clean_sibling_from_being_searched() {
+        let dir = fixture_dir("malformed-with-clean-sibling");
+        let mut bad_bytes = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+        bad_bytes.extend_from_slice("before 測試字串 after".as_bytes());
+        bad_bytes.push(0xFF); // never valid UTF-8, in any position
+        let baseline = encoding::decode_auto_with_extension(&bad_bytes, None);
+        assert!(
+            baseline.malformed,
+            "fixture precondition: {:?}",
+            baseline.content
+        );
+        std::fs::write(dir.join("bad.txt"), &bad_bytes).unwrap();
+
+        std::fs::write(dir.join("good.txt"), "clean content with needle here\n").unwrap();
+
+        let results = search_in_folder_with_extensions(
+            dir.to_string_lossy().into_owned(),
+            "needle".into(),
+            true,
+            false,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            results.matches.len(),
+            1,
+            "the clean sibling file must still be searched despite the \
+             malformed file elsewhere in the tree: {:?}",
+            results.matches
+        );
+        assert!(Path::new(&results.matches[0].path).ends_with("good.txt"));
+        assert_eq!(
+            results.scan_errors.len(),
+            1,
+            "the malformed file must still be reported, not silently \
+             dropped, alongside the successful sibling scan: {:?}",
+            results.scan_errors
         );
 
         std::fs::remove_dir_all(&dir).ok();
