@@ -2,8 +2,10 @@
 //! aligned to line boundaries — LF, CRLF, or lone CR, the shared semantics
 //! defined in `linebreak.rs` (#119/#132), so alignment always agrees with
 //! the line starts `lineindex.rs` computes for go-to-line and bookmarks.
-//! Byte-level alignment is only sound for ASCII-compatible encodings —
-//! UTF-16 paging is rejected at the command layer.
+//! Byte-level alignment is only sound for ASCII-compatible, stateless
+//! encodings — UTF-16 and ISO-2022-JP paging are both rejected at the
+//! command layer (UTF-16 for the ASCII-compatibility reason; ISO-2022-JP,
+//! issue #225, for the statelessness one — see below).
 //!
 //! A single line longer than `CHUNK_BYTES` (issue #118) cannot be aligned
 //! to a terminator at all — the chunk that reads it finds none anywhere
@@ -24,13 +26,32 @@
 //! `trim_truncated_legacy_tail` / `trim_truncated_legacy_head` do the same
 //! for the other paging-supported multi-byte encodings (Big5, Shift_JIS,
 //! GBK, gb18030, EUC-JP, EUC-KR — issue #213, following #165's identical
-//! tail-only fix for the large-file preview path). ISO-2022-JP's decoder
-//! is stateful with no fixed per-character byte bound to retry cuts
-//! against (see `encoding::is_legacy_multibyte_label`'s doc comment) and
-//! single-byte encodings never split a character across a byte cut in the
-//! first place — both keep the untrimmed raw cut, which `decode_with`
-//! reports as `malformed: true` if it lands mid-sequence rather than
-//! silently rendering the wrong text.
+//! tail-only fix for the large-file preview path). Single-byte encodings
+//! never split a character across a byte cut in the first place, so they
+//! need no trim either. For every encoding paging still supports, an
+//! untrimmed raw cut that does land mid-sequence is caught by
+//! `decode_with` reporting `malformed: true` on the very page the cut
+//! lands in.
+//!
+//! ISO-2022-JP cannot rely on that same "an untrimmed cut still self-
+//! reports" argument, which is why it is excluded from paging entirely
+//! (issue #225) rather than merely left untrimmed like the single-byte
+//! case above: it is the one `encoding_rs` encoding whose *decoder* is
+//! genuinely stateful (a shift escape sequence changes the meaning of
+//! every subsequent byte for the rest of the stream, not just the next
+//! character — see `encoding::is_legacy_multibyte_label`'s doc comment and
+//! the judgment-overlay dead-end this repeats), and every chunk read here
+//! builds a brand new decoder with no memory of the previous page's shift
+//! state. A raw cut landing inside a JIS shift sequence does report
+//! `malformed: true` on *that* page as expected, but the *next* page's
+//! fresh decoder silently resumes from the default ASCII/ROMAN state and
+//! can misdecode well-formed-*looking* — but wrong — text with `malformed:
+//! false`: exactly the silent-corruption failure mode this app's decode-
+//! error contract (ARCHITECTURE.md) exists to prevent. No fixed
+//! per-character byte bound exists to retry the cut against the way there
+//! is for the legacy multi-byte encodings above, so unlike them there is
+//! no sound trim to apply here; the whole encoding is refused at the
+//! command layer instead, the same choice already made for UTF-16.
 
 use crate::encoding;
 use crate::linebreak::{align_start, cut_tail_at_line_break, is_line_start};
@@ -96,6 +117,20 @@ pub fn read_document_chunk(
         .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
     if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
         return Err("Paging is not supported for UTF-16 files".into());
+    }
+    // Issue #225: ISO-2022-JP's decoder is the one `encoding_rs` encoding
+    // that is genuinely stateful (see the module doc comment above). A raw
+    // chunk cut can land inside a JIS shift sequence; the next page's fresh
+    // `decode_with` call has no way to resume that state and would silently
+    // misdecode the rest of the page as ASCII with `malformed: false` --
+    // there is no fixed per-character byte bound to retry the cut against
+    // the way there is for the legacy multi-byte encodings the trims below
+    // support, so paging is rejected outright here rather than attempting a
+    // lossy cut, exactly like UTF-16 above. Identity comparison against the
+    // static singleton (not a string/label compare), matching the
+    // established pattern (streamreplace.rs's `enc != ISO_2022_JP` gate).
+    if enc == encoding_rs::ISO_2022_JP {
+        return Err("Paging is not supported for ISO-2022-JP files".into());
     }
     // Gates the legacy-multi-byte trims below (both the align_start
     // stale-offset fallback and the tail cut) exactly the way
@@ -233,6 +268,11 @@ pub fn read_document_chunk_before(
         .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
     if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
         return Err("Paging is not supported for UTF-16 files".into());
+    }
+    // Same ISO-2022-JP gate as `read_document_chunk`'s -- see its comment
+    // for why (issue #225).
+    if enc == encoding_rs::ISO_2022_JP {
+        return Err("Paging is not supported for ISO-2022-JP files".into());
     }
     // Same gate as `read_document_chunk`'s, reused for the head trim below.
     let is_legacy_multibyte = encoding::is_legacy_multibyte_label(&encoding);
@@ -391,6 +431,55 @@ mod tests {
         assert!(result.is_err());
         let result = read_document_chunk_before("/tmp/whatever.txt".into(), 100, "UTF-16BE".into());
         assert!(result.is_err());
+    }
+
+    /// Issue #225: ISO-2022-JP must be rejected at the command layer exactly
+    /// like UTF-16, mirroring `rejects_utf16_paging` above. A raw chunk cut
+    /// can land inside a JIS shift sequence; the next page's fresh decoder
+    /// has no way to resume that state and silently misdecodes the rest of
+    /// the page as ASCII with `malformed: false` -- no fixed per-character
+    /// byte bound exists to retry the cut against the way there is for the
+    /// other legacy multi-byte encodings (`encoding::is_legacy_multibyte_
+    /// label`'s doc comment), so the only sound choice is to refuse paging
+    /// outright rather than attempt a lossy cut.
+    ///
+    /// Asserts the specific rejection message rather than plain `is_err()`:
+    /// `/tmp/whatever.txt` not existing already makes both calls return
+    /// `Err` regardless of any encoding gate (a bare `is_err()` check would
+    /// pass even with no ISO-2022-JP handling at all, exactly the false-
+    /// green `rejects_utf16_paging` would also produce). Checking for the
+    /// encoding gate's own message is what makes this test genuinely red
+    /// before the gate exists and green only once it does.
+    #[test]
+    fn rejects_iso2022jp_paging() {
+        let result = read_document_chunk(
+            "/tmp/whatever.txt".into(),
+            0,
+            "ISO-2022-JP".into(),
+            OffsetKind::Continuation,
+        );
+        // `DocumentChunk` (the `Ok` payload) has no `Debug` impl, so
+        // `expect_err`/`unwrap_err` (which require `T: Debug` to format the
+        // panic message) don't apply here -- match instead.
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("ISO-2022-JP paging must be rejected"),
+        };
+        assert!(
+            err.contains("ISO-2022-JP"),
+            "must be rejected by the encoding gate itself, not merely fail \
+             to find the nonexistent file -- got: {err}"
+        );
+        let result =
+            read_document_chunk_before("/tmp/whatever.txt".into(), 100, "ISO-2022-JP".into());
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("ISO-2022-JP paging must be rejected"),
+        };
+        assert!(
+            err.contains("ISO-2022-JP"),
+            "must be rejected by the encoding gate itself -- got: {err}"
+        );
     }
 
     // --- Issue #132 (with #119): chunk alignment must share the line

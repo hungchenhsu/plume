@@ -1364,7 +1364,7 @@ never worked in parallel. #89 stays open as the good-first-issue surface
 for incoming contributors.
 
 **Track R — debt & correctness** (bug queue first; ordered by execution)
-- [ ] #225: ISO-2022-JP overlong-line chunk paging silently mis-decodes
+- [x] #225: ISO-2022-JP overlong-line chunk paging silently mis-decodes
   continuation pages (each page's fresh decoder loses the previous
   page's shift-state; JIS two-byte content reads as ASCII with
   malformed=false) — exclude ISO-2022-JP from chunk paging, following

@@ -74,7 +74,7 @@ import {
   windowRelativeBookmarks,
 } from "./bookmarks";
 import { runByteDriftGate } from "./bytedrift";
-import { canAutoAppend, canPrepend } from "./chunkpolicy";
+import { canAutoAppend, canPrepend, pagingSupported } from "./chunkpolicy";
 import { preemptChunkLoad, shouldApplyChunkResponse } from "./chunkguard";
 import { hasClosedTabs, popClosedTab, recordClosedTab } from "./closedtabs";
 import { showComparePreview } from "./comparepreview";
@@ -642,11 +642,6 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
   };
 }
 
-/** UTF-16 chunks cannot be line-aligned; paging is disabled for them. */
-function pagingSupported(doc: Doc): boolean {
-  return doc.truncated && !doc.encoding.startsWith("UTF-16");
-}
-
 function pagerState(doc: Doc): { hasPrev: boolean; hasNext: boolean } | null {
   if (!pagingSupported(doc)) return null;
   return {
@@ -1033,10 +1028,10 @@ async function gotoLargeFileLine(
 
 /** Mod+L / Edit > Go to Line: within the loaded window for a regular
  *  document (or a large-file doc whose paging is unsupported, e.g.
- *  UTF-16 — see pagingSupported), just move the cursor; otherwise jump via
- *  the line-offset index. `column` (1-based; null when the user's input
- *  named only a line — see goto.ts's `parseGoToInput`) is forwarded
- *  either way. */
+ *  UTF-16 or ISO-2022-JP — see pagingSupported), just move the cursor;
+ *  otherwise jump via the line-offset index. `column` (1-based; null when
+ *  the user's input named only a line — see goto.ts's `parseGoToInput`) is
+ *  forwarded either way. */
 function handleGotoLine(line: number, column: number | null): void {
   const doc = tabs.active;
   if (!doc) return;
@@ -1958,9 +1953,10 @@ function applyOpenedForReopen(doc: Doc, opened: OpenedDocument): void {
         },
       ]
     : [];
-  // A changed encoding can flip UTF-16 support on/off (see pagingSupported)
-  // and, symmetrically with reloadFromDisk, restarts the window at offset
-  // 0 anyway, so any prior index is discarded rather than re-validated.
+  // A changed encoding can flip paging support on/off (UTF-16, ISO-2022-JP
+  // — see pagingSupported) and, symmetrically with reloadFromDisk, restarts
+  // the window at offset 0 anyway, so any prior index is discarded rather
+  // than re-validated.
   doc.lineIndex = null;
   doc.windowStartLine = opened.truncated ? 1 : null;
   // Same in-flight-chunk-request invalidation as reloadFromDisk (issue
