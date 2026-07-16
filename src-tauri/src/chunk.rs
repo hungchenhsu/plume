@@ -20,9 +20,17 @@
 //! (`read_document_chunk_before`) only discard a leading fragment when a
 //! non-empty remainder is guaranteed to be left after it. A raw cut can
 //! also land mid-character; `encoding::trim_truncated_utf8_tail` /
-//! `trim_truncated_utf8_head` fix the boundary back up for UTF-8, the
-//! one paging-supported encoding where byte-level cuts can regroup into
-//! multi-byte characters at arbitrary positions.
+//! `trim_truncated_utf8_head` fix the boundary back up for UTF-8, and
+//! `trim_truncated_legacy_tail` / `trim_truncated_legacy_head` do the same
+//! for the other paging-supported multi-byte encodings (Big5, Shift_JIS,
+//! GBK, gb18030, EUC-JP, EUC-KR — issue #213, following #165's identical
+//! tail-only fix for the large-file preview path). ISO-2022-JP's decoder
+//! is stateful with no fixed per-character byte bound to retry cuts
+//! against (see `encoding::is_legacy_multibyte_label`'s doc comment) and
+//! single-byte encodings never split a character across a byte cut in the
+//! first place — both keep the untrimmed raw cut, which `decode_with`
+//! reports as `malformed: true` if it lands mid-sequence rather than
+//! silently rendering the wrong text.
 
 use crate::encoding;
 use crate::linebreak::{align_start, cut_tail_at_line_break, is_line_start};
@@ -89,6 +97,11 @@ pub fn read_document_chunk(
     if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
         return Err("Paging is not supported for UTF-16 files".into());
     }
+    // Gates the legacy-multi-byte trims below (both the align_start
+    // stale-offset fallback and the tail cut) exactly the way
+    // `open_document`'s trim gate in `lib.rs` does, so this can never
+    // disagree with what `decode_with` is about to do for the same label.
+    let is_legacy_multibyte = encoding::is_legacy_multibyte_label(&encoding);
 
     let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     let total_size = file
@@ -135,12 +148,27 @@ pub fn read_document_chunk(
                     // offset sits inside a line longer than CHUNK_BYTES.
                     // Fall back to a raw continuation-style read (never
                     // an empty or skipped window); the raw stale offset
-                    // can split a UTF-8 character, so drop its orphaned
-                    // continuation bytes. `align_start`'s nonzero result
-                    // needs no such trim: it lands right after a real
-                    // terminator, always a clean boundary.
+                    // can split a multi-byte character, so drop its
+                    // orphaned trailing-fragment bytes for whichever
+                    // paging-supported encoding can have one (UTF-8, or
+                    // one of the legacy multi-byte encodings — issue
+                    // #213). `align_start`'s nonzero result needs no such
+                    // trim: it lands right after a real terminator,
+                    // always a clean boundary.
                     0 if enc == encoding_rs::UTF_8 => {
                         buf.len() - encoding::trim_truncated_utf8_head(&buf).len()
+                    }
+                    0 if is_legacy_multibyte => {
+                        // `false`: unlike `read_document_chunk_before`'s
+                        // window, `buf`'s own tail is not known to sit on
+                        // a real boundary — the overlong line can well
+                        // continue past this whole CHUNK_BYTES window too
+                        // — so the check must tolerate a genuinely
+                        // dangling tail instead of rejecting the correct
+                        // candidate because of it (see
+                        // `trim_truncated_legacy_head`'s doc comment).
+                        buf.len()
+                            - encoding::trim_truncated_legacy_head(&buf, &encoding, false).len()
                     }
                     aligned => aligned,
                 }
@@ -162,13 +190,19 @@ pub fn read_document_chunk(
         // multibyte sequence (linebreak.rs's ASCII-compatibility
         // guarantee) — or, when the whole buffer had no terminator at
         // all, at a raw CHUNK_BYTES cut that can land mid-character.
-        // Trimming is a no-op in the first case and is only meaningful
-        // for UTF-8 — see `trim_truncated_utf8_tail`'s doc for why a
-        // blind byte-range check would misfire on other multibyte
-        // encodings, which `trim_truncated_utf8_tail`'s own
-        // `str::from_utf8` validation avoids.
+        // Trimming is then a no-op in the first case (both trim functions
+        // only ever touch a truncated-at-the-end sequence) and otherwise
+        // UTF-8- or legacy-multi-byte-specific — see
+        // `trim_truncated_utf8_tail`'s doc for why a blind byte-range
+        // check would misfire on other multibyte encodings, which its own
+        // `str::from_utf8` validation avoids, and
+        // `trim_truncated_legacy_tail`'s doc for the legacy-encoding
+        // sibling (issue #213, following #165's identical fix for the
+        // large-file preview path).
         let cut = if enc == encoding_rs::UTF_8 {
             encoding::trim_truncated_utf8_tail(cut)
+        } else if is_legacy_multibyte {
+            encoding::trim_truncated_legacy_tail(cut, &encoding)
         } else {
             cut
         };
@@ -200,6 +234,8 @@ pub fn read_document_chunk_before(
     if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
         return Err("Paging is not supported for UTF-16 files".into());
     }
+    // Same gate as `read_document_chunk`'s, reused for the head trim below.
+    let is_legacy_multibyte = encoding::is_legacy_multibyte_label(&encoding);
     if end == 0 {
         return Err("Already at the start of the file".into());
     }
@@ -261,16 +297,29 @@ pub fn read_document_chunk_before(
     // A raw (non-terminator-based) start can land mid-character; one
     // right after a genuine terminator never does (linebreak.rs's
     // ASCII-compatibility guarantee). Trimming is a no-op in the
-    // terminator case and, like the forward direction's tail trim, only
-    // meaningful for UTF-8. Same guard as `skip` above: never trust a
-    // trim that would consume the entire window — a window of nothing
-    // but orphaned continuation bytes (unreachable through the app's own
-    // line-aligned `end` values today, but a future caller could drift)
-    // must stay an honest U+FFFD chunk rather than collapse to an empty,
-    // non-progressing one with offset == end.
+    // terminator case and otherwise UTF-8- or legacy-multi-byte-specific,
+    // like the forward direction's tail trim. Same guard as `skip` above:
+    // never trust a trim that would consume the entire window — a window
+    // of nothing but orphaned trailing-fragment bytes (unreachable
+    // through the app's own line-aligned `end` values today, but a
+    // future caller could drift) must stay an honest U+FFFD chunk rather
+    // than collapse to an empty, non-progressing one with offset == end.
     let pre_trim = &buf[skip..];
     let slice = if enc == encoding_rs::UTF_8 {
         let trimmed = encoding::trim_truncated_utf8_head(pre_trim);
+        if trimmed.is_empty() && !pre_trim.is_empty() {
+            pre_trim
+        } else {
+            trimmed
+        }
+    } else if is_legacy_multibyte {
+        // `true`: this window's tail always sits exactly at the
+        // caller-supplied `end`, which the module doc guarantees is
+        // line-aligned — a real, already-verified character boundary —
+        // so the stricter forced-final check correctly rejects a
+        // wrong-phase candidate that would otherwise dangle right at that
+        // edge (see `trim_truncated_legacy_head`'s doc comment).
+        let trimmed = encoding::trim_truncated_legacy_head(pre_trim, &encoding, true);
         if trimmed.is_empty() && !pre_trim.is_empty() {
             pre_trim
         } else {
@@ -780,6 +829,421 @@ mod tests {
             original.len() as i64 - assembled.len() as i64
         );
         assert_eq!(assembled, original);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- Issue #213: the multibyte-character-boundary concern above,
+    // extended from UTF-8 to the legacy multi-byte encodings paging
+    // supports (Big5, Shift_JIS, GBK, gb18030, EUC-JP, EUC-KR). These are
+    // not self-synchronizing the way UTF-8 is — trail-byte ranges overlap
+    // lead-byte ranges — so both fixtures below deliberately cycle
+    // through several distinct characters rather than repeating one, so
+    // that a wrong-phase resync can't coincidentally stay "clean": a
+    // short, uniform repeat period is exactly the shape that could let an
+    // accidental realignment go undetected across the whole window. -----
+
+    /// A Big5 character (U+4E9E "亞") whose own encoded bytes, *reversed*
+    /// (trail byte first, lead byte second), do **not** form a valid Big5
+    /// character. Big5 is dense enough — most of its lead/trail byte
+    /// space is assigned — that picking CJK characters merely to "look
+    /// varied" is not enough: an earlier version of this fixture cycled
+    /// through 20 common Hanzi and found *every* adjacent cross-pair
+    /// (and even a character's own reversed pair) coincidentally valid,
+    /// because all 20 landed in Big5's densely packed common-character
+    /// block. This one is confirmed by direct, exhaustive scan (see the
+    /// debug session behind issue #213) to be one of only 67 (out of the
+    /// 8040 candidate CJK Unified Ideographs checked) whose reversed pair
+    /// is not itself mapped — pinned here rather than recomputed per test
+    /// run.
+    const BIG5_SELF_SAFE_CHAR: char = '亞';
+
+    /// A Big5 run of *uniform* 2-byte width (`BIG5_SELF_SAFE_CHAR`
+    /// repeated) except for a single 1-byte ASCII character at the very
+    /// start. Width must be non-uniform somewhere: `CHUNK_BYTES` is a
+    /// power of two, so a *purely* uniform-width run would have every raw
+    /// cut coincidentally land back on a character boundary (2 always
+    /// divides `CHUNK_BYTES`) and never actually exercise the bug this
+    /// fixture exists to catch. A lone 1-byte perturbation right before
+    /// the uniform run permanently shifts that run's character
+    /// boundaries to the opposite byte parity from every later
+    /// `CHUNK_BYTES`-stepped cut (`CHUNK_BYTES` is even, so stepping by
+    /// it can never change which parity class a cut lands in) — so
+    /// *every* page transition after the first is provably, not just
+    /// probably, mid-character. And because every character in the
+    /// uniform run is the *same* self-safe character, a wrong-phase
+    /// resync's very first attempted pairing is always exactly the one
+    /// reversed pair already proven invalid — not a statistical
+    /// long-shot, a structural certainty: the wrong-phase decode fails
+    /// immediately, every time, rather than merely "almost always".
+    fn overlong_big5_line_fixture() -> (String, Vec<u8>) {
+        let mut text = String::from("prefix line\n");
+        text.push('a'); // the single width-1 perturbation
+        for _ in 0..5_000_000usize {
+            text.push(BIG5_SELF_SAFE_CHAR);
+        }
+        text.push_str("\nsuffix line\n");
+        let (bytes, unmappable) = encoding::encode(&text, "Big5", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in Big5"
+        );
+        (text, bytes)
+    }
+
+    /// U+20010, a gb18030 supplementary-plane character (4 bytes: `95 32
+    /// 84 32`) whose bytes *rotated* left by 2 (`84 32 95 32`) do **not**
+    /// form a valid gb18030 sequence — the gb18030 mirror of
+    /// `BIG5_SELF_SAFE_CHAR`, confirmed by direct scan (see the debug
+    /// session behind issue #213; one of the first 5 self-safe
+    /// candidates found scanning U+20000 upward). The rotation (not a
+    /// reversal, unlike Big5's 2-byte case) is what a wrong-phase resync
+    /// 2 bytes into a repeated run of this character actually
+    /// re-attempts — see `overlong_gb18030_line_fixture`'s doc comment.
+    const GB18030_SELF_SAFE_SUPPLEMENTARY_CHAR: char = '\u{20010}';
+
+    /// gb18030 mirror of `overlong_big5_line_fixture`: a *uniform* run of
+    /// `GB18030_SELF_SAFE_SUPPLEMENTARY_CHAR` repeated (4-byte
+    /// supplementary-plane characters — `max_legacy_seq_len`'s one 4-byte
+    /// case among the six supported legacy encodings), except for a
+    /// single 2-byte BMP CJK character at the very start. `CHUNK_BYTES`
+    /// is a multiple of 4 as well as 2, so the same non-uniform-width
+    /// requirement as the Big5 fixture applies, and the same parity
+    /// argument holds one level up: the lone 2-byte perturbation shifts
+    /// the uniform run's boundaries to residue 2 (mod 4) while every
+    /// later `CHUNK_BYTES`-stepped cut stays at residue 0 (mod 4) — 2
+    /// bytes away, always. That lands every cut exactly 2 bytes into a
+    /// 4-byte character (never at the 1- or 3-byte split, whose orphaned
+    /// first byte would be the sequence's second or fourth byte — always
+    /// an ASCII digit `0x30`-`0x39` by construction of gb18030's 4-byte
+    /// form itself, the same trivial standalone-ASCII escape hatch the
+    /// Big5 fixture's self-safe character rules out). A 2-byte orphan
+    /// starting there is `[b2, b3]`; since every character in the run is
+    /// the same repeated one, a wrong-phase resync's very first attempted
+    /// 4-byte re-decode is always exactly the `[b2, b3, b0, b1]` rotation
+    /// already proven invalid — a structural certainty, not a long-run
+    /// coincidence, exactly as for the Big5 fixture.
+    fn overlong_gb18030_line_fixture() -> (String, Vec<u8>) {
+        let mut text = String::from("prefix line\n");
+        text.push('中'); // the single width-2 perturbation
+        for _ in 0..2_500_000usize {
+            text.push(GB18030_SELF_SAFE_SUPPLEMENTARY_CHAR);
+        }
+        text.push_str("\nsuffix line\n");
+        let (bytes, unmappable) = encoding::encode(&text, "gb18030", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in gb18030"
+        );
+        (text, bytes)
+    }
+
+    /// Forward `Next` chain through the Big5 fixture: every page must
+    /// decode cleanly (no U+FFFD, `malformed: false`) and offsets must
+    /// stay byte-continuous — `chunk.offset` must never drift from the
+    /// requested continuation offset (Continuation reads never realign,
+    /// see `OffsetKind`), so the loop chaining `offset = chunk.next_offset`
+    /// can never skip or repeat a byte span. Reassembling every page's
+    /// content must reproduce the original text exactly — the strongest
+    /// possible proof that no byte was dropped, duplicated, or
+    /// misdecoded at a chunk boundary.
+    #[test]
+    fn pages_through_an_overlong_big5_line_losslessly() {
+        let (original_text, bytes) = overlong_big5_line_fixture();
+        assert!(
+            bytes.len() > 4 * CHUNK_BYTES,
+            "fixture must span several chunks on both sides of the overlong line"
+        );
+        let path = std::env::temp_dir().join("plume-chunk-overlong-big5-fwd.txt");
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut assembled = String::new();
+        let mut offset = Some(0u64);
+        let mut pages = 0;
+        while let Some(at) = offset {
+            let chunk = read_document_chunk(
+                path_str.clone(),
+                at,
+                "Big5".into(),
+                OffsetKind::Continuation,
+            )
+            .unwrap();
+            assert_eq!(
+                chunk.offset, at,
+                "a Continuation read never realigns its own offset"
+            );
+            assert!(
+                !chunk.malformed,
+                "a chunk boundary must never manufacture a decode error out \
+                 of a valid Big5 file"
+            );
+            assert!(
+                !chunk.content.contains('\u{FFFD}'),
+                "a raw chunk cut must never split a Big5 multibyte character"
+            );
+            assembled.push_str(&chunk.content);
+            offset = chunk.next_offset;
+            pages += 1;
+            assert!(pages < 200, "paging must terminate");
+        }
+        assert!(
+            pages >= 3,
+            "the overlong line alone must span several pages"
+        );
+        assert_eq!(assembled, original_text);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Backward `Prev` chain mirror of the test above: every page must
+    /// decode cleanly, and each page's `next_offset` must equal exactly
+    /// the `end` it was asked for — the byte-continuity guarantee for the
+    /// backward direction, since the next call's `end` becomes this
+    /// call's `offset`, so a gap or overlap would show up as content loss
+    /// or duplication once every part is reassembled in order.
+    #[test]
+    fn pages_backward_through_an_overlong_big5_line_losslessly() {
+        let (original_text, bytes) = overlong_big5_line_fixture();
+        let path = std::env::temp_dir().join("plume-chunk-overlong-big5-back.txt");
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut assembled_parts: Vec<String> = Vec::new();
+        let mut end = bytes.len() as u64;
+        let mut pages = 0;
+        loop {
+            let chunk = read_document_chunk_before(path_str.clone(), end, "Big5".into()).unwrap();
+            assert_eq!(
+                chunk.next_offset,
+                Some(end),
+                "byte-continuity: this page's next_offset must equal the end \
+                 it was asked to stop at"
+            );
+            assert!(
+                !chunk.malformed,
+                "a chunk boundary must never manufacture a decode error out \
+                 of a valid Big5 file"
+            );
+            assert!(
+                !chunk.content.contains('\u{FFFD}'),
+                "a raw chunk cut must never split a Big5 multibyte character"
+            );
+            assembled_parts.push(chunk.content.clone());
+            end = chunk.offset;
+            pages += 1;
+            assert!(pages < 200, "backward paging must terminate");
+            if end == 0 {
+                break;
+            }
+        }
+        assert!(
+            pages >= 3,
+            "the overlong line alone must span several pages"
+        );
+        assembled_parts.reverse();
+        assert_eq!(assembled_parts.concat(), original_text);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Forward mirror of `pages_through_an_overlong_big5_line_losslessly`
+    /// for gb18030's 4-byte plane, the one case among the six supported
+    /// legacy encodings with more than two candidate trim depths.
+    #[test]
+    fn pages_through_an_overlong_gb18030_line_losslessly() {
+        let (original_text, bytes) = overlong_gb18030_line_fixture();
+        assert!(
+            bytes.len() > 4 * CHUNK_BYTES,
+            "fixture must span several chunks on both sides of the overlong line"
+        );
+        let path = std::env::temp_dir().join("plume-chunk-overlong-gb18030-fwd.txt");
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut assembled = String::new();
+        let mut offset = Some(0u64);
+        let mut pages = 0;
+        while let Some(at) = offset {
+            let chunk = read_document_chunk(
+                path_str.clone(),
+                at,
+                "gb18030".into(),
+                OffsetKind::Continuation,
+            )
+            .unwrap();
+            assert_eq!(
+                chunk.offset, at,
+                "a Continuation read never realigns its own offset"
+            );
+            assert!(
+                !chunk.malformed,
+                "a chunk boundary must never manufacture a decode error out \
+                 of a valid gb18030 file"
+            );
+            assert!(
+                !chunk.content.contains('\u{FFFD}'),
+                "a raw chunk cut must never split a gb18030 multibyte character"
+            );
+            assembled.push_str(&chunk.content);
+            offset = chunk.next_offset;
+            pages += 1;
+            assert!(pages < 200, "paging must terminate");
+        }
+        assert!(
+            pages >= 3,
+            "the overlong line alone must span several pages"
+        );
+        assert_eq!(assembled, original_text);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Backward mirror, gb18030.
+    #[test]
+    fn pages_backward_through_an_overlong_gb18030_line_losslessly() {
+        let (original_text, bytes) = overlong_gb18030_line_fixture();
+        let path = std::env::temp_dir().join("plume-chunk-overlong-gb18030-back.txt");
+        std::fs::write(&path, &bytes).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut assembled_parts: Vec<String> = Vec::new();
+        let mut end = bytes.len() as u64;
+        let mut pages = 0;
+        loop {
+            let chunk =
+                read_document_chunk_before(path_str.clone(), end, "gb18030".into()).unwrap();
+            assert_eq!(
+                chunk.next_offset,
+                Some(end),
+                "byte-continuity: this page's next_offset must equal the end \
+                 it was asked to stop at"
+            );
+            assert!(
+                !chunk.malformed,
+                "a chunk boundary must never manufacture a decode error out \
+                 of a valid gb18030 file"
+            );
+            assert!(
+                !chunk.content.contains('\u{FFFD}'),
+                "a raw chunk cut must never split a gb18030 multibyte character"
+            );
+            assembled_parts.push(chunk.content.clone());
+            end = chunk.offset;
+            pages += 1;
+            assert!(pages < 200, "backward paging must terminate");
+            if end == 0 {
+                break;
+            }
+        }
+        assert!(
+            pages >= 3,
+            "the overlong line alone must span several pages"
+        );
+        assembled_parts.reverse();
+        assert_eq!(assembled_parts.concat(), original_text);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// gb18030 mirror of `big5_self_safe_char_reversed_pair_is_never_valid`:
+    /// pins `GB18030_SELF_SAFE_SUPPLEMENTARY_CHAR`'s doc-comment claim as
+    /// an executable fact.
+    #[test]
+    fn gb18030_self_safe_char_rotated_bytes_is_never_valid() {
+        let (encoded, unmappable) = encoding::encode(
+            &GB18030_SELF_SAFE_SUPPLEMENTARY_CHAR.to_string(),
+            "gb18030",
+            false,
+        )
+        .unwrap();
+        assert!(!unmappable);
+        assert_eq!(encoded.len(), 4);
+        let rotated = [encoded[2], encoded[3], encoded[0], encoded[1]];
+        let enc = encoding_rs::Encoding::for_label(b"gb18030").unwrap();
+        assert!(
+            enc.decode_without_bom_handling_and_without_replacement(&rotated)
+                .is_none(),
+            "rotated bytes must not decode as a valid gb18030 character"
+        );
+        let mut probe = enc.new_decoder_without_bom_handling();
+        let (_, malformed_last_false) =
+            crate::streamcodec::decode_chunk(&mut probe, &rotated, false);
+        assert!(
+            malformed_last_false,
+            "must be malformed even under is_last=false (genuinely invalid, \
+             not merely an incomplete-at-the-end sequence)"
+        );
+    }
+
+    /// Pins the exhaustive scan behind `BIG5_SELF_SAFE_CHAR`'s doc comment
+    /// as an executable fact rather than only a comment someone could
+    /// forget to re-verify after an `encoding_rs` upgrade: encoding
+    /// `BIG5_SELF_SAFE_CHAR` and reversing its two bytes must decode as
+    /// *malformed*, under both possible-more-input-later and
+    /// definitely-final decode semantics (the wrong-phase resync this
+    /// guards against can appear in either place a raw cut occurs).
+    #[test]
+    fn big5_self_safe_char_reversed_pair_is_never_valid() {
+        let (encoded, unmappable) =
+            encoding::encode(&BIG5_SELF_SAFE_CHAR.to_string(), "Big5", false).unwrap();
+        assert!(!unmappable);
+        assert_eq!(encoded.len(), 2);
+        let reversed = [encoded[1], encoded[0]];
+        let enc = encoding_rs::Encoding::for_label(b"Big5").unwrap();
+        assert!(
+            enc.decode_without_bom_handling_and_without_replacement(&reversed)
+                .is_none(),
+            "reversed byte pair must not decode as a valid Big5 character"
+        );
+        let mut probe = enc.new_decoder_without_bom_handling();
+        let (_, malformed_last_false) =
+            crate::streamcodec::decode_chunk(&mut probe, &reversed, false);
+        assert!(
+            malformed_last_false,
+            "must be malformed even under is_last=false (genuinely invalid, \
+             not merely an incomplete-at-the-end sequence)"
+        );
+    }
+
+    /// `OffsetKind::LineStart`'s stale-offset fallback (the `align_start`
+    /// UTF-8-only branch this issue also extends) must realign cleanly for
+    /// a legacy multi-byte encoding too: a goto landing mid-character deep
+    /// inside an overlong Big5 line, with no line start anywhere in the
+    /// window, must fall back to a raw read trimmed only of the stale
+    /// offset's own orphaned fragment bytes — mirroring
+    /// `goto_read_falls_back_to_raw_inside_an_overlong_line`'s UTF-8 case.
+    #[test]
+    fn goto_read_falls_back_to_raw_inside_an_overlong_big5_line() {
+        let (_original_text, bytes) = overlong_big5_line_fixture();
+        let path = std::env::temp_dir().join("plume-chunk-goto-stale-overlong-big5.txt");
+        std::fs::write(&path, &bytes).unwrap();
+
+        // "prefix line\n" is 12 bytes, then the single 1-byte ASCII
+        // perturbation at offset 12, then the uniform 2-byte CJK run
+        // starting at offset 13 — land one byte into its first character,
+        // mid-character, with the nearest terminator megabytes away in
+        // both directions.
+        let stale = 12 + 1 + 1;
+        let chunk = read_document_chunk(
+            path.to_string_lossy().into_owned(),
+            stale,
+            "Big5".into(),
+            OffsetKind::LineStart,
+        )
+        .unwrap();
+        assert_eq!(
+            chunk.offset,
+            stale + 1,
+            "no line start in the window: fall back to a raw read, dropping \
+             only the stale offset's own orphaned fragment byte"
+        );
+        assert!(
+            !chunk.content.is_empty(),
+            "fallback must not produce an empty window"
+        );
+        assert!(!chunk.content.contains('\u{FFFD}'));
+        assert!(!chunk.malformed);
+        assert!(
+            chunk.content.starts_with(BIG5_SELF_SAFE_CHAR),
+            "must resume exactly at the second character of the uniform \
+             run, the true boundary right after the orphaned byte"
+        );
         std::fs::remove_file(&path).ok();
     }
 
