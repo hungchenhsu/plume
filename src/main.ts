@@ -2124,6 +2124,23 @@ function showEncodingMenu(anchor: HTMLElement): void {
               doc.encoding = e.value;
               doc.withBom = e.withBom;
               doc.speculativeEncoding = original;
+              // Draws a new revision from the shared sequence (issue
+              // #210), same reasoning as setLineEnding's own bump
+              // (main.ts:1916, issue #160): this mutation changes what a
+              // save will write to disk exactly like a content edit does,
+              // so a plain save already in flight for this doc must be
+              // able to tell the difference. Without this, that other
+              // save's own revisionAtStart snapshot (captured before this
+              // ever ran) still matches doc.revision once it resolves,
+              // decideSaveCompletion (src/savecompletion.ts) wrongly
+              // clears dirty for bytes that never carried the new
+              // encoding, and drainLock's nextDrainStep
+              // (src/savemutex.ts) then sees a "clean" doc and drops this
+              // now-pending request outright (dropSave) instead of
+              // running it — the caller is told it succeeded and the tab
+              // shows the new encoding, but disk still holds the old
+              // bytes.
+              doc.revision = nextRevision++;
               updateStatusBar(doc);
               void saveFlow(false)
                 .then((written) => {
