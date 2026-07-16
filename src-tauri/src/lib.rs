@@ -2730,4 +2730,93 @@ mod tests {
 
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
+
+    // --- Issue #225: the large-file *preview* path (this section) is a
+    // different code path from chunk-*paging*'s continuation reads
+    // (`chunk.rs`), which is what issue #225 actually fixes (paging is now
+    // rejected outright for ISO-2022-JP, mirroring UTF-16). Neither
+    // `open_document` nor `preview_slice` changed for that fix, so this
+    // locks in that the preview path was, and remains, unaffected. -------
+
+    /// Build a large ISO-2022-JP fixture: `n` lines of `"第 {i} 行\n"`
+    /// (common kanji, representable in JIS X 0208), generated as a single
+    /// `String` in one pass and encoded with one `encoding::encode` call.
+    /// A single whole-string `encode` call is safe for ISO-2022-JP — only a
+    /// *streaming*, split-across-calls encode is the hazard the
+    /// judgment-overlay dead-end and `streamreplace.rs`'s module doc
+    /// describe; one call always starts and ends in a self-consistent
+    /// state. Frequent newlines (every short line) guarantee
+    /// `open_document`'s preview cut (`preview_slice`'s "last raw 0x0A
+    /// byte in the window" rule) always lands right after a real line
+    /// terminator: 0x0A is a control byte, never part of a JIS X 0208
+    /// two-byte sequence (whose bytes occupy 0x21-0x7E), so the cut is
+    /// unambiguous regardless of shift state. Returns the file path.
+    fn write_iso2022jp_line_fixture(dir_name: &str, n: u32) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(dir_name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big-iso2022jp.txt");
+        let data: String = (0..n).map(|i| format!("第 {i} 行\n")).collect();
+        let (bytes, unmappable) = crate::encoding::encode(&data, "ISO-2022-JP", false).unwrap();
+        assert!(
+            !unmappable,
+            "fixture text must be fully representable in ISO-2022-JP"
+        );
+        std::fs::write(&file, &bytes).unwrap();
+        file
+    }
+
+    /// Issue #225 regression lock: opening a large, well-formed ISO-2022-JP
+    /// file whose preview window contains frequent newlines must still
+    /// produce a clean, non-malformed preview, exactly as before the
+    /// chunk-*paging* fix elsewhere in this issue. This is a single,
+    /// self-contained decode from the true start of the file (offset 0),
+    /// unlike a chunk-paging continuation page: a fresh decoder's default
+    /// ASCII/ROMAN start state is *correct* at a real file start, so there
+    /// is no cross-call shift-state loss to exploit here — the preview's
+    /// own `malformed` signal stays a reliable indicator on this path,
+    /// unlike the paging bug this issue fixes for `chunk.rs`.
+    #[test]
+    fn open_document_large_iso2022jp_preview_not_malformed() {
+        let file = write_iso2022jp_line_fixture("plume-large-iso2022jp-preview", 600_000);
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        // Explicit label: chardetng never guesses ISO-2022-JP, it carries
+        // no BOM, and every frontend encoding list deliberately excludes
+        // it (encodings.ts) — no UI path currently reaches this encoding.
+        // This test guards the raw `open_document` command contract
+        // (defense-in-depth, same as the chunk-read gates), not a
+        // user-triggerable flow.
+        let opened = open_document(path, Some("ISO-2022-JP".to_string()), None).unwrap();
+
+        assert!(
+            opened.truncated,
+            "a file over the threshold must be truncated"
+        );
+        assert_eq!(opened.encoding, "ISO-2022-JP");
+        assert!(
+            !opened.malformed,
+            "a structurally valid ISO-2022-JP file with frequent newlines \
+             in the preview window must not report malformed"
+        );
+        assert!(
+            opened.content.ends_with('\n'),
+            "the preview must end on a full line, not mid line"
+        );
+        assert!(
+            !opened.content.contains('\u{FFFD}'),
+            "no replacement characters may appear when nothing is actually corrupt"
+        );
+        assert!(
+            opened.content.starts_with("第 0 行"),
+            "content must decode as the fixture's actual JIS text, not mojibake"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
 }
