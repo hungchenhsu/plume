@@ -1370,3 +1370,179 @@ describe("issue #208 — a deferred/in-flight save must write the doc it belongs
     expect(received).toEqual(["A-LIVE-CONTENT-must-be-used"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #210 — Save with Encoding's speculative doc.encoding/withBom mutation
+// must bump doc.revision in the same synchronous tick, exactly like
+// setLineEnding's own bump (main.ts:1916, issue #160). Without it, a plain
+// save already in flight for this doc (unrelated to the encoding change) can
+// resolve, see its own revisionAtStart snapshot still match doc.revision
+// (nothing bumped it), and have decideSaveCompletion wrongly clear dirty for
+// bytes that never carried the new encoding. Once dirty is wrongly clear,
+// drainLock's nextDrainStep (savemutex.ts:117-125) sees a "clean" doc and
+// drops the coalesced Save with Encoding request outright (dropSave) instead
+// of running it — the caller is told it succeeded and the tab shows the new
+// encoding, but disk still holds the old bytes. Reuses createHarness/
+// makeDocState/FakeDisk from the #124/#161 harness above — same
+// mustDefer/nextDrainStep/decideSaveCompletion wiring, just a different
+// local saveWithEncoding helper (deliberately separate from issue #161's own
+// above: adding this fix's revision bump to *that* shared helper would also
+// change doc.dirty's value by the time reevaluateReload's own dirty-check
+// runs in tests 903/942 above, which is a real, separate behavioral question
+// this issue's fix deliberately leaves alone — see this file's own commit
+// message / the issue #210 fix report for why).
+describe("issue #210 — Save with Encoding must bump doc.revision so an in-flight save's completion can't silently drop it via dropSave (failing-test-first)", () => {
+  /** Mirrors main.ts's saveWithEncoding menu action (same shape as issue
+   *  #161's own saveWithEncoding helper above) plus this issue's fix: the
+   *  doc.revision bump right alongside the encoding/withBom mutation. */
+  async function saveWithEncoding(
+    doc: DocState,
+    harness: ReturnType<typeof createHarness>,
+    target: { encoding: string; withBom: boolean },
+    ipc: () => Promise<SaveIpcResult>,
+  ): Promise<boolean> {
+    const original = { encoding: doc.encoding, withBom: doc.withBom };
+    doc.encoding = target.encoding;
+    doc.withBom = target.withBom;
+    doc.speculativeEncoding = original;
+    doc.revision += 1; // the fix — see main.ts's saveWithEncoding action
+    const written = await harness.issueSave(false, ipc);
+    if (!written && doc.speculativeEncoding === original) {
+      doc.encoding = original.encoding;
+      doc.withBom = original.withBom;
+    }
+    doc.speculativeEncoding = null;
+    return written;
+  }
+
+  it("a plain save already in flight for a real edit: the coalesced Save with Encoding request is not dropped, and actually writes the new encoding once drained", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.backupName = "bk-1.txt";
+    doc.buffer = "edit-1";
+    doc.encoding = "UTF-8";
+    doc.withBom = false;
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "d0", fingerprint: "fp-0" };
+    const harness = createHarness(doc, disk);
+
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+    expect(doc.saveReloadInFlight).toBe("save");
+
+    // While save1's IPC round trip is in flight, the user opens Save with
+    // Encoding and picks UTF-16LE. Applied speculatively right away,
+    // regardless of the lock — main.ts's action handler mutates doc state
+    // before ever consulting saveFlow's own mustDefer.
+    const p2 = saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-16LE", withBom: true },
+      () =>
+        Promise.resolve({
+          written: true,
+          stale: false,
+          fingerprint: "fp-enc",
+          writtenContent: "edit-1-as-utf16",
+        }),
+    );
+    expect(doc.pendingSaveAs).toBe(false); // deferred behind save1's lock
+    expect(doc.encoding).toBe("UTF-16LE"); // speculative mutation, not deferred
+
+    save1.resolve({ written: true, stale: false, fingerprint: "fp-1", writtenContent: "edit-1" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    expect(r2).toBe(true);
+    // FAIL target pre-fix: save1's completion saw a revision that never
+    // moved, wrongly cleared dirty, and the drain then dropped the
+    // coalesced request as a redundant no-op — disk would still hold
+    // "edit-1" (save1's own write) even though doc.encoding already
+    // reports UTF-16LE and the caller was told `true`.
+    expect(disk.content).toBe("edit-1-as-utf16");
+    expect(doc.fingerprint).toBe("fp-enc");
+    expect(doc.dirty).toBe(false);
+    expect(doc.backupName).toBeNull();
+    expect(doc.encoding).toBe("UTF-16LE");
+    expect(doc.withBom).toBe(true);
+    expect(doc.speculativeEncoding).toBeNull();
+  });
+
+  it("BOM-only change (same encoding, withBom flips) is bumped exactly the same way — not gated on the encoding value itself changing", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.backupName = "bk-1.txt";
+    doc.buffer = "edit-1";
+    doc.encoding = "UTF-8";
+    doc.withBom = false;
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "d0", fingerprint: "fp-0" };
+    const harness = createHarness(doc, disk);
+
+    const save1 = deferred<SaveIpcResult>();
+    const p1 = harness.issueSave(false, () => save1.promise);
+
+    const p2 = saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-8", withBom: true }, // same encoding, BOM only
+      () =>
+        Promise.resolve({
+          written: true,
+          stale: false,
+          fingerprint: "fp-bom",
+          writtenContent: "edit-1-with-bom",
+        }),
+    );
+    expect(doc.pendingSaveAs).toBe(false);
+
+    save1.resolve({ written: true, stale: false, fingerprint: "fp-1", writtenContent: "edit-1" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(true);
+    expect(r2).toBe(true);
+    expect(disk.content).toBe("edit-1-with-bom");
+    expect(doc.fingerprint).toBe("fp-bom");
+    expect(doc.dirty).toBe(false);
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.withBom).toBe(true);
+  });
+
+  it("control — an uncontended Save with Encoding (nothing else in flight) still completes normally and clears dirty", async () => {
+    const doc = makeDocState();
+    doc.dirty = true;
+    doc.backupName = "bk-1.txt";
+    doc.buffer = "content";
+    doc.encoding = "UTF-8";
+    doc.withBom = false;
+    doc.fingerprint = "fp-0";
+    doc.revision = 1;
+    const disk: FakeDisk = { content: "old-content", fingerprint: "fp-0" };
+    const harness = createHarness(doc, disk);
+
+    const written = await saveWithEncoding(
+      doc,
+      harness,
+      { encoding: "UTF-16LE", withBom: true },
+      () =>
+        Promise.resolve({
+          written: true,
+          stale: false,
+          fingerprint: "fp-1",
+          writtenContent: "content-as-utf16",
+        }),
+    );
+
+    expect(written).toBe(true);
+    expect(doc.dirty).toBe(false);
+    expect(doc.backupName).toBeNull();
+    expect(doc.encoding).toBe("UTF-16LE");
+    expect(doc.withBom).toBe(true);
+    expect(doc.speculativeEncoding).toBeNull();
+    expect(disk.content).toBe("content-as-utf16");
+  });
+});
