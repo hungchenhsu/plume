@@ -159,6 +159,158 @@ describe("showFindInFiles — incomplete-scan warning (issue #130)", () => {
   });
 });
 
+// Issue #215: plain find-in-files had no generation guard — unlike the
+// replace-preview scan below (replaceGeneration, issue #95), an in-flight
+// plain search whose query/case/regex/folder was changed before it
+// resolved would still land unconditionally on resolve: stale matches
+// rendered, the pre-change query pushed into search history, and
+// scanErrors from the wrong search shown (or a stale error surfacing after
+// a reject). These mirror the "superseded scan discarded unrendered" suite
+// further down, but for runSearch instead of runReplaceScan.
+describe("showFindInFiles — plain search generation guard (issue #215)", () => {
+  afterEach(() => {
+    document.dispatchEvent(new MouseEvent("mousedown"));
+    document.querySelector(".fif-overlay")?.remove();
+    searchInFolder.mockReset();
+    openDialog.mockReset();
+  });
+
+  it("control: an uninterrupted search renders its results and is recorded in history", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    searchInFolder.mockResolvedValue(
+      results([{ path: "/some/folder/a.txt", line: 1, preview: "hit" }]),
+    );
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    queryInput.value = "control-query-215e";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    expect(panel.querySelectorAll(".fif-item")).toHaveLength(1);
+    expect(findHistory()).toContain("control-query-215e");
+  });
+
+  it("a search superseded by a query change before it resolves is discarded — unrendered and not recorded in history", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    let resolveSearch!: (value: SearchResults) => void;
+    searchInFolder.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSearch = resolve;
+      }),
+    );
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    queryInput.value = "stale-query-215a";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    // Superseding query change before the in-flight search resolves.
+    queryInput.value = "fresh-query-215a";
+    queryInput.dispatchEvent(new Event("input"));
+
+    resolveSearch(results([{ path: "/some/folder/a.txt", line: 1, preview: "stale hit" }]));
+    await flush();
+
+    expect(panel.querySelectorAll(".fif-item")).toHaveLength(0);
+    expect(findHistory()).not.toContain("stale-query-215a");
+  });
+
+  it("a search superseded by a folder change before it resolves is discarded — unrendered and not recorded in history", async () => {
+    openDialog.mockResolvedValueOnce("/folder-one-215b");
+    let resolveSearch!: (value: SearchResults) => void;
+    searchInFolder.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSearch = resolve;
+      }),
+    );
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    queryInput.value = "folder-race-query-215b";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    // Superseding folder change before the in-flight search resolves.
+    openDialog.mockResolvedValueOnce("/folder-two-215b");
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+
+    resolveSearch(
+      results([{ path: "/folder-one-215b/a.txt", line: 1, preview: "stale hit" }]),
+    );
+    await flush();
+
+    expect(panel.querySelectorAll(".fif-item")).toHaveLength(0);
+    expect(findHistory()).not.toContain("folder-race-query-215b");
+  });
+
+  it("a search superseded by a case-sensitivity change before it resolves is discarded — unrendered and not recorded in history", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    let resolveSearch!: (value: SearchResults) => void;
+    searchInFolder.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSearch = resolve;
+      }),
+    );
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    queryInput.value = "case-race-query-215c";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    // Superseding case-sensitivity change before the in-flight search
+    // resolves.
+    const caseBox = panel.querySelectorAll('input[type="checkbox"]')[0] as HTMLInputElement;
+    caseBox.checked = true;
+    caseBox.dispatchEvent(new Event("change"));
+
+    resolveSearch(results([{ path: "/some/folder/a.txt", line: 1, preview: "stale hit" }]));
+    await flush();
+
+    expect(panel.querySelectorAll(".fif-item")).toHaveLength(0);
+    expect(findHistory()).not.toContain("case-race-query-215c");
+  });
+
+  it("a search superseded before it rejects does not surface the stale error", async () => {
+    openDialog.mockResolvedValue("/some/folder");
+    let rejectSearch!: (reason?: unknown) => void;
+    searchInFolder.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectSearch = reject;
+      }),
+    );
+    showFindInFiles(() => {});
+    const panel = document.querySelector(".fif-panel") as HTMLElement;
+    (panel.querySelector(".fif-folder") as HTMLButtonElement).click();
+    await flush();
+    const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
+    queryInput.value = "reject-race-query-215d";
+    queryInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await flush();
+
+    // Superseding query change before the in-flight search rejects.
+    queryInput.value = "reject-race-query-215d-fresh";
+    queryInput.dispatchEvent(new Event("input"));
+
+    rejectSearch(new Error("stale boom"));
+    await flush();
+
+    const status = panel.querySelector(".fif-status") as HTMLElement;
+    expect(status.textContent).toBe(t("findInFiles.searching"));
+  });
+});
+
 // ROADMAP.md v0.5 Track S (frontend item): replace-in-files, layered onto
 // the same panel above. The plain-find suites above already prove the base
 // search flow is untouched (they still pass unmodified); the suites below
