@@ -2151,11 +2151,33 @@ function showEncodingMenu(anchor: HTMLElement): void {
                   }
                 })
                 .finally(() => {
-                  // Always drop the marker, even if saveFlow itself threw
-                  // (e.g. the untitled-doc save dialog IPC rejecting): a
-                  // stale marker would make a later watcher reload decode
-                  // with the wrong encoding silently.
-                  doc.speculativeEncoding = null;
+                  // Only drop the marker if it's still this call's own
+                  // (issue #212) — mirrors the .then() rollback's own
+                  // reference-equality guard just above. A newer,
+                  // overlapping Save with Encoding call may already have
+                  // replaced it with its own (same "coalesce" scenario the
+                  // `original` comment above describes), or a reload that
+                  // landed and applied in between may already have cleared
+                  // it (applyOpenedForReload's own unconditional clear,
+                  // which is correct there since an applied reload always
+                  // establishes fresher, disk-verified truth no pending
+                  // speculative save's own rollback may second-guess — see
+                  // asyncguard.ts's reloadEncodingFor doc comment). This
+                  // finally has no such standing over a *different*,
+                  // still-in-flight call's own marker: clearing it
+                  // unconditionally would drop that other call's marker out
+                  // from under it — its own eventual rollback would then
+                  // read null instead of its own original and silently
+                  // skip restoring doc.encoding/withBom, and any reload
+                  // landing in the gap would fall back to doc.encoding
+                  // directly, which at that point is the *other* call's own
+                  // not-yet-written speculative target, not disk truth
+                  // (still stale even if saveFlow itself threw, e.g. the
+                  // untitled-doc save dialog IPC rejecting — same reasoning
+                  // either way).
+                  if (doc.speculativeEncoding === original) {
+                    doc.speculativeEncoding = null;
+                  }
                 });
             },
           })),
