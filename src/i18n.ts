@@ -254,6 +254,16 @@ export interface Messages {
   "streamReplace.executeButton": string;
   "streamReplace.replacing": string;
   "streamReplace.resultMessage": (count: number) => string;
+  // Appended to streamReplace.resultMessage's dialog text when the report's
+  // unmatchedRegionReencoded is true (issue #175): a chunk with no actual
+  // match was still re-encoded (carry/pending entanglement with a
+  // neighboring matching chunk, or chunk 0 under a BOM), so a non-canonical
+  // legacy byte sequence there may have been normalized even though the
+  // user only asked to change the matched text — vocabulary mirrors
+  // batchConvert.byteDriftTooltip. Never appended when replacements is 0
+  // (the field is always false then — see StreamReplaceReport's doc
+  // comment in ipc.ts).
+  "streamReplace.unmatchedRegionReencodedNote": string;
   // Shown instead of reloading when the tab active at the start of the
   // replace closed before it finished and no tab for the same path was
   // reopened in the meantime (issue #163) — the file itself was already
@@ -624,6 +634,9 @@ const en: Messages = {
   "streamReplace.replacing": "Replacing…",
   "streamReplace.resultMessage": (count) =>
     `${count} replacement${count === 1 ? "" : "s"} made.`,
+  "streamReplace.unmatchedRegionReencodedNote":
+    "Some unmatched regions were re-encoded due to cross-chunk entanglement — " +
+    "a non-canonical legacy byte sequence there may have been normalized.",
   "streamReplace.completedTabClosedMessage":
     "The file was updated, but its tab was already closed — the preview wasn't refreshed.",
 
@@ -962,6 +975,8 @@ const zhTW: Messages = {
   "streamReplace.executeButton": "全部取代",
   "streamReplace.replacing": "取代中…",
   "streamReplace.resultMessage": (count) => `已取代 ${count} 處。`,
+  "streamReplace.unmatchedRegionReencodedNote":
+    "部分未命中的區段因跨界糾纏被重新編碼——該處可能有非標準的舊版位元組序列被正規化。",
   "streamReplace.completedTabClosedMessage": "檔案已更新，但其分頁已關閉——預覽未重新整理。",
 
   "streamConvert.title": (file) => `轉換編碼 — ${file}`,
@@ -1297,6 +1312,9 @@ const ja: Messages = {
   "streamReplace.executeButton": "すべて置換",
   "streamReplace.replacing": "置換中…",
   "streamReplace.resultMessage": (count) => `${count} 件を置換しました。`,
+  "streamReplace.unmatchedRegionReencodedNote":
+    "一致しなかった一部の領域が、チャンクをまたぐ巻き込みにより再エンコードされました——" +
+    "非正規のレガシーバイト列がそこで正規化された可能性があります。",
   "streamReplace.completedTabClosedMessage":
     "ファイルは更新されましたが、タブはすでに閉じられていたためプレビューは更新されませんでした。",
 
@@ -1631,6 +1649,8 @@ const zhCN: Messages = {
   "streamReplace.executeButton": "全部替换",
   "streamReplace.replacing": "替换中…",
   "streamReplace.resultMessage": (count) => `已替换 ${count} 处。`,
+  "streamReplace.unmatchedRegionReencodedNote":
+    "部分未匹配的区域因跨块纠缠被重新编码——该处可能有非规范的旧版字节序列被规范化。",
   "streamReplace.completedTabClosedMessage": "文件已更新，但其标签页已关闭——预览未刷新。",
 
   "streamConvert.title": (file) => `转换编码 — ${file}`,

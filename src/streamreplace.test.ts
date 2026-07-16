@@ -15,7 +15,24 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 // ./ipc and @tauri-apps/plugin-dialog are already mocked by the time
 // ./streamreplace is evaluated — same pattern as batchconvert.test.ts.
 import { t } from "./i18n";
-import { showStreamReplace } from "./streamreplace";
+import { buildStreamReplaceResultMessage, showStreamReplace } from "./streamreplace";
+
+// Issue #175: StreamReplaceReport.unmatchedRegionReencoded had no frontend
+// consumer — buildStreamReplaceResultMessage is the pure message-composing
+// half of that wiring (split from the DOM-driving runReplace exactly like
+// lossysave.ts's buildLossySaveDialogContent), so it's covered directly
+// without needing a WebView or the overlay DOM at all.
+describe("buildStreamReplaceResultMessage (issue #175)", () => {
+  it("appends_the_reencoded_note_when_unmatched_region_reencoded_is_true", () => {
+    expect(buildStreamReplaceResultMessage(3, true)).toBe(
+      `${t("streamReplace.resultMessage", 3)} ${t("streamReplace.unmatchedRegionReencodedNote")}`,
+    );
+  });
+
+  it("omits_the_note_when_unmatched_region_reencoded_is_false", () => {
+    expect(buildStreamReplaceResultMessage(3, false)).toBe(t("streamReplace.resultMessage", 3));
+  });
+});
 
 // showStreamReplace(path, encoding, onReplaced) has no editor/tabs
 // dependency — it only touches the DOM, ./ipc, @tauri-apps/plugin-dialog,
@@ -95,6 +112,29 @@ describe("showStreamReplace — panel closes after busy clears (issue #98)", () 
       expect.objectContaining({ title, kind: "info" }),
     );
     expect(onReplaced).toHaveBeenCalledTimes(1);
+    expect(overlayEl()).toBeNull();
+  });
+
+  // Issue #175: the report's unmatchedRegionReencoded flag reaches the
+  // actual blocking dialog the user sees, not just buildStreamReplaceResultMessage
+  // in isolation — end-to-end through runReplace's IPC call.
+  it("overlay_dialog_includes_reencoded_note_when_report_flags_it", async () => {
+    streamReplaceInFile.mockResolvedValue({
+      replacements: 3,
+      bytesWritten: 42,
+      unmatchedRegionReencoded: true,
+    });
+    messageDialog.mockResolvedValue(undefined);
+    const onReplaced = vi.fn();
+    const panel = openPanel(onReplaced);
+
+    await fillAndExecute(panel);
+
+    const title = t("streamReplace.title", "file.txt");
+    expect(messageDialog).toHaveBeenCalledWith(
+      `${t("streamReplace.resultMessage", 3)} ${t("streamReplace.unmatchedRegionReencodedNote")}`,
+      expect.objectContaining({ title, kind: "info" }),
+    );
     expect(overlayEl()).toBeNull();
   });
 
