@@ -1388,7 +1388,7 @@ for incoming contributors.
 - [x] #227: dedicated test pinning the head-trim displacement-absorption
   invariant (backward window start landing exactly on an ASCII+CJK
   boundary; trim fires and whole-file reassembly stays byte-exact)
-- [ ] #203: de-flake the two large-file streaming tests (fingerprint
+- [x] #203: de-flake the two large-file streaming tests (fingerprint
   false positives under load) with a load-independent
   external-modification simulation instead of wall-clock-sensitive
   timing
