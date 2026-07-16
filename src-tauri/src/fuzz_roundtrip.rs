@@ -84,7 +84,7 @@
 //! ## Mojibake wizard reversibility
 //!
 //! `mojibake::REPAIR_PAIRS` (made `pub(crate)` for this file to iterate
-//! without duplicating it) lists the wizard's eight supported
+//! without duplicating it) lists the wizard's nine supported
 //! `(intermediate, original)` mis-decode hypotheses. For each, this file
 //! generates representable `original`-text, encodes it (the bytes a real
 //! file would have had), mis-decodes those bytes with `intermediate`
@@ -1216,6 +1216,7 @@ mod tests {
         shift_jis: Vec<char>,
         euc_kr: Vec<char>,
         latin1_supplement: Vec<char>,
+        windows1251: Vec<char>,
     }
 
     impl MojibakePools {
@@ -1226,6 +1227,7 @@ mod tests {
                 shift_jis: shift_jis_pool(),
                 euc_kr: euc_kr_pool(),
                 latin1_supplement: latin1_supplement_lower_accented_pool(),
+                windows1251: windows1251_pool(),
             }
         }
     }
@@ -1245,7 +1247,13 @@ mod tests {
     /// random UTF-8 text essentially never lines up with those encodings'
     /// byte structure by chance (see that pool's doc comment); the other
     /// five pairs (`windows-1252` as intermediate) have no such constraint
-    /// since windows-1252 decodes every byte value.
+    /// since windows-1252 decodes every byte value. `(KOI8-R,
+    /// windows-1251)` (issue #182) draws from `windows1251_pool`: like
+    /// windows-1252, single-byte `encoding_rs` tables decode essentially
+    /// every byte value to *something* (see that pool family's own doc
+    /// comment further up this file), so KOI8-R rejecting a windows-1251
+    /// pool member's re-encoded bytes is likewise a rare, gracefully
+    /// skipped edge rather than the common case.
     fn run_mojibake_reversibility_fuzz(
         rng: &mut XorShift64,
         cases_per_pair: usize,
@@ -1267,6 +1275,7 @@ mod tests {
                 ("Big5", "UTF-8") | ("GBK", "UTF-8") | ("Shift_JIS", "UTF-8") => {
                     TextSource::Pool(&pools.latin1_supplement)
                 }
+                ("KOI8-R", "windows-1251") => TextSource::Pool(&pools.windows1251),
                 (i, o) => panic!(
                     "unhandled mojibake::REPAIR_PAIRS entry ({i}, {o}) -- add a text generator"
                 ),
@@ -1323,7 +1332,7 @@ mod tests {
     }
 
     /// Seed = ROUNDTRIP_FUZZ_SEED. 40 cases per `mojibake::REPAIR_PAIRS`
-    /// hypothesis (320 attempts total; see `run_mojibake_reversibility_fuzz`
+    /// hypothesis (360 attempts total; see `run_mojibake_reversibility_fuzz`
     /// for why some attempts are expected to be skipped rather than
     /// checked).
     #[test]
