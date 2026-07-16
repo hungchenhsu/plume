@@ -700,17 +700,33 @@ export function showFindInFiles(
       lastFolder = folder;
       folderButton.textContent = basename(folder);
       folderButton.title = folder;
+      // Same issue #215 supersession as the query/case/regex listeners
+      // below: a folder switch must invalidate any plain search still in
+      // flight against the old folder, not just a pending replace preview.
+      searchGeneration += 1;
       invalidatePreview();
       input.focus();
     }
   });
 
   let searching = false;
+  // Bumped by every runSearch call and by every query/case/regex/folder
+  // change below — a search response is only rendered (and only recorded
+  // into search history) if its generation is still current by the time
+  // the IPC call resolves or rejects. Mirrors replaceGeneration's issue
+  // #95 fix above; this is issue #215's fix for the same class of bug in
+  // plain find, which had no such guard at all: an in-flight search whose
+  // query/case/regex/folder changed before it resolved would still land
+  // unconditionally — stale matches rendered, the pre-change query pushed
+  // into search history, scanErrors from the wrong search shown.
+  let searchGeneration = 0;
   const runSearch = async (): Promise<void> => {
     if (searching) return;
     const query = input.value;
     if (!lastFolder || query === "") return;
     searching = true;
+    searchGeneration += 1;
+    const mySearchGeneration = searchGeneration;
     // A plain search always supersedes any pending replace preview, even
     // when the query text itself didn't change since the preview was
     // shown (e.g. Enter pressed again with the same text) — invalidating
@@ -727,6 +743,11 @@ export function showFindInFiles(
         caseBox.checked,
         regexBox.checked,
       );
+      // A newer search, or an input/case/regex/folder change that
+      // invalidated this one, has already superseded this response —
+      // discard it unrendered and unrecorded (issue #215's fix, mirroring
+      // replaceGeneration's issue #95 guard above).
+      if (mySearchGeneration !== searchGeneration) return;
       // Recorded on every successful search, matches or not — mirrors the
       // CM6 panel's own commitFind, which fires on Enter regardless of
       // whether anything was found.
@@ -742,8 +763,16 @@ export function showFindInFiles(
       renderMatches(results.matches);
       renderScanErrors(results.scanErrors);
     } catch (error) {
+      // Same supersession check on the error path: a stale search's
+      // rejection must not overwrite the status line for whatever the
+      // user is doing now (issue #215).
+      if (mySearchGeneration !== searchGeneration) return;
       status.textContent = String(error);
     } finally {
+      // Unconditional regardless of the generation check above — this is
+      // the reentrancy guard, not the staleness guard, and must always
+      // release so a subsequent genuine search can start even after this
+      // one was discarded as stale.
       searching = false;
     }
   };
@@ -757,12 +786,18 @@ export function showFindInFiles(
       void runSearch();
     }
   });
-  // Additive: any query edit voids a pending replace preview (see
-  // invalidatePreview's own no-op guard for why this never affects a
-  // plain-find-only session).
-  input.addEventListener("input", invalidatePreview);
-  caseBox.addEventListener("change", invalidatePreview);
-  regexBox.addEventListener("change", invalidatePreview);
+  // Any query/case/regex change supersedes an in-flight plain search
+  // (issue #215), exactly like it already supersedes a pending replace
+  // preview: bump searchGeneration first so a search response that
+  // resolves or rejects afterward is recognized as stale by runSearch's
+  // own check above, then invalidate the preview as before.
+  const supersedeSearch = (): void => {
+    searchGeneration += 1;
+    invalidatePreview();
+  };
+  input.addEventListener("input", supersedeSearch);
+  caseBox.addEventListener("change", supersedeSearch);
+  regexBox.addEventListener("change", supersedeSearch);
   // Independent of preview state (unlike invalidatePreview above): the
   // literal-replacement hint tracks the regex checkbox itself, whether or
   // not a preview has ever run — the warning matters most *before* the
