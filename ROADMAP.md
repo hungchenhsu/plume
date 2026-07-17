@@ -1787,7 +1787,7 @@ for incoming contributors.
   fixes for the gaps found
 
 **Track H — outward** (positioning red lines apply: no competitor names)
-- [ ] H1 CHANGELOG.md: Keep-a-Changelog backfill from v0.1.0-alpha.1
+- [x] H1 CHANGELOG.md: Keep-a-Changelog backfill from v0.1.0-alpha.1
   through v0.5.0-alpha.2; DIRECTION §7 release checklist gains "update
   CHANGELOG in the same PR"
 - [ ] H2 docs/features.md: encoding-features guide (detection,
