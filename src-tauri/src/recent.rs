@@ -27,6 +27,28 @@ pub fn add_recent_file<R: Runtime>(app: AppHandle<R>, path: String) -> Vec<Strin
     list
 }
 
+/// The list `clear_recent_files` persists and returns — always empty,
+/// independent of what was there before (unlike `push_recent`, clearing
+/// needs no prior content, so `clear_recent_files` never reads the file
+/// first). Split out into its own named function purely so "what a clear
+/// produces" is unit-testable without an `AppHandle`, the same reason
+/// `push_recent` is split out of `add_recent_file`.
+fn cleared_list() -> Vec<String> {
+    Vec::new()
+}
+
+/// Empty the recent list (ROADMAP.md v0.6 C4: File > Clear Recently
+/// Opened). Same shape as `add_recent_file`: writes `recent.json` via
+/// `store::write_json` (best-effort, matching `add_recent_file`'s own
+/// `let _ =`) and returns the resulting list so the frontend can replace
+/// its cached `recentFiles` with the exact value now on disk.
+#[tauri::command]
+pub fn clear_recent_files<R: Runtime>(app: AppHandle<R>) -> Vec<String> {
+    let list = cleared_list();
+    let _ = crate::store::write_json(&app, FILE, &list);
+    list
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,5 +67,64 @@ mod tests {
         assert_eq!(list.len(), MAX_RECENT);
         assert_eq!(list[0], "new");
         assert!(!list.contains(&(MAX_RECENT - 1).to_string()));
+    }
+
+    #[test]
+    fn cleared_list_is_empty() {
+        assert!(cleared_list().is_empty());
+    }
+
+    /// "Clear then reload": clear_recent_files persists `cleared_list()` via
+    /// `store::write_json`; load_recent_files reads it back via
+    /// `store::read_json`'s `unwrap_or_default()` fallback. Both are
+    /// `AppHandle`-based commands, and this crate has no mock-`AppHandle`
+    /// test harness (no `tauri::test` feature enabled — confirmed by
+    /// grepping the crate; load_recent_files/add_recent_file are likewise
+    /// never called directly in tests, only push_recent is), so this
+    /// exercises the exact path-based primitives (`write_json_to_path`/
+    /// `read_json_from_path`) those AppHandle wrappers delegate to —
+    /// seeded the way add_recent_file's push_recent would have left the
+    /// file, same as store.rs's own round-trip test does for its `Sample`
+    /// shape.
+    #[test]
+    fn clear_then_reload_round_trip_is_empty() {
+        let dir = std::env::temp_dir().join("plume-recent-clear-roundtrip-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+
+        let seeded = push_recent(push_recent(Vec::new(), "a.txt".into()), "b.txt".into());
+        crate::store::write_json_to_path(&path, &seeded).unwrap();
+        assert_eq!(
+            crate::store::read_json_from_path::<Vec<String>>(&path).unwrap(),
+            seeded
+        );
+
+        crate::store::write_json_to_path(&path, &cleared_list()).unwrap();
+
+        let reloaded: Vec<String> = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert!(reloaded.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// "Behavior for a nonexistent file": recent.json (and its parent
+    /// directory) has never been created — a fresh install, or a launch
+    /// before the first add_recent_file. clear_recent_files's write must
+    /// still succeed (write_json_to_path creates the parent dir), and the
+    /// subsequent load must see an empty list rather than erroring.
+    #[test]
+    fn clear_when_recent_json_never_existed_still_reloads_empty() {
+        let dir = std::env::temp_dir().join("plume-recent-clear-missing-dir-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(FILE);
+
+        crate::store::write_json_to_path(&path, &cleared_list())
+            .expect("clear must succeed even when recent.json's directory doesn't exist yet");
+
+        let reloaded: Vec<String> = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert!(reloaded.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

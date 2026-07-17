@@ -453,6 +453,16 @@ export function syncReopenClosedTabMenu(enabled: boolean): Promise<void> {
   return invoke<void>("sync_reopen_closed_tab_menu", { enabled });
 }
 
+/** Enable/disable the File > Clear Recently Opened item as `recentFiles`
+ *  becomes non-empty/empty (see main.ts's `syncClearRecentState`, called
+ *  after every add and clear). Unlike `syncReopenClosedTabMenu`'s stack,
+ *  recent.json is persisted, so the item's initial state is set straight
+ *  from disk at menu-build time — no startup call needed. Best-effort like
+ *  `syncReadOnlyMenu` (see menu.rs `sync_clear_recent_menu`). */
+export function syncClearRecentMenu(enabled: boolean): Promise<void> {
+  return invoke<void>("sync_clear_recent_menu", { enabled });
+}
+
 /** Relabel the native menu's custom items (File/Edit/View submenus, and
  *  every `with_id` item inside them) to `locale`'s labels. Called whenever
  *  the resolved locale changes (Preferences dialog, or the "System"
@@ -522,6 +532,13 @@ export function loadRecentFiles(): Promise<string[]> {
 /** Push a path onto the recent list; returns the updated list. */
 export function addRecentFile(path: string): Promise<string[]> {
   return invoke<string[]>("add_recent_file", { path });
+}
+
+/** Empty the recent list (ROADMAP.md v0.6 C4: File > Clear Recently
+ *  Opened); returns the (now empty) list, mirroring addRecentFile's
+ *  return shape. */
+export function clearRecentFiles(): Promise<string[]> {
+  return invoke<string[]>("clear_recent_files");
 }
 
 export interface SearchMatch {
