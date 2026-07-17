@@ -1790,11 +1790,32 @@ for incoming contributors.
 - [ ] H1 CHANGELOG.md: Keep-a-Changelog backfill from v0.1.0-alpha.1
   through v0.5.0-alpha.2; DIRECTION §7 release checklist gains "update
   CHANGELOG in the same PR"
-- [ ] H2 docs/features.md: encoding-features guide (detection,
+- [x] H2 docs/features.md: encoding-features guide (detection,
   reopen/save with encoding, mojibake wizard, batch conversion,
   side-by-side preview, hex preview, character inspector,
   normalization, large-file mode, find/replace in files); English; no
   screenshots (agents must not launch the GUI)
+
+  Text-only user guide (250 lines), one section per feature — what it
+  does, how to trigger it (menu path or status-bar click chain, with
+  keyboard shortcut where one exists), and its behavior boundaries
+  (disabled/hidden states, size thresholds, encoding-specific
+  exclusions). Structured as intro → Encoding (14 features, including
+  this cycle's new Document Info dialog and the existing detection
+  diagnostics popup/truncated-sample warning) → Large files (preview
+  mode, streaming find/replace, streaming convert) → Find and replace in
+  files → Everyday editing (brief). Cross-links docs/encoding-detection.md
+  for the full detection decision order rather than restating it.
+
+  Every trigger path and boundary claim was verified against source
+  (`menu.rs` LABELS/accelerators for native menu items and shortcuts,
+  `main.ts`'s status-bar popup builders for the encoding/line-ending/
+  decode-warning/char-inspector click chains, and the relevant frontend
+  + Rust modules for behavior — e.g. `chunk.rs`/`chunkpolicy.ts` for the
+  10 MB/2 MB/8-chunk large-file constants, `replaceinfiles.rs` for the
+  5 MB/500-item find-in-files caps) — no UI path was written from
+  memory. README.md's "What's there today" list gained a one-line
+  pointer to this file. No screenshots; agents cannot launch the GUI.
 
 - [ ] Cycle close-out: DIRECTION §2 refresh, session-handoff memory,
   tag v0.6.0-alpha.1 with zh-TW notes, prerelease published under the
