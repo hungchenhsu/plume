@@ -1764,8 +1764,16 @@ for incoming contributors.
   `sortLinesNumeric is not a function`) before the implementations
   existed. 518 cargo test (+2, both in menu.rs), 951 vitest (+24, all in
   lineops.test.ts).
-- [ ] C4 clear recent files: clear_recent_files command + a File > Open
-  Recent > Clear entry (recent.rs currently has only load/add)
+- [x] C4 clear recent files: clear_recent_files command + a File > Open
+  Recent > Clear entry (recent.rs currently had only load/add). Clear
+  writes an empty list through the same store::write_json path add uses
+  and returns it so the frontend cache mirrors disk exactly. Went one
+  step past the spec: the item is enabled/disabled dynamically
+  (sync_clear_recent_menu, following syncReopenClosedTabMenu's existing
+  plain-MenuItem sync precedent) — disabled when the list is already
+  empty rather than a silent no-op click; initial state set at
+  menu-build time straight from disk. LABELS ×4 with a pinned
+  translation test
 
 **Track V — robustness**
 - [x] V1 session forward-compat fixtures: hand-written old-shape session

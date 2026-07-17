@@ -34,6 +34,7 @@ import {
   buildLineIndex,
   checkByteDrift,
   checkRepresentable,
+  clearRecentFiles,
   listBackups,
   loadBackup,
   loadRecentFiles,
@@ -50,6 +51,7 @@ import {
   saveBackup,
   saveDocument,
   saveSession,
+  syncClearRecentMenu,
   syncReadOnlyMenu,
   syncReopenClosedTabMenu,
   takePendingFiles,
@@ -1133,10 +1135,37 @@ function rememberRecent(path: string): void {
   void addRecentFile(path)
     .then((list) => {
       recentFiles = list;
+      syncClearRecentState();
     })
     .catch(() => {
       // Best-effort; quick open just shows a slightly stale list.
     });
+}
+
+/** File > Clear Recently Opened (ROADMAP.md v0.6 C4): empty recent.json
+ *  and the frontend's cached copy together, so a Quick Open opened right
+ *  after shows nothing stale and a relaunch doesn't bring the list back. */
+function clearRecent(): void {
+  void clearRecentFiles()
+    .then((list) => {
+      recentFiles = list;
+      syncClearRecentState();
+    })
+    .catch(() => {
+      // Best-effort, same as rememberRecent above.
+    });
+}
+
+/** Sync the File > Clear Recently Opened item's enabled state to whether
+ *  recentFiles currently holds anything (menu.rs `sync_clear_recent_menu`).
+ *  Unlike syncReopenClosedTabState, no call is needed at startup: recent.json
+ *  is persisted, so menu.rs's `build` already derives the initial state
+ *  from disk. Called after every add (rememberRecent) and clear
+ *  (clearRecent) — the only two ways recentFiles's emptiness can change. */
+function syncClearRecentState(): void {
+  void syncClearRecentMenu(recentFiles.length > 0).catch(() => {
+    // Best-effort; see rememberRecent's doc comment above.
+  });
 }
 
 /** Timestamps of our own saves, to ignore the watcher echo they cause. */
@@ -2827,7 +2856,10 @@ window.addEventListener("keydown", (event) => {
  * guard at all (though `editor.content()` on no active doc never throws
  * either way, it would print whatever the editor singleton currently holds
  * with no basis) — given a defensive `if (!tabs.active) break;` below for
- * consistency with `stream_replace`/`document_info`'s style.
+ * consistency with `stream_replace`/`document_info`'s style. ROADMAP.md
+ * v0.6 C4's clear_recent_files, added after this audit, joins the
+ * state-independent group above — like open_recent, it never touches the
+ * active doc at all.
  */
 function dispatchMenuCommand(id: string): void {
   switch (id) {
@@ -2867,6 +2899,9 @@ function dispatchMenuCommand(id: string): void {
       break;
     case "open_recent":
       showQuickOpen(recentFiles, (path) => void openPath(path));
+      break;
+    case "clear_recent_files":
+      clearRecent();
       break;
     case "word_wrap":
       toggleWordWrap();

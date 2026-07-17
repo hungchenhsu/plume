@@ -34,6 +34,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "最近使ったファイル…",
         "最近的文件…",
     ),
+    (
+        "clear_recent_files",
+        "Clear Recently Opened",
+        "清除最近開啟的檔案",
+        "最近使ったファイルをクリア",
+        "清除最近打开的文件",
+    ),
     ("save", "Save", "儲存", "保存", "保存"),
     (
         "save_as",
@@ -415,6 +422,23 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(
             &MenuItemBuilder::with_id("open_recent", l("open_recent"))
                 .accelerator("CmdOrCtrl+P")
+                .build(app)?,
+        )
+        .separator()
+        .item(
+            // ROADMAP.md v0.6 C4: there is no native submenu enumerating
+            // individual recent files (open_recent above opens quickopen.ts's
+            // in-DOM picker instead, populated from the frontend's
+            // `recentFiles` cache — see src/main.ts's `dispatchMenuCommand`
+            // "open_recent" case), so this sits as a flat File-menu entry
+            // right after it, separator-bracketed on both sides. Unlike
+            // reopen_closed_tab below (session-local, always empty at
+            // launch), recent.json is persisted, so the initial enabled
+            // state can be read from disk right here instead of always
+            // starting disabled; sync_clear_recent_menu (below) keeps it
+            // correct afterward as add/clear run during the session.
+            &MenuItemBuilder::with_id("clear_recent_files", l("clear_recent_files"))
+                .enabled(!crate::recent::load_recent_files(app.clone()).is_empty())
                 .build(app)?,
         )
         .separator()
@@ -845,6 +869,32 @@ pub fn sync_reopen_closed_tab_menu<R: Runtime>(
     Ok(())
 }
 
+/// Enable or disable the File > Clear Recently Opened item (ROADMAP.md
+/// v0.6 C4). Unlike `sync_reopen_closed_tab_menu`'s stack — session-local
+/// and therefore always empty at launch — recent.json is persisted, so
+/// `build` (above) already sets the initial enabled state straight from
+/// disk; this only has to run afterward, as the frontend's `recentFiles`
+/// cache changes shape (main.ts's `syncClearRecentState`, called after
+/// every `add_recent_file` and `clear_recent_files`). Same plain-MenuItem
+/// shape as `sync_reopen_closed_tab_menu`, so `as_menuitem` not
+/// `as_check_menuitem`.
+#[tauri::command]
+pub fn sync_clear_recent_menu<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<(), String> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+    let Some(item) = menu
+        .get("file")
+        .and_then(|item| item.as_submenu().cloned())
+        .and_then(|file| file.get("clear_recent_files"))
+        .and_then(|item| item.as_menuitem().cloned())
+    else {
+        return Ok(());
+    };
+    item.set_enabled(enabled).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Relabel every custom (`with_id`) menu entry to `locale`'s labels
 /// ("en" | "zh-TW" | "ja" | "zh-CN", already resolved — never "system"; see
 /// `resolve_lang` and the frontend's `src/i18n.ts` `effectiveLocale`).
@@ -867,6 +917,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "new_tab",
             "open",
             "open_recent",
+            "clear_recent_files",
             "save",
             "save_as",
             "close_tab",
@@ -1323,6 +1374,20 @@ mod tests {
         assert_eq!(label("sort_lines_numeric", "zh-TW"), "排序行（數值）");
         assert_eq!(label("sort_lines_numeric", "ja"), "行を並べ替え（数値）");
         assert_eq!(label("sort_lines_numeric", "zh-CN"), "排序行（数值）");
+    }
+
+    // ROADMAP.md v0.6 C4 clear recent files: the File menu's new
+    // "clear_recent_files" item id, pinned across all four languages --
+    // same rationale as join_lines/reverse_lines's dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_clear_recent_files_text_for_every_language() {
+        assert_eq!(label("clear_recent_files", "en"), "Clear Recently Opened");
+        assert_eq!(label("clear_recent_files", "zh-TW"), "清除最近開啟的檔案");
+        assert_eq!(
+            label("clear_recent_files", "ja"),
+            "最近使ったファイルをクリア"
+        );
+        assert_eq!(label("clear_recent_files", "zh-CN"), "清除最近打开的文件");
     }
 
     #[test]
