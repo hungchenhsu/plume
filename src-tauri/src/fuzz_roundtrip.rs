@@ -84,7 +84,7 @@
 //! ## Mojibake wizard reversibility
 //!
 //! `mojibake::REPAIR_PAIRS` (made `pub(crate)` for this file to iterate
-//! without duplicating it) lists the wizard's nine supported
+//! without duplicating it) lists the wizard's ten supported
 //! `(intermediate, original)` mis-decode hypotheses. For each, this file
 //! generates representable `original`-text, encodes it (the bytes a real
 //! file would have had), mis-decodes those bytes with `intermediate`
@@ -1214,6 +1214,7 @@ mod tests {
         big5: Vec<char>,
         gb18030: Vec<char>,
         shift_jis: Vec<char>,
+        euc_jp: Vec<char>,
         euc_kr: Vec<char>,
         latin1_supplement: Vec<char>,
         windows1251: Vec<char>,
@@ -1225,6 +1226,7 @@ mod tests {
                 big5: big5_pool(),
                 gb18030: gb18030_pool(),
                 shift_jis: shift_jis_pool(),
+                euc_jp: euc_jp_pool(),
                 euc_kr: euc_kr_pool(),
                 latin1_supplement: latin1_supplement_lower_accented_pool(),
                 windows1251: windows1251_pool(),
@@ -1246,7 +1248,7 @@ mod tests {
     /// `latin1_supplement_lower_accented_pool` specifically because plain
     /// random UTF-8 text essentially never lines up with those encodings'
     /// byte structure by chance (see that pool's doc comment); the other
-    /// five pairs (`windows-1252` as intermediate) have no such constraint
+    /// six pairs (`windows-1252` as intermediate) have no such constraint
     /// since windows-1252 decodes every byte value. `(KOI8-R,
     /// windows-1251)` (issue #182) draws from `windows1251_pool`: like
     /// windows-1252, single-byte `encoding_rs` tables decode essentially
@@ -1271,6 +1273,7 @@ mod tests {
                 ("windows-1252", "Big5") => TextSource::Pool(&pools.big5),
                 ("windows-1252", "gb18030") => TextSource::Pool(&pools.gb18030),
                 ("windows-1252", "Shift_JIS") => TextSource::Pool(&pools.shift_jis),
+                ("windows-1252", "EUC-JP") => TextSource::Pool(&pools.euc_jp),
                 ("windows-1252", "EUC-KR") => TextSource::Pool(&pools.euc_kr),
                 ("Big5", "UTF-8") | ("GBK", "UTF-8") | ("Shift_JIS", "UTF-8") => {
                     TextSource::Pool(&pools.latin1_supplement)
@@ -1332,7 +1335,7 @@ mod tests {
     }
 
     /// Seed = ROUNDTRIP_FUZZ_SEED. 40 cases per `mojibake::REPAIR_PAIRS`
-    /// hypothesis (360 attempts total; see `run_mojibake_reversibility_fuzz`
+    /// hypothesis (400 attempts total; see `run_mojibake_reversibility_fuzz`
     /// for why some attempts are expected to be skipped rather than
     /// checked).
     #[test]

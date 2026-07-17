@@ -1553,13 +1553,56 @@ for incoming contributors.
   after Print) with a pinned-translation test mirroring `read_only`'s.
   497 cargo test (+16, all in `linebreak.rs`/`docinfo.rs`/`menu.rs`), 871
   vitest (+21, all in `docinfo.test.ts`).
-- [ ] E2 mojibake repair pair, narrowed by planning review: evaluate
-  (WINDOWS_1252, EUC_JP) only — the CJK↔CJK candidates are the
-  documented reachable-but-wrong dead end. Gate upgraded from "prove
-  reachable" to "prove reachable AND the reverse hypothesis does not
-  also pass" (mutual-ambiguity test, ISO-8859-5 precedent); if either
-  leg fails, record the dead end in mojibake.rs's pair notes and
-  withdraw the pair — a withdrawal is a valid outcome [danger]
+- [x] E2 mojibake repair pair, narrowed by planning review: evaluated
+  (WINDOWS_1252, EUC_JP) — the CJK↔CJK candidates remain the documented
+  reachable-but-wrong dead end, out of scope here. Both required gates
+  passed, so the pair was **included**, not withdrawn — a withdrawal was
+  the equally valid other outcome per the planning gate, but the
+  evidence went the other way this time [danger]
+
+  Gate 1 (reachability), checked at the source level before writing any
+  fixture: chardetng 0.1.17's `src/lib.rs` carries a real, positively-
+  detected EUC-JP candidate (`EucJpCandidate` struct,
+  `EncodingDetector::EUC_JP_INDEX = 4`, one of the 27 candidates wired
+  into the array `EncodingDetector::new()` builds) — structurally unlike
+  the KOI8-R dead end (judgment-overlay.md §4): chardetng's own README
+  lists EUC-JP under "Detected: Historical locale-specific fallbacks",
+  never aliased away the way KOI8-R→KOI8-U is, and chardetng's own test
+  suite pins `check("これは文字実験です。", EUC_JP)`. Confirmed
+  empirically, not just structurally, by failing-test-first:
+  `mojibake.rs`'s new `repairs_eucjp_misdecoded_as_windows1252` (a
+  diverse three-sentence Japanese fixture mixing kanji/hiragana/
+  katakana, distinct from the existing `SHIFT_JIS_TEXT`) was red before
+  the pair existed in `REPAIR_PAIRS` (`detect_mojibake` returned no
+  candidate) and green after.
+
+  Gate 2 (mutual ambiguity, ISO-8859-5 precedent shape), three checks,
+  all green: (a) `windows1252_eucjp_reverse_hypothesis_is_rejected` — the
+  reversed hypothesis, (EUC_JP, WINDOWS_1252), does not also pass
+  `try_repair` on the same genuine-EUC-JP-as-1252 mojibake, unlike the
+  excluded ISO-8859-5 case; (b)
+  `no_candidates_for_normal_western_european_text` — a realistic French
+  windows-1252 paragraph (distinct from the narrower, purpose-built
+  `LATIN1_SUPPLEMENT_TEXT` fixture) does not trigger a false-positive
+  (windows-1252, EUC-JP) candidate; (c)
+  `windows1252_eucjp_pair_does_not_shadow_existing_cjk_pairs` — genuine
+  Big5- and Shift_JIS-as-windows-1252 mojibake still resolve to their own
+  correct pair only, with the new EUC-JP hypothesis never also firing
+  alongside them.
+
+  `REPAIR_PAIRS` grew from 9 to 10 entries. `fuzz_roundtrip.rs`'s
+  `run_mojibake_reversibility_fuzz` has an exhaustive match over the
+  array that panics at runtime (not a compile error) on any unhandled
+  pair, so `MojibakePools` gained an `euc_jp` field (`euc_jp_pool()`
+  already existed for the plain round-trip fuzz, just wasn't wired into
+  the mojibake-specific pool struct) and the match gained a
+  `("windows-1252", "EUC-JP")` arm — caught by actually running the fuzz
+  test, not by inspection. 3,000-cases-per-pair manual fuzz
+  (`large_mojibake_repair_reversibility_fuzz_3000cases_per_pair`) run
+  explicitly for extra confidence given the danger-domain status. 501
+  cargo test (+4, all in mojibake.rs), 871 vitest (unchanged — no
+  frontend touched; `src/mojibake.ts` is pair-agnostic by design, it only
+  ever renders whatever `detect_mojibake` returns).
 
 **Track C — comfort**
 - [ ] C1 Command palette (Mod+Shift+P): a Rust command exposes menu.rs's
