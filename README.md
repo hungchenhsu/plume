@@ -35,6 +35,8 @@ What's there today:
 - Everyday editing comfort: multi-cursor, code folding, indent guides and detection, line operations (sort/unique/trim/case/move/duplicate), regex find/replace, and tab drag-to-reorder
 - Native platform integration on macOS and Windows (menus, shortcuts, file associations), light/dark/eye-friendly themes, and a UI available in English, Traditional Chinese, Japanese, and Simplified Chinese
 
+For a full walkthrough of every encoding and large-file feature — menu paths, shortcuts, and behavior boundaries — see [docs/features.md](docs/features.md).
+
 ## Platform support
 
 | Platform | Tier | Notes |
