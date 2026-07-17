@@ -1428,13 +1428,131 @@ for incoming contributors.
   cargo test (+1), 850 vitest (+5).
 
 **Track E — encoding transparency**
-- [ ] E1 Document Info dialog: one read-only trust surface (File menu) —
-  path/size/mtime, encoding + detection evidence (reusing the
-  detection-diagnostics data), BOM, line-ending distribution counts
-  (LF/CRLF/CR via linebreak.rs semantics; bounded scan — exact counts
-  up to the large-file threshold, an explicitly-labeled sample beyond
-  it, never an unlabeled partial total), line/word/char counts (reusing
-  textstats). i18n across en/zh-TW/ja/zh-CN
+- [x] E1 Document Info dialog: one read-only trust surface, File > Document
+  Info… (no accelerator), an in-DOM modal reusing the `.confirm-overlay`/
+  `.confirm-dialog` family — `.detectcard-rows`/`.detectcard-note` for the
+  row/note layout (lossysave.ts's read-only-list shape and detectcard.ts's
+  dl-grid rows were the two nearest precedents; this borrows structure from
+  both), a single "Close" button (Escape also closes; nothing here is
+  destructive, unlike lossysave's deliberate no-Enter-shortcut). Untitled
+  tabs get a reduced, buffer-only dialog rather than a disabled menu item —
+  the item is always built enabled; `docinfo.ts`'s own module doc comment
+  weighs this against the disabled-item alternative and explains why: a
+  dynamic enable/disable sync (the `read_only`/`reopen_closed_tab`
+  precedent) would need a new command plus correct calls from every
+  tab-switch and Save-As completion, while a not-yet-saved buffer's own
+  encoding/line-ending/text-stats facts are still genuinely useful to show.
+  Path shows a "(not saved yet)" marker instead of size/mtime/detection
+  evidence for that case.
+
+  Rust: two new commands in a new `docinfo.rs` — `document_metadata`
+  (fresh `fs::metadata` size + a hand-rolled signed milliseconds-since-epoch
+  mtime, never `SystemTime`'s own serde impl, which rejects any pre-epoch
+  instant outright; pinned by a dedicated pre-epoch test using
+  `File::set_modified`, judgment-overlay.md §4's `EpochOffset` lesson
+  applied independently rather than reused verbatim since this value is
+  displayed, not round-tripped opaquely like `Fingerprint`) and
+  `line_ending_distribution` (the LF/CRLF/lone-CR counts). Encoding + BOM +
+  detection evidence reuses `explain_detection` as-is, unmodified — no new
+  Rust needed there at all. Failing-test-first for the risky part: a
+  deliberately-wrong stub (`line_ending_distribution` always returning
+  zero counts) landed first, 6 of the 13 new `docinfo.rs` tests red against
+  it (LF-only/CRLF/lone-CR/mixed/cross-chunk-boundary-CRLF/bounded-large all
+  failed on the zero counts; empty-file and the ambiguous-trailing-CR-at-
+  cutoff test passed vacuously against the stub, as expected, and remain
+  real regression locks once real), then the real scan replaced the stub
+  and all 13 went green.
+
+  Line-ending scan reuse: extended `linebreak.rs`'s existing
+  `scan_line_breaks` rather than writing a second scanner — its `on_break`
+  callback now also reports a new `LineBreakKind` (Lf/CrLf/Cr) per
+  invocation, a mechanical signature change propagated through its three
+  pre-existing callers (`lineindex.rs` x2, `replaceinfiles.rs`), all now
+  passing `_kind` and ignoring it; the same `pending_cr` cross-read carry
+  this scanner already had is what makes the CRLF-split-across-an-8-MiB-
+  chunk-boundary case correct for free, pinned by a dedicated test
+  (`crlf_split_across_the_8mib_chunk_boundary_counts_as_one`) building a
+  fixture with the CR as `CHUNK_BYTES`'s last byte and the LF as the next
+  read's first. `lineindex.rs`'s own private `reject_utf16` was promoted to
+  a shared `linebreak::reject_utf16(encoding, context)` (extracted for a
+  second caller, the same precedent `fsguard.rs`/`streamcodec.rs` already
+  set) rather than a second copy — raw byte-level LF/CR scanning is unsound
+  for UTF-16 (0x0A/0x0D can be half of an unrelated code unit) but was
+  verified *not* to need an ISO-2022-JP exclusion the way `chunk.rs`'s
+  paging does (issue #225): that exclusion is about decode continuity
+  across a page cut losing JIS shift-state, a concern that doesn't exist
+  for a scan that never decodes at all, and ISO-2022-JP's JIS-mode byte
+  pairs structurally never fall in the 0x0A/0x0D range regardless of shift
+  state (documented on `line_ending_distribution` itself so a future
+  caller doesn't defensively over-apply the paging exclusion here).
+
+  Bounded-scan UI shape (the hard requirement — never an unlabeled partial
+  statistic): exact counts for a file at or under
+  `LARGE_FILE_THRESHOLD` (10 MiB), a leading-10-MiB sample beyond it,
+  disclosed two ways at once — a "Scanned" row reusing detectcard.ts's own
+  `sampledAll`/`sampledPartial` phrasing verbatim ("first 10 MB of 15 MB"),
+  *and* a separate, explicit `docinfo.lineEndingSampledNote` sentence
+  ("Counted from the first 10 MB of this file only — these counts do not
+  reflect the whole file") whenever `scannedBytes < totalSize`. An
+  unresolved trailing CR landing exactly at the bounded cutoff is left
+  uncounted rather than guessed (it might be half of a CRLF whose LF sits
+  just past the sample) — `is_full_scan` is decided once, upfront, from the
+  same `fs::metadata` read that sets the bound, not inferred from read-loop
+  short-reads, and only resolves the trailing-CR-at-EOF case
+  (`lineindex.rs`'s own convention) when the scan genuinely covered the
+  whole file; pinned by
+  `trailing_cr_exactly_at_the_bounded_cutoff_is_not_counted` alongside
+  `bounded_scan_stops_at_large_file_threshold` (terminators planted just
+  past the bound are proven invisible to the scan). A UTF-16 document skips
+  the IPC call entirely on the frontend (mirroring `chunkpolicy.ts`'s own
+  "spare a doomed round trip, Rust is still the real guard" precedent) and
+  shows a clean localized note instead of a raw Rust error string.
+
+  Encoding section reuses detectcard.ts's data flow and formatting, not
+  just the IPC: `formatDetectionCard` was split into a new, exported
+  `formatDetectionEvidence` (BOM/verdict/sampled-range/would-choose rows
+  plus all three notes — manual-override, detection-boundary, and the
+  large-file truncated-sample warning from the immediately preceding R
+  track item) and a thin wrapper that adds the "File"/"Currently using"
+  framing back for its own status-bar popup; `formatDetectionCard`'s
+  existing 20 tests still pass unchanged, proving the refactor is
+  behavior-preserving. Document Info's own Encoding row (from `doc.encoding`
+  /`doc.withBom`, the same `statusbar.encodingWithBom` template the status
+  bar itself uses) sits above the reused evidence rows rather than
+  duplicating detectcard's own "Currently using" row a second time.
+
+  Text stats reuse `editor.ts`'s `textStatsOf` precomputed by the caller
+  (main.ts, mirroring `computeAndShowTextStats`'s own `doc.truncated ? null
+  : textStatsOf(editor.snapshot())` exactly) — `docinfo.ts` deliberately
+  never reaches into `editor.ts` itself, matching every other dialog
+  module's decoupling from the live CM6 instance. Truncated (large-file
+  preview) windows omit the text-stats section entirely, matching the
+  status bar's own hide-when-truncated convention precisely (never a
+  "window"-qualified partial value) — deliberately different from the
+  line-ending distribution's own always-show-a-labeled-sample treatment,
+  since the two data sources have different guarantees: the Rust scan
+  independently re-derives a real bound from fresh disk metadata, while
+  text stats only ever have whatever's currently loaded in the buffer with
+  no reliable whole-file denominator to label a partial count against.
+
+  Each of the three IPC-backed sections (file metadata, encoding evidence,
+  line-ending distribution) fails independently: `Promise.all` over three
+  never-rejecting per-call adapters (`fetchOrError`) so one section's
+  genuine failure (file deleted since the tab was opened, etc.) shows an
+  inline, localized error note in that section alone, never a blank dialog
+  or a silently-missing fact. Snapshot semantics: every call fires once, on
+  open; the dialog does not live-refresh on external changes while open
+  (closing and reopening re-snapshots), the same trade-off
+  `explain_detection`'s existing callers already make.
+
+  i18n: new `docinfo.*` keys across en/zh-TW/ja/zh-CN, reusing
+  `menu.lineEndingLf`/`Crlf`/`Cr` verbatim as the three distribution rows'
+  labels and `detectcard.sampledAll`/`sampledPartial` verbatim for the
+  "Scanned" row's value, rather than parallel new strings for the same
+  concepts. `menu.rs` gained the `document_info` `LABELS` entry (File menu,
+  after Print) with a pinned-translation test mirroring `read_only`'s.
+  497 cargo test (+16, all in `linebreak.rs`/`docinfo.rs`/`menu.rs`), 871
+  vitest (+21, all in `docinfo.test.ts`).
 - [ ] E2 mojibake repair pair, narrowed by planning review: evaluate
   (WINDOWS_1252, EUC_JP) only — the CJK↔CJK candidates are the
   documented reachable-but-wrong dead end. Gate upgraded from "prove

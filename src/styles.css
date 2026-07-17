@@ -1715,6 +1715,28 @@ select:focus-visible {
   color: var(--fg-faint);
 }
 
+/* Document Info dialog (src/docinfo.ts, ROADMAP.md v0.6 E1): wider than the
+   360px .confirm-dialog default -- more rows (path, size, modified,
+   encoding evidence, line-ending distribution, text stats) than the
+   lossy-save/stale-file dialogs this family was originally sized for.
+   Row/note styling itself reuses .detectcard-rows/.detectcard-note as-is
+   (same dt/dd grid, same muted footnote look). */
+.docinfo-dialog {
+  width: 460px;
+}
+
+/* A section can show more than one note at once (e.g. the encoding
+   section's manual-override, detection-boundary, and truncated-sample
+   notes can all fire together) -- a second consecutive note skips the
+   repeated top border/padding .detectcard-note otherwise adds, so a stack
+   of notes reads as one footnote block instead of several separate
+   horizontal rules. */
+.docinfo-note + .docinfo-note {
+  margin-top: -4px;
+  padding-top: 0;
+  border-top: none;
+}
+
 .prefs-overlay {
   position: fixed;
   inset: 0;

@@ -36,10 +36,26 @@
 //! streaming-scanner pitfall — is impossible by construction in all of
 //! them.
 
+/// Which of the three terminator styles a [`scan_line_breaks`] callback
+/// invocation just found. Exposed so a caller that cares about the
+/// *distribution*, not just where each line boundary falls — e.g. the
+/// Document Info dialog's line-ending counts (ROADMAP.md v0.6 E1,
+/// `docinfo.rs`) — can tally per style without a second,
+/// independently-drifting byte-level scanner; every pre-existing caller
+/// (`lineindex.rs`, `replaceinfiles.rs`, `split_str_lines` below) simply
+/// ignores this parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineBreakKind {
+    Lf,
+    CrLf,
+    Cr,
+}
+
 /// Scan `bytes` — the file's bytes starting at absolute file offset
-/// `base_offset` — for line terminators, calling `on_break(next_line_start)`
-/// once per line found (`next_line_start` is the absolute byte offset where
-/// the following line begins). Recognizes LF, CRLF (counted once — the
+/// `base_offset` — for line terminators, calling
+/// `on_break(next_line_start, kind)` once per line found (`next_line_start`
+/// is the absolute byte offset where the following line begins; `kind`
+/// which terminator style it was). Recognizes LF, CRLF (counted once — the
 /// trailing LF is never also counted as a lone LF, mirroring
 /// `encoding::detect_line_ending`'s `i += 2`), and lone CR. `bytes` must be
 /// non-empty; all callers already only invoke this after checking their
@@ -60,7 +76,7 @@ pub(crate) fn scan_line_breaks(
     bytes: &[u8],
     base_offset: u64,
     pending_cr: &mut bool,
-    mut on_break: impl FnMut(u64),
+    mut on_break: impl FnMut(u64, LineBreakKind),
 ) {
     debug_assert!(!bytes.is_empty(), "callers only scan non-empty reads");
     let mut i = 0usize;
@@ -69,25 +85,25 @@ pub(crate) fn scan_line_breaks(
         if bytes[0] == b'\n' {
             // Completes a CRLF split across the chunk boundary: one
             // boundary, not two.
-            on_break(base_offset + 1);
+            on_break(base_offset + 1, LineBreakKind::CrLf);
             i = 1;
         } else {
             // The previous read's trailing CR stood alone; its line ends
             // right at the start of this slice. `bytes[0]` was not
             // consumed here and is reprocessed by the loop below.
-            on_break(base_offset);
+            on_break(base_offset, LineBreakKind::Cr);
         }
     }
     while i < bytes.len() {
         match bytes[i] {
             b'\r' if bytes.get(i + 1) == Some(&b'\n') => {
-                on_break(base_offset + i as u64 + 2);
+                on_break(base_offset + i as u64 + 2, LineBreakKind::CrLf);
                 i += 2;
             }
             b'\r' if i + 1 < bytes.len() => {
                 // Lone CR fully resolved within this slice (next byte is
                 // known and is not `\n`).
-                on_break(base_offset + i as u64 + 1);
+                on_break(base_offset + i as u64 + 1, LineBreakKind::Cr);
                 i += 1;
             }
             b'\r' => {
@@ -97,7 +113,7 @@ pub(crate) fn scan_line_breaks(
                 i += 1;
             }
             b'\n' => {
-                on_break(base_offset + i as u64 + 1);
+                on_break(base_offset + i as u64 + 1, LineBreakKind::Lf);
                 i += 1;
             }
             _ => i += 1,
@@ -134,7 +150,7 @@ pub(crate) fn split_str_lines(text: &str) -> Vec<&str> {
     let bytes = text.as_bytes();
     let mut ends: Vec<usize> = Vec::new();
     let mut pending_cr = false;
-    scan_line_breaks(bytes, 0, &mut pending_cr, |next_line_start| {
+    scan_line_breaks(bytes, 0, &mut pending_cr, |next_line_start, _kind| {
         ends.push(next_line_start as usize);
     });
     if pending_cr {
@@ -227,6 +243,25 @@ pub(crate) fn is_line_start(prev: u8, at: Option<u8>) -> bool {
     prev == b'\n' || (prev == b'\r' && at != Some(b'\n'))
 }
 
+/// Reject a raw byte-level scan over `encoding`'s on-disk bytes when doing
+/// so would be unsound — this module's own doc comment above explains why
+/// byte scanning is safe for every supported encoding except UTF-16 (LF/CR
+/// can appear as half of an unrelated code unit there). Shared by every
+/// command that walks file bytes directly through [`scan_line_breaks`]
+/// without decoding first, so the UTF-16 boundary is checked in exactly one
+/// place: `lineindex.rs`'s `build_line_index` and `docinfo.rs`'s
+/// `line_ending_distribution` (ROADMAP.md v0.6 E1) both call this rather
+/// than each carrying their own copy of the same check. `context` names the
+/// caller for the error message, e.g. `"Line index"`.
+pub(crate) fn reject_utf16(encoding: &str, context: &str) -> Result<(), String> {
+    let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
+        .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
+    if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+        return Err(format!("{context} is not supported for UTF-16 files"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,7 +269,7 @@ mod tests {
     fn breaks(bytes: &[u8]) -> Vec<u64> {
         let mut found = Vec::new();
         let mut pending_cr = false;
-        scan_line_breaks(bytes, 0, &mut pending_cr, |b| found.push(b));
+        scan_line_breaks(bytes, 0, &mut pending_cr, |b, _kind| found.push(b));
         found
     }
 
@@ -340,26 +375,84 @@ mod tests {
         assert_eq!(breaks(b"a\r"), Vec::<u64>::new());
     }
 
+    /// The distribution consumer (`docinfo.rs`'s `line_ending_distribution`,
+    /// ROADMAP.md v0.6 E1) relies on `kind` tagging each callback
+    /// invocation correctly, not just the offsets `breaks()` above already
+    /// locks -- this pins that classification directly, including both
+    /// pending_cr resolutions (split CRLF vs. a lone CR that turned out to
+    /// stand at a chunk seam).
+    #[test]
+    fn scan_reports_the_correct_kind_per_style() {
+        fn kinds(bytes: &[u8]) -> Vec<LineBreakKind> {
+            let mut found = Vec::new();
+            let mut pending_cr = false;
+            scan_line_breaks(bytes, 0, &mut pending_cr, |_pos, kind| found.push(kind));
+            found
+        }
+
+        assert_eq!(kinds(b"a\nb"), vec![LineBreakKind::Lf]);
+        assert_eq!(kinds(b"a\r\nb"), vec![LineBreakKind::CrLf]);
+        assert_eq!(kinds(b"a\rb"), vec![LineBreakKind::Cr]);
+        assert_eq!(
+            kinds(b"aaa\nbbb\r\nccc\rddd"),
+            vec![LineBreakKind::Lf, LineBreakKind::CrLf, LineBreakKind::Cr]
+        );
+
+        // CR|LF split across a chunk boundary resolves as one CrLf, not a
+        // Cr plus an Lf.
+        let mut pending = false;
+        let mut found = Vec::new();
+        scan_line_breaks(b"aa\r", 0, &mut pending, |_pos, kind| found.push(kind));
+        assert_eq!(
+            found,
+            Vec::<LineBreakKind>::new(),
+            "deferred, not yet reported"
+        );
+        scan_line_breaks(b"\nbb", 3, &mut pending, |_pos, kind| found.push(kind));
+        assert_eq!(found, vec![LineBreakKind::CrLf]);
+
+        // CR|other split: the CR was lone, resolved as Cr at the seam.
+        let mut pending = false;
+        let mut found = Vec::new();
+        scan_line_breaks(b"aa\r", 0, &mut pending, |_pos, kind| found.push(kind));
+        scan_line_breaks(b"bb", 3, &mut pending, |_pos, kind| found.push(kind));
+        assert_eq!(found, vec![LineBreakKind::Cr]);
+    }
+
     #[test]
     fn scan_pending_cr_resolves_across_calls() {
         // CR|LF split: one boundary at the LF.
         let mut pending = false;
         let mut found = Vec::new();
-        scan_line_breaks(b"aa\r", 0, &mut pending, |b| found.push(b));
+        scan_line_breaks(b"aa\r", 0, &mut pending, |b, _kind| found.push(b));
         assert!(pending);
         assert_eq!(found, Vec::<u64>::new());
-        scan_line_breaks(b"\nbb", 3, &mut pending, |b| found.push(b));
+        scan_line_breaks(b"\nbb", 3, &mut pending, |b, _kind| found.push(b));
         assert!(!pending);
         assert_eq!(found, vec![4], "split CRLF is exactly one boundary");
 
         // CR|other split: the CR was lone; boundary at the chunk seam.
         let mut pending = false;
         let mut found = Vec::new();
-        scan_line_breaks(b"aa\r", 0, &mut pending, |b| found.push(b));
+        scan_line_breaks(b"aa\r", 0, &mut pending, |b, _kind| found.push(b));
         assert!(pending);
-        scan_line_breaks(b"bb", 3, &mut pending, |b| found.push(b));
+        scan_line_breaks(b"bb", 3, &mut pending, |b, _kind| found.push(b));
         assert!(!pending);
         assert_eq!(found, vec![3]);
+    }
+
+    #[test]
+    fn reject_utf16_rejects_only_utf16_targets() {
+        assert!(reject_utf16("UTF-16LE", "Test").is_err());
+        assert!(reject_utf16("UTF-16BE", "Test").is_err());
+        assert!(reject_utf16("UTF-8", "Test").is_ok());
+        assert!(reject_utf16("Big5", "Test").is_ok());
+        let err = reject_utf16("UTF-16LE", "Line-ending distribution").unwrap_err();
+        assert_eq!(
+            err,
+            "Line-ending distribution is not supported for UTF-16 files"
+        );
+        assert!(reject_utf16("not-a-real-encoding", "Test").is_err());
     }
 
     #[test]
@@ -401,7 +494,7 @@ mod tests {
         }
         let mut ends: Vec<usize> = Vec::new();
         let mut pending_cr = false;
-        scan_line_breaks(bytes, 0, &mut pending_cr, |b| ends.push(b as usize));
+        scan_line_breaks(bytes, 0, &mut pending_cr, |b, _kind| ends.push(b as usize));
         if pending_cr {
             ends.push(bytes.len());
         }

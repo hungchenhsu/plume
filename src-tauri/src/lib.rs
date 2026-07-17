@@ -4,6 +4,7 @@ mod bytedrift;
 mod charinspect;
 mod chunk;
 mod comparepreview;
+mod docinfo;
 mod encoding;
 mod fsguard;
 // Fuzz-only content (PRNG, representable-text generators, and the fuzz
@@ -71,8 +72,10 @@ fn print_window(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 /// Files larger than this open as a read-only preview instead of loading
-/// fully into the WebView.
-const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024;
+/// fully into the WebView. `pub(crate)` so other bounded-scan commands can
+/// share the exact same cutoff rather than re-declaring their own — see
+/// `docinfo.rs`'s `line_ending_distribution` (ROADMAP.md v0.6 E1).
+pub(crate) const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024;
 /// How much of a large file the preview shows.
 const PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 
@@ -711,6 +714,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_document,
             explain_detection,
+            docinfo::document_metadata,
+            docinfo::line_ending_distribution,
             save_document,
             bytedrift::check_byte_drift,
             session::load_session,
