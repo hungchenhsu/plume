@@ -44,17 +44,35 @@ faster for text files, or is it IDE creep?*
 
 ## 2. Current state (2026-07-16)
 
-- **v0.6 feature cycle in progress** (planned 2026-07-16 under the
-  user's standing delegation, user away until 2026-07-22; same model as
-  v0.4/v0.5). Adversarially reviewed before start (AGREE-WITH-CHANGES,
-  all changes adopted — notably three CJK↔CJK mojibake candidates
-  dropped in planning as the reachable-but-wrong shape mojibake.rs
-  already rejects). Scope: the whole open bug queue (#225/#221/#217/
-  #223/#227/#203/#201 — the latter two placed by explicit user decision
-  of 2026-07-16), Document Info dialog, one narrowed mojibake pair,
-  command palette, line-op/recent-files comfort items, session
-  compat fixtures, IPC error-path audit, CHANGELOG + features guide.
-  See ROADMAP.md §v0.6.
+- **v0.6 feature cycle complete** (2026-07-16→17, PRs #229–#249 range):
+  planned and executed autonomously under the user's standing
+  delegation (same model as v0.4/v0.5), adversarially reviewed before
+  start (AGREE-WITH-CHANGES, all adopted — notably three CJK↔CJK
+  mojibake candidates dropped in planning as the reachable-but-wrong
+  shape mojibake.rs already rejects). All five tracks delivered:
+  **debt & correctness** (the whole bug queue — #225 ISO-2022-JP
+  paging exclusion, #221 dropSave gap, #217 drain read-only recheck
+  as a nextDrainStep decision-table entry after a first attempt was
+  bounced for testing only its own harness copy, #223 identity guard,
+  #227 head-trim invariant test, #203 de-flake with the real root
+  cause being cross-process fixture collisions, #201 truncated-sample
+  detection hint), **encoding transparency** (Document Info dialog
+  with bounded line-ending distribution; mojibake pair
+  (windows-1252, EUC-JP) admitted after a dual reachability +
+  mutual-ambiguity gate), **comfort** (command palette over 50 menu
+  commands with a dispatch-safety audit, join/reverse lines, sort
+  variants, clear-recent-files), **robustness** (three-era session
+  compat fixtures proven by mutation; a 45-command IPC error-path
+  audit — zero fully-unhandled sites — fixing the four
+  user-would-believe-it-succeeded silent failures), **outward**
+  (CHANGELOG.md backfilled across all seven releases + release-
+  checklist step; docs/features.md guide). Every danger item passed
+  adversarial review (5× AGREE / 2× AGREE-WITH-NOTES; one first-pass
+  REJECT-equivalent caught by the commander's stash verification).
+  New issues filed: #231 (spurious dirty after non-stale write
+  failure, P3), #236 (fixture-dir process isolation for the remaining
+  test files, P3). Tests at cycle end: 955 vitest + 522 cargo (cycle
+  start: 831/476). Tagged **v0.6.0-alpha.1**.
 - **Housekeeping (2026-07-16, per explicit user decision):** the stale
   v0.2.0-alpha.1 and v0.3.0-alpha.1 *draft* releases were deleted (notes
   backed up first); both git tags kept. #89 stays open as the

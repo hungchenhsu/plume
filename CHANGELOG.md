@@ -6,7 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 Plume is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
-## [Unreleased]
+## [v0.6.0-alpha.1] - 2026-07-17
 
 ### Added
 
@@ -22,10 +22,14 @@ Semantic Versioning compatibility guarantees.
 - Two new Line Operations: Join Lines and Reverse Lines.
 - Two new sort variants for Line Operations: case-insensitive sort and
   numeric sort (sorts by the first number found in each line).
+- Clear Recently Opened (File menu): empties the recent-files list; the
+  item enables and disables itself as the list fills and empties.
 - Mojibake repair wizard: added a windows-1252 ⇄ EUC-JP repair
   hypothesis.
 - Encoding-detection diagnostics now disclose when a verdict for a large
   file was based on a truncated sample rather than the whole file.
+- A features guide (docs/features.md) documenting every encoding and
+  large-file tool, and this changelog.
 
 ### Fixed
 
@@ -42,6 +46,11 @@ Semantic Versioning compatibility guarantees.
   treated as clean results, stale results from a superseded search are
   discarded, and per-file reads are bounded with scan errors surfaced
   instead of skipped silently.
+- Four previously-silent failure paths now tell the user what happened:
+  an unreadable hot-exit backup, a failed orphan-backup scan, files
+  passed from the OS that could not be taken over, and a Preferences
+  save failure (the dialog now stays open for a retry instead of
+  closing as if it had succeeded).
 
 ## [v0.5.0-alpha.2] - 2026-07-16
 

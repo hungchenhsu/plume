@@ -1,6 +1,6 @@
 [package]
 name = "plume"
-version = "0.5.0"
+version = "0.6.0"
 description = "A fast, lightweight, encoding-first text editor"
 authors = ["Hung-Chen Hsu"]
 license = "MIT"
