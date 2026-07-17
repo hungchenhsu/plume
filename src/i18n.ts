@@ -182,6 +182,14 @@ export interface Messages {
   "quickOpen.noRecent": string;
   "quickOpen.noMatches": string;
 
+  // Command Palette (Mod+Shift+P; ROADMAP.md v0.6 C1) — see src/palette.ts.
+  // The command labels themselves come from menu.rs's own LABELS table
+  // (fetched via ipc.ts's paletteCommands), not this dictionary — this
+  // module owns only the palette's own chrome text, same split as every
+  // other menu-adjacent feature (see this file's header comment).
+  "palette.searchPlaceholder": string;
+  "palette.noResults": string;
+
   "preferences.title": string;
   "preferences.editorFont": string;
   "preferences.editorFontPlaceholder": string;
@@ -559,6 +567,9 @@ const en: Messages = {
   "quickOpen.noRecent": "No recent files",
   "quickOpen.noMatches": "No matches",
 
+  "palette.searchPlaceholder": "Search commands…",
+  "palette.noResults": "No matching commands",
+
   "preferences.title": "Preferences",
   "preferences.editorFont": "Editor font",
   "preferences.editorFontPlaceholder": "System default",
@@ -930,6 +941,9 @@ const zhTW: Messages = {
   "quickOpen.noRecent": "沒有最近的檔案",
   "quickOpen.noMatches": "沒有符合的項目",
 
+  "palette.searchPlaceholder": "搜尋命令…",
+  "palette.noResults": "沒有符合的命令",
+
   "preferences.title": "偏好設定",
   "preferences.editorFont": "編輯器字型",
   "preferences.editorFontPlaceholder": "系統預設",
@@ -1272,6 +1286,9 @@ const ja: Messages = {
   "quickOpen.searchPlaceholder": "最近使用したファイルを検索…",
   "quickOpen.noRecent": "最近使用したファイルはありません",
   "quickOpen.noMatches": "一致する項目がありません",
+
+  "palette.searchPlaceholder": "コマンドを検索…",
+  "palette.noResults": "一致するコマンドがありません",
 
   "preferences.title": "環境設定",
   "preferences.editorFont": "エディターフォント",
@@ -1637,6 +1654,9 @@ const zhCN: Messages = {
   "quickOpen.searchPlaceholder": "搜索最近的文件…",
   "quickOpen.noRecent": "没有最近的文件",
   "quickOpen.noMatches": "没有匹配项",
+
+  "palette.searchPlaceholder": "搜索命令…",
+  "palette.noResults": "没有匹配的命令",
 
   "preferences.title": "首选项",
   "preferences.editorFont": "编辑器字体",

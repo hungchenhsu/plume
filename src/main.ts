@@ -28,7 +28,7 @@ import {
   streamConvertEncodingChoices,
   type EncodingChoice,
 } from "./encodings";
-import { onLocaleChange, t } from "./i18n";
+import { getLocale, onLocaleChange, t } from "./i18n";
 import {
   addRecentFile,
   buildLineIndex,
@@ -41,6 +41,7 @@ import {
   locateLineOffset,
   openDocument,
   openfileProbePath,
+  paletteCommands,
   printWindow,
   readDocumentChunk,
   readDocumentChunkBefore,
@@ -56,6 +57,7 @@ import {
   watchFile,
   type LineIndex,
   type OpenedDocument,
+  type PaletteCommand,
   type SessionData,
   type SessionFile,
 } from "./ipc";
@@ -103,6 +105,7 @@ import {
 import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
 import { planNormalization, type NormalizeForm } from "./normalize";
 import { orphanBackups } from "./orphans";
+import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
 import { showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
@@ -2787,8 +2790,39 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-void listen<string>("plume://menu", (event) => {
-  switch (event.payload) {
+/**
+ * Runs a native-menu command by id. Extracted out of the `plume://menu`
+ * listener below (ROADMAP.md v0.6 C1) so the Command Palette
+ * (src/palette.ts's `showPalette`) can dispatch a selected command by
+ * calling this exact function directly — a plain synchronous call, not a
+ * simulated IPC round trip — guaranteeing the palette can never diverge
+ * from what a native menu click does for the same id.
+ *
+ * Guard audit performed for the palette (ROADMAP.md v0.6 C1's "Danger-lite"
+ * acceptance criterion): every case below was checked against three
+ * invalid states — no active doc, a truncated large-file preview, and a
+ * user-locked read-only tab — since the palette can dispatch any of them
+ * with no per-command enabled filtering (documented trade-off, see
+ * palette.ts's own module comment). Most cases are either state-
+ * independent (preference toggles; dialog openers not scoped to the active
+ * doc, e.g. preferences/open_recent/batch_convert; non-mutating selection/
+ * navigation commands, e.g. select_next_occurrence/find/fold_all — CM6
+ * commands that self-no-op on an unmet precondition rather than throw) or
+ * already gate through a shared, independently-tested helper:
+ * `runLineOperation`'s no-doc + `blockedByReadOnly` check covers every
+ * line-operation case (sort/unique/trim/case/width/normalize/move/
+ * duplicate/delete); `saveFlow` has its own no-doc + `blockedByReadOnly`
+ * check; `toggleReadOnly`/`handleGotoLine`/`toggleBookmarkFlow`/
+ * `nextBookmarkFlow`/`previousBookmarkFlow` each have their own no-doc
+ * check; `stream_replace`/`document_info` below have their own explicit
+ * no-doc check. The one bare case this audit found was `print` — no doc
+ * guard at all (though `editor.content()` on no active doc never throws
+ * either way, it would print whatever the editor singleton currently holds
+ * with no basis) — given a defensive `if (!tabs.active) break;` below for
+ * consistency with `stream_replace`/`document_info`'s style.
+ */
+function dispatchMenuCommand(id: string): void {
+  switch (id) {
     case "new_tab":
       newTab();
       break;
@@ -2992,6 +3026,12 @@ void listen<string>("plume://menu", (event) => {
       break;
     }
     case "print": {
+      // Defensive no-doc guard (ROADMAP.md v0.6 C1 palette dispatch-safety
+      // audit, this function's own doc comment above) — structurally
+      // near-impossible in practice (closeTab always leaves at least one
+      // tab open), but costs nothing and matches stream_replace/
+      // document_info's style above.
+      if (!tabs.active) break;
       // The editor's viewport only renders visible lines, so printing goes
       // through a print-only view holding the full document text.
       const printView = document.querySelector<HTMLElement>("#print-view")!;
@@ -3008,15 +3048,41 @@ void listen<string>("plume://menu", (event) => {
         });
       break;
     }
+    // Command Palette (Mod+Shift+P; ROADMAP.md v0.6 C1): fetches the
+    // current-locale command list fresh on every open (cheap — a pure
+    // static-table lookup on the Rust side, see menu.rs `palette_commands`
+    // — so there is no stale-language cache to invalidate when the user
+    // changes the language preference mid-session) and shows the overlay.
+    case "command_palette":
+      void openCommandPalette();
+      break;
     default:
       // The View > Theme submenu emits "theme_<value>" for each of its
       // radio entries (menu.rs); route those without a case per value.
-      if (event.payload.startsWith("theme_")) {
-        setTheme(event.payload.slice("theme_".length));
+      if (id.startsWith("theme_")) {
+        setTheme(id.slice("theme_".length));
       }
       break;
   }
-});
+}
+
+/** Fetch the palette's command list in the current locale and show it (see
+ *  `dispatchMenuCommand`'s own doc comment for the dispatch-safety
+ *  contract). Best-effort like the menu-sync IPC calls elsewhere in this
+ *  file: a failed fetch just means Mod+Shift+P silently does nothing
+ *  rather than throwing, matching this file's `case "print"` neighbor
+ *  above and the palette's own no-active-doc guard style. */
+async function openCommandPalette(): Promise<void> {
+  let commands: PaletteCommand[];
+  try {
+    commands = await paletteCommands(getLocale());
+  } catch {
+    return;
+  }
+  showPalette(commands, (id) => dispatchMenuCommand(id));
+}
+
+void listen<string>("plume://menu", (event) => dispatchMenuCommand(event.payload));
 
 // Hot exit: flush every unsaved buffer to its backup and quit without
 // asking — the next launch restores everything, including untitled tabs.

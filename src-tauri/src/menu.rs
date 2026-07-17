@@ -249,6 +249,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "在大文件中替换…",
     ),
     ("view", "View", "檢視", "表示", "视图"),
+    (
+        "command_palette",
+        "Command Palette…",
+        "命令面板…",
+        "コマンドパレット…",
+        "命令面板…",
+    ),
     ("word_wrap", "Word Wrap", "自動換行", "折り返し", "自动换行"),
     (
         "show_invisibles",
@@ -607,6 +614,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let current_prefs = crate::prefs::current(app);
     let view = SubmenuBuilder::with_id(app, "view", l("view"))
         .item(
+            // Command Palette (ROADMAP.md v0.6 C1): Mod+Shift+P opens a
+            // fuzzy-searchable overlay (src/palette.ts) over every
+            // dispatchable command in this menu -- a discoverability
+            // wrapper, not a new capability. Placed first in View, the same
+            // convention several other editors use for their own command
+            // palette entry. A plain MenuItem, not a CheckMenuItem: there is
+            // no runtime state to keep in sync (unlike read_only/theme
+            // below), only a fixed label, so no dedicated sync_*_menu
+            // command is needed -- same reasoning as line_ops's own header
+            // comment.
+            &MenuItemBuilder::with_id("command_palette", l("command_palette"))
+                .accelerator("CmdOrCtrl+Shift+P")
+                .build(app)?,
+        )
+        .separator()
+        .item(
             &CheckMenuItemBuilder::with_id("word_wrap", l("word_wrap"))
                 .checked(current_prefs.word_wrap)
                 .accelerator("Alt+Z")
@@ -880,6 +903,13 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
 
     if let Some(view) = menu.get("view").and_then(|item| item.as_submenu().cloned()) {
         view.set_text(l("view")).map_err(|e| e.to_string())?;
+        if let Some(item) = view
+            .get("command_palette")
+            .and_then(|item| item.as_menuitem().cloned())
+        {
+            item.set_text(l("command_palette"))
+                .map_err(|e| e.to_string())?;
+        }
         for id in [
             "word_wrap",
             "show_invisibles",
@@ -946,9 +976,63 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
     Ok(())
 }
 
+/// Ids present in `LABELS` that must never appear as a Command Palette
+/// entry (ROADMAP.md v0.6 C1): pure submenu containers with no dispatchable
+/// action of their own — clicking one only opens/closes a submenu, there is
+/// no `plume://menu` case for any of these in main.ts's `dispatchMenuCommand`
+/// switch — plus the palette's own entry (opening the palette from inside
+/// itself is not a useful action). Checked by
+/// `palette_excluded_ids_are_all_real_labels_entries` below so a typo'd id
+/// here can't silently no-op the exclusion.
+const PALETTE_EXCLUDED_IDS: &[&str] = &[
+    "file",
+    "edit",
+    "view",
+    "line_ops",
+    "theme",
+    "window",
+    "command_palette",
+];
+
+/// One entry in the Command Palette's command list (ROADMAP.md v0.6 C1):
+/// `id` is the same string `main.ts`'s `dispatchMenuCommand` switches on;
+/// `label` is `id`'s `LABELS` text already resolved to the caller's locale.
+/// Field names are camelCase on the frontend by Tauri's default JS-binding
+/// convention (mirrors every other `#[derive(Serialize)]` command-return
+/// struct in this codebase, e.g. `OpenedDocument` in lib.rs).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaletteCommand {
+    id: String,
+    label: String,
+}
+
+/// List every dispatchable menu command as `(id, label)` pairs in `locale`,
+/// for the Command Palette (ROADMAP.md v0.6 C1). `locale` is
+/// already-resolved ("en" | "zh-TW" | "ja" | "zh-CN"), the same contract as
+/// `retitle_menu` — the frontend passes `i18n.ts`'s `getLocale()` directly,
+/// so the palette can never show a different label than what's currently in
+/// the native menu. Pure and infallible: no `AppHandle` needed, since this
+/// is just a filtered, relabeled read of the static `LABELS` table, not a
+/// live menu query. v1 lists every remaining command with no per-command
+/// enabled/disabled filtering — a documented trade-off (src/palette.ts's
+/// module doc comment covers why a command reached in an invalid state from
+/// the palette is still safe).
+#[tauri::command]
+pub fn palette_commands(locale: String) -> Vec<PaletteCommand> {
+    LABELS
+        .iter()
+        .filter(|entry| !PALETTE_EXCLUDED_IDS.contains(&entry.0))
+        .map(|entry| PaletteCommand {
+            id: entry.0.to_string(),
+            label: label(entry.0, &locale).to_string(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{label, resolve_lang, LABELS, THEME_IDS};
+    use super::{label, palette_commands, resolve_lang, LABELS, PALETTE_EXCLUDED_IDS, THEME_IDS};
 
     #[test]
     fn theme_ids_match_the_preferences_theme_values() {
@@ -1142,4 +1226,84 @@ mod tests {
     // `sys_locale::get_locale()`, which is environment-dependent — not
     // pinned here (see src/i18n.test.ts `resolveSystemLocale` for the tag
     // classification logic this function mirrors, tested directly there).
+
+    // ROADMAP.md v0.6 C1 Command Palette: the View menu's new
+    // "command_palette" item id, pinned across all four languages — same
+    // rationale as read_only/document_info's dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_command_palette_text_for_every_language() {
+        assert_eq!(label("command_palette", "en"), "Command Palette…");
+        assert_eq!(label("command_palette", "zh-TW"), "命令面板…");
+        assert_eq!(label("command_palette", "ja"), "コマンドパレット…");
+        assert_eq!(label("command_palette", "zh-CN"), "命令面板…");
+    }
+
+    #[test]
+    fn palette_excluded_ids_are_all_real_labels_entries() {
+        // Guards PALETTE_EXCLUDED_IDS itself against a typo'd/stale id,
+        // which would silently no-op that exclusion and inflate
+        // palette_commands_includes_every_non_excluded_label's count into a
+        // false pass below.
+        for excluded in PALETTE_EXCLUDED_IDS {
+            assert!(
+                LABELS.iter().any(|(id, _, _, _, _)| id == excluded),
+                "PALETTE_EXCLUDED_IDS references {excluded:?}, which isn't in LABELS"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_commands_excludes_every_container_and_self_id() {
+        let commands = palette_commands("en".to_string());
+        let ids: Vec<&str> = commands.iter().map(|c| c.id.as_str()).collect();
+        for excluded in PALETTE_EXCLUDED_IDS {
+            assert!(
+                !ids.contains(excluded),
+                "palette should not list {excluded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_commands_includes_every_non_excluded_label() {
+        let commands = palette_commands("en".to_string());
+        assert_eq!(commands.len(), LABELS.len() - PALETTE_EXCLUDED_IDS.len());
+    }
+
+    #[test]
+    fn palette_commands_has_no_duplicate_ids() {
+        let commands = palette_commands("en".to_string());
+        let mut ids: Vec<&str> = commands.iter().map(|c| c.id.as_str()).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "palette_commands has a duplicate id");
+    }
+
+    #[test]
+    fn palette_commands_labels_match_the_requested_locale() {
+        let en = palette_commands("en".to_string());
+        assert_eq!(en.iter().find(|c| c.id == "save").unwrap().label, "Save");
+
+        let zh_tw = palette_commands("zh-TW".to_string());
+        assert_eq!(zh_tw.iter().find(|c| c.id == "save").unwrap().label, "儲存");
+
+        let ja = palette_commands("ja".to_string());
+        assert_eq!(ja.iter().find(|c| c.id == "open").unwrap().label, "開く…");
+
+        let zh_cn = palette_commands("zh-CN".to_string());
+        assert_eq!(
+            zh_cn.iter().find(|c| c.id == "open").unwrap().label,
+            "打开…"
+        );
+    }
+
+    #[test]
+    fn palette_commands_falls_back_to_english_for_an_unrecognized_locale() {
+        let commands = palette_commands("fr-FR".to_string());
+        assert_eq!(
+            commands.iter().find(|c| c.id == "save").unwrap().label,
+            "Save"
+        );
+    }
 }

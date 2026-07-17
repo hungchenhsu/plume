@@ -103,6 +103,7 @@ input,
 .tab,
 .popup-item,
 .quickopen-item,
+.palette-item,
 .fif-item {
   transition:
     background-color 120ms ease-out,
@@ -438,6 +439,72 @@ select:focus-visible {
 }
 
 .quickopen-empty {
+  padding: 10px;
+  font-size: var(--font-ui-sm);
+  color: var(--fg-faint);
+  text-align: center;
+}
+
+/* Command Palette (Mod+Shift+P; ROADMAP.md v0.6 C1) — same overlay/panel/
+   input/list shape as .quickopen-* above (own class namespace per this
+   codebase's convention: each dialog module owns its own prefix even when
+   visually near-identical, e.g. .goto-*/.fif-* below), just single-line
+   items instead of quickopen's name+dir pair. */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+
+.palette-panel {
+  display: flex;
+  flex-direction: column;
+  width: 480px;
+  max-width: 90vw;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: panel-in 140ms ease-out;
+}
+
+.palette-panel input {
+  padding: 10px 14px;
+  font: inherit;
+  font-size: var(--font-ui);
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+
+.palette-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.palette-item {
+  padding: 6px 10px;
+  font-size: var(--font-ui);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.palette-item:hover,
+.palette-item.selected {
+  background: var(--accent-soft);
+}
+
+.palette-empty {
   padding: 10px;
   font-size: var(--font-ui-sm);
   color: var(--fg-faint);
