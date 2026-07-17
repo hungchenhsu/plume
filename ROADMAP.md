@@ -1790,9 +1790,32 @@ for incoming contributors.
   #[serde(default)] turns 7 of 9 session tests red, restored green.
   `encoding` has been required in every era — intentional, noted in a
   code comment
-- [ ] V2 IPC error-path audit: inventory every #[tauri::command]'s
-  frontend call sites for catch/error surfacing; findings report plus
-  fixes for the gaps found
+- [x] V2 IPC error-path audit: inventoried every #[tauri::command]'s
+  frontend call sites for catch/error surfacing across all 45 commands —
+  A20 already surfaced a dialog, B20 deliberate best-effort (ambient
+  persistence/menu-sync where a silent failure never misrepresents
+  anything, since the live UI already reflects the new value), C0
+  silently swallowed with no fallback at all, D5 no-op/inert regardless
+  of outcome. Fixed the 4 B-class sites where the existing silent catch
+  reads as success to the user: load_backup (both main.ts call sites —
+  restoreFromBackup's session-tracked restore and the orphan-recovery
+  loop) and list_backups now warn once after session restore instead of
+  silently resurrecting nothing or skipping the orphan safety net with
+  zero signal (fired with `void`, not awaited, so the warning can't delay
+  opening files an OS "Open With"/CLI launch passed in); take_pending_files
+  warns instead of dropping those OS/CLI files with no clue why they
+  never opened; the Preferences dialog's Save button now keeps the
+  dialog open and shows the IPC error instead of closing as if the write
+  had succeeded — its other six savePreferences call sites (ambient
+  font/theme/view-toggle persistence) are untouched, same reasoning as
+  the B-class calls left alone elsewhere. The remaining 16 B-class sites
+  were reviewed and left as-is; no showIpcError abstraction was
+  introduced (all 4 fixes reuse the existing messageDialog+String(error)
+  convention). dialog.* i18n keys ×7 ×4 locales (en/zh-TW/ja/zh-CN); 955
+  vitest (+4, new preferences.test.ts covering the Save-button failure
+  path — main.ts's three fixes are IPC/DOM glue with no dedicated test,
+  same as its other ~8 existing messageDialog call sites), 522 cargo test
+  unchanged (no Rust touched)
 
 **Track H — outward** (positioning red lines apply: no competitor names)
 - [x] H1 CHANGELOG.md: Keep-a-Changelog backfill from v0.1.0-alpha.1
