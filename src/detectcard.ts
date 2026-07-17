@@ -52,6 +52,17 @@ export interface DetectionCardModel {
    * "this isn't a bug, this encoding always requires one of those paths"
    * context. */
   detectionBoundaryNote: string | null;
+  /** Set when `info.largeFilePreview` is true and the verdict wasn't
+   * decided by a BOM (issue #201): `detectorVerdict`/`wouldChoose` above
+   * come from a statistical read of a truncated large-file-preview sample,
+   * not the whole file — for a single very long line with no newlines,
+   * that read can land on the wrong encoding family with no `malformed`
+   * flag to catch it. A BOM is read from the first few bytes regardless of
+   * file size, so it is exactly as reliable here as on the whole file and
+   * never gets this note (`reason === "bom"` is excluded below). This is a
+   * pure information-disclosure signal — it never changes what
+   * `detectorVerdict`/`wouldChoose` themselves report. */
+  truncatedSampleNote: string | null;
 }
 
 /** Pure helper: assemble the diagnostic card's text from raw evidence. */
@@ -70,6 +81,10 @@ export function formatDetectionCard(
   const detectionBoundaryNote = isManualOnlyEncoding(currentEncoding)
     ? t("detectcard.detectionBoundaryNote", currentEncoding)
     : null;
+  const truncatedSampleNote =
+    info.largeFilePreview && reason !== "bom"
+      ? t("detectcard.truncatedSampleNote")
+      : null;
 
   return {
     title: t("detectcard.title", currentEncoding),
@@ -96,6 +111,7 @@ export function formatDetectionCard(
     ],
     manualNote,
     detectionBoundaryNote,
+    truncatedSampleNote,
   };
 }
 
@@ -130,6 +146,13 @@ function renderCard(panel: HTMLElement, model: DetectionCardModel): void {
     const note = document.createElement("div");
     note.className = "detectcard-note";
     note.textContent = model.detectionBoundaryNote;
+    panel.appendChild(note);
+  }
+
+  if (model.truncatedSampleNote) {
+    const note = document.createElement("div");
+    note.className = "detectcard-note";
+    note.textContent = model.truncatedSampleNote;
     panel.appendChild(note);
   }
 }

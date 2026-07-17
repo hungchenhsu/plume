@@ -382,6 +382,28 @@ pub struct DetectionExplanation {
     /// "detector" | "fallback" — the encoding `open_document`'s
     /// auto-detection would pick, and why.
     would_choose: String,
+    /// True when `total_size` exceeds `LARGE_FILE_THRESHOLD` (issue #201):
+    /// `open_document`'s real auto-detect for a file this large never sees
+    /// the whole file, only a bounded preview window (`PREVIEW_BYTES`), so
+    /// `detector_verdict` — and `would_choose`, whenever its reason isn't
+    /// `"bom"` — reflects chardetng's statistical read of a truncated
+    /// sample, not the whole file. For a large single-line legacy
+    /// multi-byte file with no newline in that window, that statistical
+    /// read can swing to the wrong (single-byte) encoding family with
+    /// `malformed == false`, so nothing else catches it.
+    ///
+    /// This is a distinct condition from `sampled_bytes < total_size`:
+    /// that one is about *this command's own* `EXPLAIN_SAMPLE_BYTES` cap
+    /// and is true for any file merely over 64 KiB, including plenty
+    /// `open_document` itself reads whole (anything at or under
+    /// `LARGE_FILE_THRESHOLD`). Conflating the two would warn about files
+    /// whose real on-screen encoding was never actually truncated.
+    ///
+    /// A BOM is read from the first few bytes regardless of file size, so
+    /// a BOM-based `would_choose` is exactly as reliable here as it would
+    /// be on the whole file; the frontend gates its truncated-sample hint
+    /// on `reason != "bom"` accordingly (see `detectcard.ts`).
+    large_file_preview: bool,
 }
 
 /// Diagnostics sample size: large enough for chardetng to reach a stable
@@ -426,6 +448,14 @@ fn explain_detection(
         sampled_bytes: sample_len,
         total_size,
         would_choose: format!("{} ({})", detection.chosen.name(), detection.reason),
+        // Same threshold `open_document` uses to decide whether *it* reads
+        // this file whole or through the bounded large-file preview path —
+        // deliberately recomputed here (not passed in) so this stays a
+        // read-only re-derivation from the file's own metadata rather than
+        // trusting a caller-supplied flag, consistent with how `total_size`
+        // above is already a fresh read, not something the frontend hands
+        // back from the original open.
+        large_file_preview: total_size > LARGE_FILE_THRESHOLD,
     })
 }
 
@@ -1118,6 +1148,13 @@ mod tests {
         );
         assert_eq!(explained.sampled_bytes, bytes.len());
         assert_eq!(explained.total_size, bytes.len() as u64);
+        // Issue #201: every fixture this helper exercises is well under
+        // LARGE_FILE_THRESHOLD, so none of them is the large-file-preview
+        // scenario the new flag exists to call out.
+        assert!(
+            !explained.large_file_preview,
+            "a small fixture must not be flagged as a large-file-preview sample for {dir_name}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2713,6 +2750,12 @@ mod tests {
             data.len() > EXPLAIN_SAMPLE_BYTES,
             "fixture must exceed the diagnostics sample size"
         );
+        assert!(
+            (data.len() as u64) < LARGE_FILE_THRESHOLD,
+            "fixture must stay under the large-file threshold — this test's whole point is \
+             pinning `large_file_preview` apart from the unrelated `sampled_bytes < total_size` \
+             condition this fixture *does* cross"
+        );
         let path = file.to_string_lossy().into_owned();
 
         let explained = explain_detection(path, None).unwrap();
@@ -2727,6 +2770,73 @@ mod tests {
             explained.would_choose,
             format!("{} ({})", expected.chosen.name(), expected.reason)
         );
+        // Issue #201: this fixture crosses EXPLAIN_SAMPLE_BYTES (so
+        // `sampled_bytes < total_size`) but not LARGE_FILE_THRESHOLD, so
+        // `open_document`'s real auto-detect for this same file would have
+        // read it whole, untruncated. `large_file_preview` must track that
+        // — not `sampled_bytes < total_size` — or this diagnostics-only
+        // command would wrongly warn about *its own* smaller re-sample as
+        // if it were the truncation `open_document` actually did.
+        assert!(
+            !explained.large_file_preview,
+            "a file under LARGE_FILE_THRESHOLD must not be flagged as a large-file-preview \
+             sample, even though explain_detection's own EXPLAIN_SAMPLE_BYTES cap made its \
+             sample partial"
+        );
+
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Issue #201: for a file over `LARGE_FILE_THRESHOLD`, `open_document`'s
+    /// real auto-detect never sees the whole file — only a bounded preview
+    /// window (`PREVIEW_BYTES`). For a large single-line legacy multi-byte
+    /// file with no newline anywhere in that window (this fixture: one
+    /// leading ASCII byte then six million `中` in Big5, the same shape
+    /// `write_large_big5_fixture` builds for the #165 tests above),
+    /// chardetng's statistical read of that truncated sample can swing to
+    /// the wrong (single-byte) encoding family — with `malformed == false`,
+    /// so nothing else flags it either. Empirically confirmed against this
+    /// exact fixture (encoding_rs 0.8.35 + chardetng 0.1.17): even
+    /// `explain_detection`'s own smaller `EXPLAIN_SAMPLE_BYTES` prefix of
+    /// it — which also ends mid-character, one leading odd-parity byte
+    /// making every later `中` land on an odd offset the same way the
+    /// `write_large_big5_fixture` doc comment explains for the 2 MiB
+    /// `PREVIEW_BYTES` window — reproduces the swing (verdict:
+    /// windows-874, `reason=detector`), so the assertion below checks the
+    /// general "wrong family" shape rather than pinning that one
+    /// third-party statistical guess, which could change across a
+    /// chardetng version bump. Red before `large_file_preview` existed on
+    /// `DetectionExplanation` (does not compile); green after.
+    #[test]
+    fn explain_detection_large_file_preview_flags_truncated_sample() {
+        let file = write_large_big5_fixture("plume-explain-large-big5-truncated-flag");
+        let size = std::fs::metadata(&file).unwrap().len();
+        assert!(
+            size > LARGE_FILE_THRESHOLD,
+            "fixture must exceed the large-file threshold"
+        );
+        let path = file.to_string_lossy().into_owned();
+
+        let explained = explain_detection(path, None).unwrap();
+
+        assert_eq!(explained.total_size, size);
+        assert!(
+            explained.large_file_preview,
+            "a file over LARGE_FILE_THRESHOLD must flag its verdict as based on a truncated \
+             large-file-preview sample (issue #201)"
+        );
+        // Grounding: this is not a hypothetical risk for this fixture. The
+        // truncated sample's statistical read swings away from Big5 (see
+        // the doc comment above) — with `reason=detector`, not `bom`, so
+        // the frontend's BOM exclusion does not suppress the new hint here.
+        assert_ne!(
+            explained.detector_verdict, "Big5",
+            "this fixture only reproduces the issue #201 scenario this test protects if the \
+             truncated sample's statistical read actually swings away from the true encoding \
+             family — if a future encoding_rs/chardetng upgrade fixes that read, this fixture \
+             stops being a meaningful regression lock and must be revisited"
+        );
+        assert!(explained.would_choose.ends_with("(detector)"));
 
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
