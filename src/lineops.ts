@@ -7,20 +7,20 @@
 // the whole document) and `EditorHandle.transformSelection` (selection
 // verbatim, or the whole document) in editor.ts.
 //
-// Contract shared by the five `(text: string) => string` transforms below
-// (sortLines/uniqueLines/trimTrailingWhitespace/upperCase/lowerCase):
-// input and output are LF text (the editor buffer is always LF-normalized
-// before it reaches the frontend — see CLAUDE.md "Hard constraints"), and
-// an empty string maps to an empty string. `lineSpanForSelection`, at the
-// end of this file, has a different shape — it returns character offsets,
-// not text — because it answers a different question; see its own doc
-// comment.
+// Contract shared by the seven `(text: string) => string` transforms below
+// (sortLines/uniqueLines/reverseLines/trimTrailingWhitespace/joinLines/
+// upperCase/lowerCase): input and output are LF text (the editor buffer is
+// always LF-normalized before it reaches the frontend — see CLAUDE.md "Hard
+// constraints"), and an empty string maps to an empty string.
+// `lineSpanForSelection`, at the end of this file, has a different shape —
+// it returns character offsets, not text — because it answers a different
+// question; see its own doc comment.
 
 /**
  * Split LF text into its lines (terminators stripped) plus whether the
  * text ended with a trailing newline, so a transform that only reorders
  * or filters the line array can restore that trailing-newline presence
- * exactly via `joinLines`. Without tracking this separately, `"a\nb\n"`
+ * exactly via `linesToText`. Without tracking this separately, `"a\nb\n"`
  * and `"a\nb"` would both naively split into `["a", "b"]`-shaped data and
  * there would be no way to tell which one should regain the trailing
  * newline on the way back out.
@@ -33,8 +33,12 @@ function splitLines(text: string): { lines: string[]; trailingNewline: boolean }
 }
 
 /** Inverse of `splitLines`: rejoin a line array, restoring a trailing
- *  newline only when the original text had one. */
-function joinLines(lines: readonly string[], trailingNewline: boolean): string {
+ *  newline only when the original text had one. Named distinctly from the
+ *  `joinLines` Edit > Line Operations transform below (ROADMAP.md v0.6
+ *  C2) — that one merges a line array down to a single line's worth of
+ *  *content*; this one is the plain structural inverse of `splitLines`,
+ *  unrelated to the Join Lines feature beyond sharing an English verb. */
+function linesToText(lines: readonly string[], trailingNewline: boolean): string {
   return lines.join("\n") + (trailingNewline ? "\n" : "");
 }
 
@@ -79,7 +83,7 @@ export function sortLines(text: string): string {
   if (text === "") return "";
   const { lines, trailingNewline } = splitLines(text);
   lines.sort(compareCodePoints);
-  return joinLines(lines, trailingNewline);
+  return linesToText(lines, trailingNewline);
 }
 
 /**
@@ -97,7 +101,26 @@ export function uniqueLines(text: string): string {
     seen.add(line);
     kept.push(line);
   }
-  return joinLines(kept, trailingNewline);
+  return linesToText(kept, trailingNewline);
+}
+
+/**
+ * Reverse the order of the lines in the given text — Edit > Line
+ * Operations' "Reverse Lines" (ROADMAP.md v0.6 C2). No-selection scope
+ * follows the same "no selection = whole document" convention `sortLines`/
+ * `uniqueLines` above already use (via `EditorHandle.transformLines` in
+ * editor.ts), so this is a plain `splitLines`/`linesToText` transform with
+ * no span logic of its own, exactly like them. A trailing newline is a
+ * property of the text as a whole, not a line of its own (see
+ * `splitLines`'s doc comment), so it never itself moves: reversing
+ * `"a\nb\nc\n"` gives `"c\nb\na\n"`, not `"\nc\nb\na"` — the trailing
+ * newline stays trailing either way.
+ */
+export function reverseLines(text: string): string {
+  if (text === "") return "";
+  const { lines, trailingNewline } = splitLines(text);
+  lines.reverse();
+  return linesToText(lines, trailingNewline);
 }
 
 /**
@@ -112,7 +135,50 @@ export function trimTrailingWhitespace(text: string): string {
   if (text === "") return "";
   const { lines, trailingNewline } = splitLines(text);
   const trimmed = lines.map((line) => line.replace(/[ \t]+$/, ""));
-  return joinLines(trimmed, trailingNewline);
+  return linesToText(trimmed, trailingNewline);
+}
+
+/**
+ * Merge every line in the given text into a single line — Edit > Line
+ * Operations' "Join Lines" (ROADMAP.md v0.6 C2). Mainstream editor
+ * convention (VS Code, Sublime Text, Emacs): each subsequent line's
+ * *leading* whitespace is stripped and the lines are rejoined with exactly
+ * one space between them, so neither the removed newline nor whatever
+ * indentation followed it survives as extra whitespace. A blank (or
+ * whitespace-only) line contributes nothing at all — not even a space —
+ * so joining across one never leaves a doubled space behind (e.g.
+ * `"a\n\nb"` -> `"a b"`, not `"a  b"`). The first line's own leading
+ * whitespace is left untouched (it is the resulting line's own
+ * indentation, not a join seam), but a trailing-whitespace run already
+ * accumulated so far *is* collapsed away before every join, so original
+ * trailing whitespace on any line never stacks with the inserted join
+ * space either (e.g. `"a   \nb"` -> `"a b"`, not `"a    b"`).
+ *
+ * Only `text`'s own lines are ever joined — deciding *which* lines make up
+ * that span (the selection line-expanded, or the cursor's line plus the
+ * next one when there is no selection) is `EditorHandle.joinLines`'s job
+ * (editor.ts's `joinLinesSpanInDoc`), not this function's. A span of just
+ * one line is therefore always a no-op here, regardless of why the caller
+ * ended up with only one line.
+ *
+ * Deliberately narrow like `trimTrailingWhitespace` above: only space and
+ * tab are treated as whitespace, never `\r` (see that function's doc
+ * comment for why a stray one is left untouched rather than silently
+ * eaten). Trailing-newline presence is preserved, same as every transform
+ * in this file.
+ */
+export function joinLines(text: string): string {
+  if (text === "") return "";
+  const { lines, trailingNewline } = splitLines(text);
+  if (lines.length <= 1) return text;
+  let merged = lines[0];
+  for (let i = 1; i < lines.length; i++) {
+    const stripped = lines[i].replace(/^[ \t]+/, "");
+    merged = merged.replace(/[ \t]+$/, "");
+    if (stripped === "") continue;
+    merged += merged === "" ? stripped : ` ${stripped}`;
+  }
+  return linesToText([merged], trailingNewline);
 }
 
 /**
@@ -248,7 +314,7 @@ export function convertLeadingTabsToSpaces(text: string, width: number): string 
   const w = clampWidth(width);
   const { lines, trailingNewline } = splitLines(text);
   const converted = lines.map((line) => expandLeadingIndentToSpaces(line, w));
-  return joinLines(converted, trailingNewline);
+  return linesToText(converted, trailingNewline);
 }
 
 /**
@@ -291,7 +357,7 @@ export function convertLeadingSpacesToTabs(text: string, width: number): string 
   const w = clampWidth(width);
   const { lines, trailingNewline } = splitLines(text);
   const converted = lines.map((line) => collapseLeadingIndentToTabs(line, w));
-  return joinLines(converted, trailingNewline);
+  return linesToText(converted, trailingNewline);
 }
 
 /**

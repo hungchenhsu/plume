@@ -150,6 +150,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "删除重复行",
     ),
     (
+        "reverse_lines",
+        "Reverse Lines",
+        "反轉行",
+        "行を反転",
+        "反转行",
+    ),
+    (
         "trim_trailing_whitespace",
         "Trim Trailing Whitespace",
         "移除行尾空白",
@@ -192,6 +199,7 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "复制行",
     ),
     ("delete_line", "Delete Line", "刪除行", "行を削除", "删除行"),
+    ("join_lines", "Join Lines", "合併行", "行を結合", "合并行"),
     (
         "uppercase",
         "UPPERCASE",
@@ -455,6 +463,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let line_ops_menu = SubmenuBuilder::with_id(app, "line_ops", l("line_ops"))
         .item(&MenuItemBuilder::with_id("sort_lines", l("sort_lines")).build(app)?)
         .item(&MenuItemBuilder::with_id("unique_lines", l("unique_lines")).build(app)?)
+        .item(&MenuItemBuilder::with_id("reverse_lines", l("reverse_lines")).build(app)?)
         .item(
             &MenuItemBuilder::with_id("trim_trailing_whitespace", l("trim_trailing_whitespace"))
                 .build(app)?,
@@ -484,6 +493,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&MenuItemBuilder::with_id("move_line_down", l("move_line_down")).build(app)?)
         .item(&MenuItemBuilder::with_id("duplicate_line", l("duplicate_line")).build(app)?)
         .item(&MenuItemBuilder::with_id("delete_line", l("delete_line")).build(app)?)
+        .item(&MenuItemBuilder::with_id("join_lines", l("join_lines")).build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("uppercase", l("uppercase")).build(app)?)
         .item(&MenuItemBuilder::with_id("lowercase", l("lowercase")).build(app)?)
@@ -877,6 +887,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             for id in [
                 "sort_lines",
                 "unique_lines",
+                "reverse_lines",
                 "trim_trailing_whitespace",
                 "convert_leading_tabs_to_spaces",
                 "convert_leading_spaces_to_tabs",
@@ -884,6 +895,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 "move_line_down",
                 "duplicate_line",
                 "delete_line",
+                "join_lines",
                 "uppercase",
                 "lowercase",
                 "to_full_width",
@@ -1236,6 +1248,26 @@ mod tests {
         assert_eq!(label("command_palette", "zh-TW"), "命令面板…");
         assert_eq!(label("command_palette", "ja"), "コマンドパレット…");
         assert_eq!(label("command_palette", "zh-CN"), "命令面板…");
+    }
+
+    // ROADMAP.md v0.6 C2 join lines / reverse lines: the Edit > Line
+    // Operations submenu's two new ids, pinned across all four languages --
+    // same rationale as convert_leading_tabs_to_spaces/
+    // convert_leading_spaces_to_tabs's dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_join_lines_text_for_every_language() {
+        assert_eq!(label("join_lines", "en"), "Join Lines");
+        assert_eq!(label("join_lines", "zh-TW"), "合併行");
+        assert_eq!(label("join_lines", "ja"), "行を結合");
+        assert_eq!(label("join_lines", "zh-CN"), "合并行");
+    }
+
+    #[test]
+    fn label_returns_the_correct_reverse_lines_text_for_every_language() {
+        assert_eq!(label("reverse_lines", "en"), "Reverse Lines");
+        assert_eq!(label("reverse_lines", "zh-TW"), "反轉行");
+        assert_eq!(label("reverse_lines", "ja"), "行を反転");
+        assert_eq!(label("reverse_lines", "zh-CN"), "反转行");
     }
 
     #[test]
