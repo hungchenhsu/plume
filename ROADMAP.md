@@ -1679,8 +1679,51 @@ for incoming contributors.
   `PALETTE_EXCLUDED_IDS`) failed to compile before being implemented; both
   went green after. 504 cargo test (+7, all in menu.rs), 894 vitest (+23,
   all in palette.test.ts).
-- [ ] C2 join lines / reverse lines: lineops.ts pure functions + Edit >
-  Line Operations entries + i18n ×4 + pinned translation tests
+- [x] C2 join lines / reverse lines: `lineops.ts` gained `reverseLines`
+  (`sort`/`unique`'s own "no selection = whole document" convention via
+  `editor.transformLines` — no span logic of its own; a trailing newline is
+  tracked as a flag, not a line of its own, same as `sortLines`/
+  `uniqueLines`, so it never itself relocates: `"a\nb\nc\n"` reverses to
+  `"c\nb\na\n"`, not `"\nc\nb\na"`) and `joinLines` (merges every line in
+  the given span into one: each subsequent line's leading whitespace
+  stripped, exactly one space at the seam, a trailing-whitespace run
+  already at the seam collapsed rather than stacked with the inserted
+  space, and a blank/whitespace-only line contributing nothing at all —
+  not even a space — so joining across one never doubles up). Join Lines'
+  selection semantics are deliberately unlike every other Line Operations
+  item: mainstream editors (VS Code, Sublime Text, Emacs) join the
+  cursor's line with the *next* one when there is no selection (or the
+  selection is confined to a single line), never the whole document — a
+  new `EditorHandle.joinLines(fn)` (editor.ts), sibling to
+  `transformLines`/`transformSelection`, and its pure span helper
+  `joinLinesSpanInDoc` (same to-1 issue #99 convention as
+  `lineSpanForSelectionInDoc`, oracle-tested the same way) compute that,
+  returning `null` (a no-op) only when the cursor/selection is already on
+  the document's last line — including the subtlety that a document
+  ending in "\n" has a genuine empty CM6 line after it, so the *previous*
+  (content-bearing) line still has a next line to pull in; whether joining
+  onto it is worth anything is `joinLines`'s own call once it sees the
+  sliced text. Both new commands route through `dispatchMenuCommand`'s
+  existing `runLineOperation` guard exactly like every other line op, and
+  neither needed a dialog or `i18n.ts` entry — same "no chrome, no
+  dictionary entry" precedent as sort/unique/trim/case/width. `menu.rs`
+  LABELS gained `reverse_lines` ("Reverse Lines"/"反轉行"/"行を反転"/
+  "反转行") and `join_lines` ("Join Lines"/"合併行"/"行を結合"/"合并行")
+  across en/zh-TW/ja/zh-CN with pinned tests; neither is in
+  `PALETTE_EXCLUDED_IDS` (both are real dispatchable commands), so both
+  surface in the Command Palette for free, and
+  `palette_commands_includes_every_non_excluded_label`'s dynamic count
+  assertion picked them up with no test change needed.
+
+  Failing-test-first: `joinLines`/`reverseLines` (lineops.test.ts) and
+  `joinLinesSpanInDoc` (editor.test.ts) were run red (`joinLines`/
+  `reverseLines`/`joinLinesSpanInDoc` is not a function) before the
+  implementations existed; menu.rs's two new pinned-translation tests
+  panicked on the not-yet-existing `"join_lines"`/`"reverse_lines"` ids
+  before their `LABELS` entries were added. 510 cargo test (+2, both in
+  menu.rs), 927 vitest (+33: 24 in lineops.test.ts, 9 in editor.test.ts).
+- [ ] C3 sort variants: case-insensitive sort and numeric sort (same
+  family as C2) — first to cut if the cycle runs long
 - [ ] C3 sort variants: case-insensitive sort and numeric sort (same
   family as C2) — first to cut if the cycle runs long
 - [ ] C4 clear recent files: clear_recent_files command + a File > Open

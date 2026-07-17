@@ -15,6 +15,7 @@ import {
   INDENT_DETECTION_SAMPLE_LINES,
   indentGuideLevels,
   isNonNfcOf,
+  joinLinesSpanInDoc,
   lineSpanForSelectionInDoc,
   suspiciousCharCountOf,
   textStatsOf,
@@ -236,6 +237,71 @@ describe("lineSpanForSelectionInDoc (oracle: must match lineops.ts's lineSpanFor
       expect(() => lineSpanForSelectionInDoc(doc, pos, pos)).toThrow();
       expect(() => lineSpanForSelection(text, pos, pos)).toThrow();
     }
+  });
+});
+
+// ROADMAP.md v0.6 C2 Join Lines: unlike lineSpanForSelectionInDoc above
+// (which transformLines uses, and which throws on an empty selection since
+// transformLines gives a cursor its own whole-document meaning instead),
+// joinLinesSpanInDoc must handle an empty selection directly -- Join Lines'
+// no-selection default is "current line plus the next one", not "whole
+// document" (mainstream editor convention: VS Code, Sublime Text, Emacs).
+// A selection confined to a single line degenerates the same way a cursor
+// does, for the same reason; only a selection already spanning two or more
+// lines is left as-is. Same to-1 (issue #99) convention as
+// lineSpanForSelectionInDoc throughout, so the "aa\nbb\ncc" fixture and its
+// {from:0,to:5} boundary result are reused directly from that suite above.
+describe("joinLinesSpanInDoc", () => {
+  const text = "aa\nbb\ncc"; // line1 "aa" [0,2), line2 "bb" [3,5), line3 "cc" [6,8)
+
+  it("extends a cursor (empty selection) on a non-last line to include the next line", () => {
+    expect(joinLinesSpanInDoc(toDoc(text), 0, 0)).toEqual({ from: 0, to: 5 });
+  });
+
+  it("returns null for a cursor already on the document's last line -- nothing to join with", () => {
+    expect(joinLinesSpanInDoc(toDoc(text), 6, 6)).toBeNull();
+  });
+
+  it("degenerates a selection confined to a single, non-last line the same way an empty selection does", () => {
+    // [0, 2) selects exactly line 1's text ("aa"), no more.
+    expect(joinLinesSpanInDoc(toDoc(text), 0, 2)).toEqual({ from: 0, to: 5 });
+  });
+
+  it("returns null for a selection confined to the document's last line", () => {
+    // [6, 8) selects exactly line 3's text ("cc"), no more.
+    expect(joinLinesSpanInDoc(toDoc(text), 6, 8)).toBeNull();
+  });
+
+  it("leaves a selection already spanning two lines as-is, without pulling in a third", () => {
+    expect(joinLinesSpanInDoc(toDoc(text), 0, 5)).toEqual({ from: 0, to: 5 });
+  });
+
+  it("leaves a selection already spanning every line as-is", () => {
+    expect(joinLinesSpanInDoc(toDoc(text), 0, 8)).toEqual({ from: 0, to: 8 });
+  });
+
+  it("honors the to-1 convention (issue #99): an exclusive end at column 1 of a later line stops one line short, not three", () => {
+    // to === 6 is column 1 of line 3; a naive doc.lineAt(to) would wrongly
+    // pull line 3 in too, matching lineSpanForSelectionInDoc's own
+    // regression case for the identical input (see the suite above).
+    expect(joinLinesSpanInDoc(toDoc(text), 0, 6)).toEqual({ from: 0, to: 5 });
+  });
+
+  it("still finds a next line for a cursor on the last line WITH content when the document ends in a trailing newline", () => {
+    // "aa\nbb\n" is CM6 lines ["aa", "bb", ""] -- a genuine (if empty)
+    // third line, unlike lineops.ts's string-based splitLines, which folds
+    // a trailing newline into a boolean flag instead of a phantom line
+    // (see that function's doc comment). Structurally there IS a next
+    // line here, so this must not return null; whether joining onto an
+    // empty line is actually worth doing is lineops.ts's joinLines' call
+    // once it sees the sliced text, not this function's.
+    const trailing = "aa\nbb\n";
+    expect(joinLinesSpanInDoc(toDoc(trailing), 3, 3)).toEqual({ from: 3, to: 6 });
+  });
+
+  it("returns null for a cursor on the trailing empty line itself", () => {
+    const trailing = "aa\nbb\n";
+    expect(joinLinesSpanInDoc(toDoc(trailing), 6, 6)).toBeNull();
   });
 });
 

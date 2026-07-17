@@ -345,6 +345,23 @@ export interface EditorHandle {
    * behavior as `transformLines`.
    */
   transformSelection(fn: (text: string) => string): void;
+  /**
+   * Apply a pure text transform (see lineops.ts's `joinLines`) to the
+   * current line plus the next one, or — with a selection already
+   * spanning two or more lines — exactly those lines (same line-boundary
+   * expansion `transformLines` uses). Used by the Edit > Line Operations
+   * menu's Join Lines item (ROADMAP.md v0.6 C2). Unlike `transformLines`'s
+   * empty-selection-means-whole-document default, a single line here (a
+   * plain cursor, or a selection confined to one line) means "join with
+   * the next line" instead — mainstream Join Lines convention (VS Code,
+   * Sublime Text, Emacs); see `joinLinesSpanInDoc` above for the exact
+   * span rule. A no-op (dispatches nothing) when the cursor/selection is
+   * already on the document's last line, since there is then no next line
+   * to join with, or when `fn` returns its input unchanged — same
+   * no-op-dispatches-nothing contract as `transformLines`/
+   * `transformSelection` above.
+   */
+  joinLines(fn: (text: string) => string): void;
 }
 
 export function isEmptyBuffer(buffer: EditorBuffer): boolean {
@@ -1061,6 +1078,51 @@ export function lineSpanForSelectionInDoc(
   return { from: doc.lineAt(from).from, to: doc.lineAt(to - 1).to };
 }
 
+/**
+ * Character offsets marking the `[from, to)` span `EditorHandle.joinLines`
+ * should act on, given the live document and the current selection's
+ * `from`/`to` — or `null` when there is nothing to join (ROADMAP.md v0.6
+ * C2). Unlike `lineSpanForSelectionInDoc` above (which throws on an empty
+ * selection, since `transformLines` gives a cursor its own whole-document
+ * meaning instead), this function handles an empty selection directly:
+ * Join Lines' no-selection default is "the current line plus the next
+ * one", not "the whole document" — mainstream editor convention (VS Code,
+ * Sublime Text, Emacs). A selection already spanning two or more lines
+ * joins exactly those lines, using the same line-boundary expansion (and
+ * the same to-1 convention, issue #99) as `lineSpanForSelectionInDoc`. A
+ * selection confined to a single line — including the degenerate case of
+ * no selection at all — instead pulls in the *next* line too, so Join
+ * Lines always has at least two lines to merge rather than no-op'ing the
+ * way a single-line selection would for `transformLines`. `null` only when
+ * that next line doesn't exist: the cursor/selection is already on the
+ * document's last line, so there is nothing to join with.
+ *
+ * A document whose text ends in "\n" has a final, empty CM6 line after it
+ * (`Text.lineAt`'s own line-counting model — unlike lineops.ts's
+ * string-based `splitLines`, which folds a trailing newline into a boolean
+ * flag instead of a phantom last line, see that function's doc comment) —
+ * so a cursor on the last line *with content* still has a "next line" to
+ * pull in here: the empty one. The span returned for that case is
+ * therefore not `null`, even though joining onto an empty line changes
+ * nothing; deciding that is lineops.ts's `joinLines`'s job once it sees
+ * the sliced text, not this function's — the same division of labor
+ * `transformLines` already has with its own no-op-dispatches-nothing
+ * check.
+ */
+export function joinLinesSpanInDoc(
+  doc: Text,
+  from: number,
+  to: number,
+): { from: number; to: number } | null {
+  const firstLine = doc.lineAt(from);
+  const lastLine = from === to ? firstLine : doc.lineAt(to - 1);
+  if (lastLine.number > firstLine.number) {
+    return { from: firstLine.from, to: lastLine.to };
+  }
+  if (firstLine.number >= doc.lines) return null;
+  return { from: firstLine.from, to: doc.line(firstLine.number + 1).to };
+}
+
 export function createEditor(
   parent: Element,
   onDocChanged: () => void,
@@ -1318,6 +1380,17 @@ export function createEditor(
       const range = state.selection.main;
       const from = range.empty ? 0 : range.from;
       const to = range.empty ? state.doc.length : range.to;
+      const original = state.sliceDoc(from, to);
+      const insert = fn(original);
+      if (insert === original) return;
+      view.dispatch({ changes: { from, to, insert } });
+    },
+    joinLines: (fn) => {
+      const { state } = view;
+      const range = state.selection.main;
+      const span = joinLinesSpanInDoc(state.doc, range.from, range.to);
+      if (!span) return;
+      const { from, to } = span;
       const original = state.sliceDoc(from, to);
       const insert = fn(original);
       if (insert === original) return;

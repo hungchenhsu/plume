@@ -94,7 +94,9 @@ import { clampLine, selectCheckpoint } from "./lineindex";
 import {
   convertLeadingSpacesToTabs,
   convertLeadingTabsToSpaces,
+  joinLines,
   lowerCase,
+  reverseLines,
   sortLines,
   toFullWidth,
   toHalfWidth,
@@ -2592,14 +2594,15 @@ function syncReopenClosedTabState(): void {
  *  result back) or userReadOnly (ROADMAP.md v0.4 Track C: the user
  *  explicitly locked this tab) — then run it. Shares blockedByReadOnly's
  *  dialogs with saveFlow, so both entry points reject the same way.
- *  transformLines/transformSelection (sort/unique/trim/upper/lowercase)
- *  are a raw `view.dispatch` with explicit changes, which — unlike a CM6
- *  "command" — does not consult `state.readOnly` on its own (see
- *  editor.ts's `setReadOnly` doc comment), so this guard is their only
- *  protection; move/duplicate/delete are genuine CM6 commands that would
- *  self-no-op even without it (verified in editor.test.ts), but are
- *  guarded the same way here for one uniform rejection dialog regardless
- *  of which line operation was invoked. */
+ *  transformLines/transformSelection/joinLines (sort/unique/reverse/trim/
+ *  upper/lowercase/join — ROADMAP.md v0.6 C2 added joinLines, same dispatch
+ *  mechanics as the other two) are a raw `view.dispatch` with explicit
+ *  changes, which — unlike a CM6 "command" — does not consult
+ *  `state.readOnly` on its own (see editor.ts's `setReadOnly` doc comment),
+ *  so this guard is their only protection; move/duplicate/delete are
+ *  genuine CM6 commands that would self-no-op even without it (verified in
+ *  editor.test.ts), but are guarded the same way here for one uniform
+ *  rejection dialog regardless of which line operation was invoked. */
 function runLineOperation(action: () => void): void {
   const doc = tabs.active;
   if (!doc) return;
@@ -2810,8 +2813,10 @@ window.addEventListener("keydown", (event) => {
  * commands that self-no-op on an unmet precondition rather than throw) or
  * already gate through a shared, independently-tested helper:
  * `runLineOperation`'s no-doc + `blockedByReadOnly` check covers every
- * line-operation case (sort/unique/trim/case/width/normalize/move/
- * duplicate/delete); `saveFlow` has its own no-doc + `blockedByReadOnly`
+ * line-operation case (sort/unique/reverse/trim/case/width/normalize/move/
+ * duplicate/delete/join — ROADMAP.md v0.6 C2's join_lines/reverse_lines
+ * included, added after this audit but through the same guard); `saveFlow`
+ * has its own no-doc + `blockedByReadOnly`
  * check; `toggleReadOnly`/`handleGotoLine`/`toggleBookmarkFlow`/
  * `nextBookmarkFlow`/`previousBookmarkFlow` each have their own no-doc
  * check; `stream_replace`/`document_info` below have their own explicit
@@ -2913,6 +2918,12 @@ function dispatchMenuCommand(id: string): void {
     case "unique_lines":
       runLineOperation(() => editor.transformLines(uniqueLines));
       break;
+    // ROADMAP.md v0.6 C2: same "no selection = whole document" scope as
+    // sort/unique above (editor.ts's transformLines) — Reverse Lines has
+    // no span rule of its own, unlike Join Lines below.
+    case "reverse_lines":
+      runLineOperation(() => editor.transformLines(reverseLines));
+      break;
     case "trim_trailing_whitespace":
       runLineOperation(() => editor.transformLines(trimTrailingWhitespace));
       break;
@@ -2942,6 +2953,15 @@ function dispatchMenuCommand(id: string): void {
       break;
     case "delete_line":
       runLineOperation(() => editor.deleteLine());
+      break;
+    // ROADMAP.md v0.6 C2: unlike every other case in this group,
+    // editor.joinLines has its own span rule (current line + the next
+    // one when there's no selection, mainstream Join Lines convention —
+    // see editor.ts's joinLinesSpanInDoc), not transformLines' "whole
+    // document" default, so it takes the transform function directly
+    // instead of going through transformLines/transformSelection.
+    case "join_lines":
+      runLineOperation(() => editor.joinLines(joinLines));
       break;
     case "uppercase":
       runLineOperation(() => editor.transformSelection(upperCase));

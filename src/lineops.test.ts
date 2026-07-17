@@ -9,8 +9,10 @@ import { describe, expect, it } from "vitest";
 import {
   convertLeadingSpacesToTabs,
   convertLeadingTabsToSpaces,
+  joinLines,
   lineSpanForSelection,
   lowerCase,
+  reverseLines,
   sortLines,
   toFullWidth,
   toHalfWidth,
@@ -108,6 +110,45 @@ describe("uniqueLines", () => {
   });
 });
 
+// ROADMAP.md v0.6 C2: Edit > Line Operations' "Reverse Lines". No-selection
+// scope follows sort/unique's own existing "no selection = whole document"
+// convention (via editor.ts's transformLines), so this is a plain
+// splitLines/linesToText transform exactly like sortLines/uniqueLines above
+// -- no dedicated span logic of its own.
+describe("reverseLines", () => {
+  it("reverses the order of an odd number of lines", () => {
+    expect(reverseLines("a\nb\nc")).toBe("c\nb\na");
+  });
+
+  it("reverses the order of an even number of lines", () => {
+    expect(reverseLines("a\nb\nc\nd")).toBe("d\nc\nb\na");
+  });
+
+  it("keeps every duplicate line -- reversing is not deduping", () => {
+    expect(reverseLines("a\na\nb")).toBe("b\na\na");
+  });
+
+  it("preserves a trailing newline when the input has one, without the trailing empty line joining the reversal", () => {
+    // If the trailing newline were instead treated as its own trailing
+    // empty line and included in the reversal (rather than tracked
+    // separately, as splitLines/linesToText do), this would wrongly
+    // produce "\nc\nb\na" -- the empty line moved to the front -- instead.
+    expect(reverseLines("a\nb\nc\n")).toBe("c\nb\na\n");
+  });
+
+  it("does not introduce a trailing newline when the input has none", () => {
+    expect(reverseLines("x\ny")).toBe("y\nx");
+  });
+
+  it("returns an empty string for an empty string", () => {
+    expect(reverseLines("")).toBe("");
+  });
+
+  it("leaves a single line with no newline unchanged", () => {
+    expect(reverseLines("only")).toBe("only");
+  });
+});
+
 describe("trimTrailingWhitespace", () => {
   it("removes trailing spaces from every line", () => {
     expect(trimTrailingWhitespace("foo   \nbar")).toBe("foo\nbar");
@@ -150,6 +191,86 @@ describe("trimTrailingWhitespace", () => {
 
   it("reduces a whitespace-only line to empty", () => {
     expect(trimTrailingWhitespace("a\n   \nb")).toBe("a\n\nb");
+  });
+});
+
+// ROADMAP.md v0.6 C2: Edit > Line Operations' "Join Lines". Only the
+// text-merging rule lives here -- deciding *which* lines make up the given
+// span (the selection line-expanded, or the cursor's line plus the next one
+// when there is no selection) is editor.ts's joinLinesSpanInDoc, not this
+// function's job, so a single-line input is always a no-op here regardless
+// of why the caller ended up with only one line.
+describe("joinLines", () => {
+  it("joins two lines with a single space", () => {
+    expect(joinLines("foo\nbar")).toBe("foo bar");
+  });
+
+  it("joins three or more lines into one", () => {
+    expect(joinLines("a\nb\nc")).toBe("a b c");
+  });
+
+  it("strips each subsequent line's leading spaces before joining", () => {
+    expect(joinLines("foo\n   bar")).toBe("foo bar");
+  });
+
+  it("strips each subsequent line's leading tabs too, not just spaces", () => {
+    expect(joinLines("foo\n\t\tbar")).toBe("foo bar");
+  });
+
+  it("does not touch the first line's own leading whitespace", () => {
+    expect(joinLines("  foo\nbar")).toBe("  foo bar");
+  });
+
+  it("collapses a trailing-whitespace run already at the seam instead of stacking it with the inserted space", () => {
+    expect(joinLines("foo   \nbar")).toBe("foo bar");
+  });
+
+  it("does not touch interior whitespace, only the seam", () => {
+    expect(joinLines("foo  baz\nbar")).toBe("foo  baz bar");
+  });
+
+  it("contributes nothing for a blank interior line -- no doubled space", () => {
+    expect(joinLines("a\n\nb")).toBe("a b");
+  });
+
+  it("contributes nothing for a whitespace-only interior line", () => {
+    expect(joinLines("a\n   \nb")).toBe("a b");
+  });
+
+  it("contributes nothing for a blank line at the end, independent of the trailing-newline flag", () => {
+    expect(joinLines("a\n\n")).toBe("a\n");
+  });
+
+  it("contributes nothing for a blank first line", () => {
+    expect(joinLines("\nfoo")).toBe("foo");
+  });
+
+  it("preserves a trailing newline when the input has one", () => {
+    expect(joinLines("a\nb\n")).toBe("a b\n");
+  });
+
+  it("does not introduce a trailing newline when the input has none", () => {
+    expect(joinLines("a\nb")).toBe("a b");
+  });
+
+  it("returns an empty string for an empty string", () => {
+    expect(joinLines("")).toBe("");
+  });
+
+  it("leaves a single line with no newline unchanged (nothing to join)", () => {
+    expect(joinLines("only")).toBe("only");
+  });
+
+  it("leaves a single line with a trailing newline unchanged (nothing to join)", () => {
+    expect(joinLines("only\n")).toBe("only\n");
+  });
+
+  it("does not touch a trailing carriage return (buffer is LF-normalized; defensive only)", () => {
+    // Mirrors trimTrailingWhitespace's own defensive CRLF test above:
+    // "foo\r" splits as line 1, whose last character (\r) is neither space
+    // nor tab, so the seam trim must leave it in place rather than
+    // silently absorbing it into the single inserted join space.
+    expect(joinLines("foo\r\nbar")).toBe("foo\r bar");
   });
 });
 
