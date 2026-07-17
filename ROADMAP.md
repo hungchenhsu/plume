@@ -1687,10 +1687,20 @@ for incoming contributors.
   Recent > Clear entry (recent.rs currently has only load/add)
 
 **Track V — robustness**
-- [ ] V1 session forward-compat fixtures: hand-written old-shape session
+- [x] V1 session forward-compat fixtures: hand-written old-shape session
   JSONs (v0.1-era field sets) must load with correct defaults — pins
   the serde-default compatibility contract; no version field added
-  (YAGNI) — first to cut if the cycle runs long
+  (YAGNI). Three real eras established from actual tags (git show, not
+  imagined): v0.1.0-alpha.1 had only required path/encoding; alpha.7
+  through v0.3.0-alpha.1 added cursor/backup/title/withBom/lineEnding;
+  v0.4.0-alpha.1+ added userReadOnly. Six new fixture tests in
+  session.rs: per-era minimal + populated shapes, an
+  all-defaults-when-absent sweep asserting every defaultable field, and
+  an unknown-future-fields test pinning non-deny_unknown_fields
+  behavior. Contract proven by mutation: removing one field's
+  #[serde(default)] turns 7 of 9 session tests red, restored green.
+  `encoding` has been required in every era — intentional, noted in a
+  code comment
 - [ ] V2 IPC error-path audit: inventory every #[tauri::command]'s
   frontend call sites for catch/error surfacing; findings report plus
   fixes for the gaps found
