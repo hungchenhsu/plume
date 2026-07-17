@@ -477,9 +477,11 @@ discard, user state.
 4. Manual smoke on **both** Tier-1 platforms: launch; open a UTF-8, a
    Big5, and a >10 MB file; edit + save + reopen (round-trip intact);
    hot-exit kill-and-restore; check menus and shortcuts.
-5. Release notes written (zh-TW), draft reviewed by the user, **user
+5. `CHANGELOG.md` updated in the same PR as the version bump: move the
+   `Unreleased` entries under the new dated version heading.
+6. Release notes written (zh-TW), draft reviewed by the user, **user
    confirms publish** (Red tier).
-6. Post-release: install from the published artifact once, cold, on the
+7. Post-release: install from the published artifact once, cold, on the
    primary machine.
 
 **Dependency cadence.** Monthly chore PR: `cargo update` (respecting the
