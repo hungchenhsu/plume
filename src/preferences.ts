@@ -1,4 +1,5 @@
 // Preferences state, application, and the in-window settings dialog.
+import { message as messageDialog } from "@tauri-apps/plugin-dialog";
 import type { EditorHandle } from "./editor";
 import {
   encodingChoices,
@@ -410,7 +411,7 @@ export function showPreferencesDialog(): void {
     if (event.key === "Escape") close();
   };
   cancel.addEventListener("click", close);
-  save.addEventListener("click", () => {
+  save.addEventListener("click", async () => {
     const [encValue, encBom] = encoding.value.split(" ");
     const size = Number.parseInt(fontSize.value, 10);
     current = {
@@ -427,13 +428,27 @@ export function showPreferencesDialog(): void {
       indentWidth: current.indentWidth,
       extensionEncodings: normalizeTable(extensions.read()),
     };
+    // Applied immediately regardless of persistence outcome, same as the
+    // ambient font/theme toggles elsewhere in this file — the live UI
+    // already reflects `current`, so this part can't lie to the user.
     applyAll();
-    void savePreferences(current).catch(() => {
-      // Best-effort persistence; the in-memory settings still apply.
-    });
     void syncThemeMenu(current.theme).catch(() => {
       // Best-effort menu sync; the applied theme is still correct.
     });
+    try {
+      await savePreferences(current);
+    } catch (error) {
+      // Unlike the ambient toggles' fire-and-forget savePreferences calls,
+      // closing here would tell the user their changes are saved when
+      // they are not — keep the dialog open so they can see the failure
+      // and retry Save, or Cancel/Escape out (v0.6 V2 IPC-error-surfacing
+      // audit #4).
+      await messageDialog(String(error), {
+        title: t("dialog.preferencesSaveFailedTitle"),
+        kind: "error",
+      });
+      return;
+    }
     close();
   });
   document.addEventListener("keydown", onKey);

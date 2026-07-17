@@ -341,6 +341,32 @@ export interface Messages {
   "dialog.backupFailedTitle": string;
   "dialog.backupFailedMessage": (titles: string[]) => string;
   "dialog.backupFailedDiscard": string;
+  /** Shown once after session restore (main.ts restoreSession) when
+   *  loadBackup resolved to null for one or more session entries that did
+   *  record a backup name — as opposed to an entry with no backup at all,
+   *  which is silent. Batched across every failed entry (both session-
+   *  tracked and orphan recovery, see orphanScanFailedTitle below) into
+   *  one dialog instead of one per tab, mirroring backupFailedMessage's
+   *  own batching (v0.6 V2 IPC-error-surfacing audit #1). Non-blocking
+   *  (main.ts fires it with `void`) so it never delays opening files
+   *  passed in via OS/CLI (takePendingFiles runs right after). */
+  "dialog.backupRestoreFailedTitle": string;
+  "dialog.backupRestoreFailedMessage": (titles: string[]) => string;
+  /** Shown once, at startup, when listBackups itself fails (main.ts
+   *  restoreSession) — distinct from backupRestoreFailedTitle above,
+   *  which is about a specific known backup name failing to load: this is
+   *  the orphan-recovery scan (finding backups the session index doesn't
+   *  reference) never running at all this session, so any orphan stays
+   *  unreachable rather than merely unread (v0.6 V2 IPC-error-surfacing
+   *  audit #2). */
+  "dialog.orphanScanFailedTitle": string;
+  "dialog.orphanScanFailedMessage": string;
+  /** Shown once, at startup, when takePendingFiles fails (main.ts) — the
+   *  files an OS "Open With"/CLI invocation asked Plume to open never
+   *  arrive, with no other feedback that anything was even requested
+   *  (v0.6 V2 IPC-error-surfacing audit #3). */
+  "dialog.pendingFilesFailedTitle": string;
+  "dialog.pendingFilesFailedMessage": string;
   "dialog.unsavedChangesTitle": string;
   "dialog.reopenMessage": (title: string) => string;
   "dialog.reopen": string;
@@ -388,6 +414,17 @@ export interface Messages {
   "dialog.byteDriftTitle": string;
   "dialog.byteDriftMessage": (encoding: string) => string;
   "dialog.byteDriftConfirm": string;
+  /** Shown by the Preferences dialog's Save button (preferences.ts
+   *  showPreferencesDialog) when savePreferences rejects. Unlike the
+   *  file's other six savePreferences call sites (ambient font/theme/
+   *  view-toggle persistence, left as-is — applying immediately and
+   *  persisting best-effort never misrepresents anything since the UI
+   *  already reflects the new value), closing this dialog on failure
+   *  would tell the user their edits are saved when they are not, so the
+   *  dialog stays open instead (v0.6 V2 IPC-error-surfacing audit #4).
+   *  Body text is String(error), same convention as saveFailedTitle/
+   *  openFailedTitle/etc. above — no separate message key needed. */
+  "dialog.preferencesSaveFailedTitle": string;
 
   "encoding.utf8": string;
   "encoding.utf8Bom": string;
@@ -730,6 +767,19 @@ const en: Messages = {
     `backup (disk full or folder not writable?). Closing now cannot keep ` +
     `these changes. Close anyway?`,
   "dialog.backupFailedDiscard": "Discard and Close",
+  "dialog.backupRestoreFailedTitle": "Backup unreadable",
+  "dialog.backupRestoreFailedMessage": (titles) =>
+    `The backup for ${titles.join(", ")} could not be read. Unsaved changes ` +
+    `it held may be lost; Plume will fall back to the version on disk where ` +
+    `possible.`,
+  "dialog.orphanScanFailedTitle": "Backup scan failed",
+  "dialog.orphanScanFailedMessage":
+    "Plume couldn't check for backups left over from a previous session. " +
+    "Nothing on disk was changed — restart Plume to try again.",
+  "dialog.pendingFilesFailedTitle": "Couldn't open requested files",
+  "dialog.pendingFilesFailedMessage":
+    "Plume couldn't retrieve the file(s) it was asked to open. Use File > " +
+    "Open to open them directly.",
   "dialog.unsavedChangesTitle": "Unsaved changes",
   "dialog.reopenMessage": (title) =>
     `Reopening will discard unsaved changes in "${title}". Continue?`,
@@ -769,6 +819,7 @@ const en: Messages = {
     `Saving will normalize them to their canonical byte form — the text won't change, ` +
     `but the original bytes will, and this can't be undone.`,
   "dialog.byteDriftConfirm": "Save Anyway",
+  "dialog.preferencesSaveFailedTitle": "Preferences save failed",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8 with BOM",
@@ -1083,6 +1134,15 @@ const zhTW: Messages = {
     `${titles.join("、")} 的未儲存變更無法寫入備份（磁碟已滿或資料夾` +
     `無法寫入？），現在關閉的話，這些變更將無法保留。仍要關閉？`,
   "dialog.backupFailedDiscard": "放棄變更並關閉",
+  "dialog.backupRestoreFailedTitle": "備份無法讀取",
+  "dialog.backupRestoreFailedMessage": (titles) =>
+    `${titles.join("、")} 的備份無法讀取，其中的未儲存變更可能已遺失；如果磁碟上有檔案，Plume 將改為開啟磁碟上的版本。`,
+  "dialog.orphanScanFailedTitle": "備份掃描失敗",
+  "dialog.orphanScanFailedMessage":
+    "Plume 無法掃描前次工作階段遺留的備份。磁碟上的內容並未受影響，重新啟動 Plume 即可再試一次。",
+  "dialog.pendingFilesFailedTitle": "無法開啟指定的檔案",
+  "dialog.pendingFilesFailedMessage":
+    "Plume 無法取得這次啟動要求開啟的檔案，請改用「檔案 > 開啟」手動開啟。",
   "dialog.unsavedChangesTitle": "未儲存的變更",
   "dialog.reopenMessage": (title) =>
     `重新開啟將捨棄「${title}」中未儲存的變更，是否繼續？`,
@@ -1115,6 +1175,7 @@ const zhTW: Messages = {
     `此檔案含有 ${encoding} 中無法逐位元組保留的位元組序列，儲存將把它們正規化為標準形式——` +
     `文字內容不會改變，但原始位元組會遺失，且無法復原。`,
   "dialog.byteDriftConfirm": "仍要儲存",
+  "dialog.preferencesSaveFailedTitle": "偏好設定儲存失敗",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（含 BOM）",
@@ -1446,6 +1507,18 @@ const ja: Messages = {
     `（ディスクの空き容量不足か、フォルダーが書き込み不可の可能性があります）。` +
     `今閉じるとこれらの変更は失われます。それでも閉じますか？`,
   "dialog.backupFailedDiscard": "変更を破棄して閉じる",
+  "dialog.backupRestoreFailedTitle": "バックアップを読み込めません",
+  "dialog.backupRestoreFailedMessage": (titles) =>
+    `${titles.join("、")} のバックアップを読み込めませんでした。未保存の変更が` +
+    `失われた可能性があります。可能な場合はディスク上のバージョンを開きます。`,
+  "dialog.orphanScanFailedTitle": "バックアップのスキャンに失敗しました",
+  "dialog.orphanScanFailedMessage":
+    "前回のセッションで残されたバックアップをスキャンできませんでした。ディスク上の" +
+    "データは変更されていません。Plume を再起動すると再試行されます。",
+  "dialog.pendingFilesFailedTitle": "指定されたファイルを開けませんでした",
+  "dialog.pendingFilesFailedMessage":
+    "起動時に開くよう指定されたファイルを取得できませんでした。「ファイル > 開く」" +
+    "から直接開いてください。",
   "dialog.unsavedChangesTitle": "未保存の変更",
   "dialog.reopenMessage": (title) =>
     `再度開くと「${title}」の未保存の変更が破棄されます。続行しますか？`,
@@ -1483,6 +1556,7 @@ const ja: Messages = {
     `正規の形式に正規化されます。テキスト自体は変わりませんが、元のバイト列は失われ、元に戻す` +
     `ことはできません。`,
   "dialog.byteDriftConfirm": "このまま保存",
+  "dialog.preferencesSaveFailedTitle": "環境設定の保存に失敗しました",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（BOM 付き）",
@@ -1796,6 +1870,15 @@ const zhCN: Messages = {
     `${titles.join("、")} 的未保存更改无法写入备份（磁盘已满或文件夹` +
     `无法写入？），现在关闭的话，这些更改将无法保留。仍要关闭？`,
   "dialog.backupFailedDiscard": "放弃更改并关闭",
+  "dialog.backupRestoreFailedTitle": "备份无法读取",
+  "dialog.backupRestoreFailedMessage": (titles) =>
+    `${titles.join("、")} 的备份无法读取，其中的未保存更改可能已丢失；如果磁盘上有文件，Plume 将改为打开磁盘上的版本。`,
+  "dialog.orphanScanFailedTitle": "备份扫描失败",
+  "dialog.orphanScanFailedMessage":
+    "Plume 无法扫描上次会话遗留的备份。磁盘上的内容未受影响，重新启动 Plume 即可重试。",
+  "dialog.pendingFilesFailedTitle": "无法打开指定的文件",
+  "dialog.pendingFilesFailedMessage":
+    "Plume 无法获取本次启动要求打开的文件，请改用“文件 > 打开”手动打开。",
   "dialog.unsavedChangesTitle": "未保存的更改",
   "dialog.reopenMessage": (title) => `重新打开将放弃“${title}”中未保存的更改，是否继续？`,
   "dialog.reopen": "重新打开",
@@ -1827,6 +1910,7 @@ const zhCN: Messages = {
     `此文件包含无法逐字节保留的 ${encoding} 字节序列，保存将把它们规范化为标准形式——` +
     `文本内容不会改变，但原始字节会丢失，且无法撤销。`,
   "dialog.byteDriftConfirm": "仍要保存",
+  "dialog.preferencesSaveFailedTitle": "首选项保存失败",
 
   "encoding.utf8": "UTF-8",
   "encoding.utf8Bom": "UTF-8（带 BOM）",

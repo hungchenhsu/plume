@@ -3238,13 +3238,23 @@ function bumpUntitledCounter(title: string): void {
   }
 }
 
-/** Restore one session entry from its hot-exit backup, if present. */
-async function restoreFromBackup(file: SessionFile): Promise<boolean> {
+/** Restore one session entry from its hot-exit backup, if present. Backup
+ *  read failures (as opposed to "this entry never had a backup", which is
+ *  silent) push `title` onto `unreadable` instead of surfacing a dialog
+ *  here — restoreSession warns once for the whole restore instead of once
+ *  per failed tab (v0.6 V2 IPC-error-surfacing audit #1). */
+async function restoreFromBackup(
+  file: SessionFile,
+  unreadable: string[],
+): Promise<boolean> {
   if (!file.backup) return false;
-  const content = await loadBackup(file.backup).catch(() => null);
-  if (content === null) return false;
   const title =
     file.title || (file.path ? basename(file.path) : t("app.untitled"));
+  const content = await loadBackup(file.backup).catch(() => null);
+  if (content === null) {
+    unreadable.push(title);
+    return false;
+  }
   bumpUntitledCounter(title);
   tabs.add({
     id: nextId++,
@@ -3291,9 +3301,13 @@ async function restoreFromBackup(file: SessionFile): Promise<boolean> {
 /** Reopen the files from the previous session; missing files are skipped. */
 async function restoreSession(): Promise<void> {
   const session = await loadSession().catch(() => null);
+  // Collected across both the session-tracked loop below and the orphan
+  // loop further down, then reported as one dialog at the end instead of
+  // one per failed tab (v0.6 V2 IPC-error-surfacing audit #1).
+  const unreadableBackups: string[] = [];
   for (const file of session?.files ?? []) {
     try {
-      if (await restoreFromBackup(file)) continue;
+      if (await restoreFromBackup(file, unreadableBackups)) continue;
       if (file.path) {
         const opened = await openDocument(file.path, file.encoding);
         const doc = docFromOpened(opened, file.cursor ?? 0);
@@ -3314,14 +3328,26 @@ async function restoreSession(): Promise<void> {
   // becomes its own untitled tab. This can occasionally resurrect a stale
   // leftover from a failed delete_backup as a spurious extra tab, but that
   // cost is far cheaper than silently losing unsaved content.
-  const all = await listBackups().catch(() => [] as string[]);
+  //
+  // A failed scan (as opposed to one that legitimately finds nothing) means
+  // this whole safety net silently covered zero backups this session —
+  // worth a one-time warning rather than looking identical to "there was
+  // nothing to recover" (v0.6 V2 IPC-error-surfacing audit #2).
+  let orphanScanFailed = false;
+  const all = await listBackups().catch(() => {
+    orphanScanFailed = true;
+    return [] as string[];
+  });
   const orphans = orphanBackups(
     session?.files.map((f) => f.backup) ?? [],
     all,
   );
   for (const name of orphans) {
     const content = await loadBackup(name).catch(() => null);
-    if (content === null) continue;
+    if (content === null) {
+      unreadableBackups.push(name);
+      continue;
+    }
     untitledCounter += 1;
     const title =
       untitledCounter === 1
@@ -3371,6 +3397,23 @@ async function restoreSession(): Promise<void> {
   }
   showActive();
   editor.revealCursor();
+  // Fired with `void`, not awaited: these are informational, after the
+  // fact, and must not delay takePendingFiles()/openPath() for files an
+  // OS "Open With"/CLI invocation asked Plume to open (issue audit v0.6
+  // V2 #1/#2) — the recovery attempts above already ran to completion
+  // either way.
+  if (unreadableBackups.length > 0) {
+    void messageDialog(
+      t("dialog.backupRestoreFailedMessage", unreadableBackups),
+      { title: t("dialog.backupRestoreFailedTitle"), kind: "warning" },
+    );
+  }
+  if (orphanScanFailed) {
+    void messageDialog(t("dialog.orphanScanFailedMessage"), {
+      title: t("dialog.orphanScanFailedTitle"),
+      kind: "warning",
+    });
+  }
 }
 
 // Files opened through the OS while the app is already running.
@@ -3423,8 +3466,18 @@ void (async () => {
   refreshIndentInfo();
   recentFiles = await loadRecentFiles().catch(() => [] as string[]);
   await restoreSession();
-  // Files that triggered this launch open last so they end up focused.
-  const pending = await takePendingFiles().catch(() => [] as string[]);
+  // Files that triggered this launch open last so they end up focused. A
+  // failure here means an OS "Open With"/CLI invocation asked Plume to
+  // open specific files and they simply never arrive, with nothing else
+  // pointing at why (v0.6 V2 IPC-error-surfacing audit #3) — void, not
+  // awaited, so the dialog can't delay the rest of startup.
+  const pending = await takePendingFiles().catch(() => {
+    void messageDialog(t("dialog.pendingFilesFailedMessage"), {
+      title: t("dialog.pendingFilesFailedTitle"),
+      kind: "warning",
+    });
+    return [] as string[];
+  });
   for (const path of pending) {
     await openPath(path);
   }
