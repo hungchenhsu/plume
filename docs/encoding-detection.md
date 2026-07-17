@@ -33,6 +33,25 @@ one before it didn't resolve the encoding:
    its "Sampled" row can under-represent what the original open actually
    saw for a file between 64 KiB and the large-file threshold — it is
    still evidence about the same bytes, just a smaller slice of them.
+
+   **Truncated-sample caveat (issue #201)**: for a file large enough to
+   take the bounded preview path, chardetng's read of that window can
+   occasionally land on the wrong encoding *family*, not just be less
+   confident about the right one. Concretely: a single very long line with
+   no newline anywhere in the window can end mid-character at the
+   window's tail, skewing chardetng's statistics toward a single-byte
+   encoding — and single-byte decoding never reports `malformed`, so
+   nothing else catches it. The diagnostics popup surfaces a caveat for
+   this (`DetectionExplanation.largeFilePreview` in `src-tauri/src/lib.rs`,
+   `detectcard.ts`'s `truncatedSampleNote`) whenever the file exceeds the
+   large-file threshold and the verdict didn't come from a BOM (a BOM is
+   read from the first few bytes regardless of file size, so truncation
+   never affects it). This is disclosure only — it does not change what
+   the detector actually decides, and it fires for *any* file that took
+   the truncated preview path, not only the narrow single-line case that
+   actually misfires: distinguishing "truncated" from "truncated *and*
+   about to misfire" would mean re-implementing a chardetng-specific
+   heuristic, which is out of scope for a warning label.
 3. **Per-extension default** — a user-configured "always open `.txt` as
    Big5" preference (Preferences → encoding defaults), consulted only when
    the sample isn't confident UTF-8 and decodes cleanly under the

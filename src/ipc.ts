@@ -189,6 +189,17 @@ export interface DetectionExplanation {
   /** "{encoding} ({reason})", reason is "bom" | "extension" | "detector"
    *  | "fallback". */
   wouldChoose: string;
+  /** True when `totalSize` exceeds the Rust core's large-file threshold
+   *  (issue #201): `openDocument`'s real auto-detect for a file this large
+   *  never sees the whole file, only a bounded preview window, so
+   *  `detectorVerdict` — and `wouldChoose`, whenever its reason isn't
+   *  "bom" — reflects a statistical read of a truncated sample, not the
+   *  whole file. Distinct from `sampledBytes < totalSize`: that one is
+   *  about this command's own smaller re-sample cap and can be true for a
+   *  file `openDocument` itself read whole. See detectcard.ts's
+   *  `truncatedSampleNote`, which also excludes `reason === "bom"` (a BOM
+   *  is unaffected by truncation). */
+  largeFilePreview: boolean;
 }
 
 /**

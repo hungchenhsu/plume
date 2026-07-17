@@ -71,6 +71,7 @@ export interface Messages {
   "detectcard.wouldChooseValue": (encoding: string, reason: string) => string;
   "detectcard.manualNote": (current: string, detected: string) => string;
   "detectcard.detectionBoundaryNote": (encoding: string) => string;
+  "detectcard.truncatedSampleNote": string;
 
   "charinspect.title": (codepoint: string) => string;
   "charinspect.labelChar": string;
@@ -453,6 +454,8 @@ const en: Messages = {
     `Currently using ${current} manually — auto-detect would choose ${detected}.`,
   "detectcard.detectionBoundaryNote": (encoding) =>
     `${encoding} isn't one of chardetng's detection targets — it can only be selected via a BOM, a per-extension default, or Reopen with Encoding.`,
+  "detectcard.truncatedSampleNote":
+    "Large-file preview: the verdict above is based on a truncated sample, not the whole file — if the text looks garbled, try Reopen with Encoding.",
 
   "charinspect.title": (codepoint) => `Character ${codepoint}`,
   "charinspect.labelChar": "Character",
@@ -811,6 +814,8 @@ const zhTW: Messages = {
     `目前手動使用 ${current}——自動偵測會選擇 ${detected}。`,
   "detectcard.detectionBoundaryNote": (encoding) =>
     `${encoding} 不在 chardetng 的偵測範圍內——只能透過 BOM、副檔名預設值，或「以指定編碼重新開啟」選取。`,
+  "detectcard.truncatedSampleNote":
+    "大型檔案預覽：以上判定結果僅根據截斷樣本，並非整個檔案——若文字顯示為亂碼，可嘗試「以指定編碼重新開啟」。",
 
   "charinspect.title": (codepoint) => `字元 ${codepoint}`,
   "charinspect.labelChar": "字元",
@@ -1137,6 +1142,8 @@ const ja: Messages = {
     `現在手動で ${current} を使用しています。自動検出では ${detected} が選択されます。`,
   "detectcard.detectionBoundaryNote": (encoding) =>
     `${encoding} は chardetng の検出対象ではありません。BOM、拡張子ごとの既定値、または「エンコーディングを指定して再度開く」でのみ選択できます。`,
+  "detectcard.truncatedSampleNote":
+    "大容量ファイルのプレビュー: 上記の判定結果はファイル全体ではなく、切り詰められたサンプルに基づいています。文字化けして見える場合は「エンコーディングを指定して再度開く」を試してください。",
 
   "charinspect.title": (codepoint) => `文字 ${codepoint}`,
   "charinspect.labelChar": "文字",
@@ -1485,6 +1492,8 @@ const zhCN: Messages = {
     `目前手动使用 ${current}——自动检测将选择 ${detected}。`,
   "detectcard.detectionBoundaryNote": (encoding) =>
     `${encoding} 不在 chardetng 的检测范围内——只能通过 BOM、扩展名默认值，或“以指定编码重新打开”选取。`,
+  "detectcard.truncatedSampleNote":
+    "大型文件预览：以上判定结果仅根据截断样本，并非整个文件——如果文字显示为乱码，可尝试“以指定编码重新打开”。",
 
   "charinspect.title": (codepoint) => `字符 ${codepoint}`,
   "charinspect.labelChar": "字符",

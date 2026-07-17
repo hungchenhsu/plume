@@ -1392,11 +1392,40 @@ for incoming contributors.
   false positives under load) with a load-independent
   external-modification simulation instead of wall-clock-sensitive
   timing
-- [ ] #201: auto-detect on a truncated preview of a huge single-line
+- [x] #201: auto-detect on a truncated preview of a huge single-line
   legacy file can misclassify the window as single-byte with
-  malformed=false — lower detection confidence for truncated samples
-  and surface a "detected from a truncated sample" hint in the
-  detection diagnostics [danger]
+  malformed=false — surface a "detected from a truncated sample" hint
+  in the detection diagnostics (the issue offered confidence-lowering
+  *or* disclosure as alternatives; disclosure was chosen, fully
+  satisfying it) [danger]. Scoped to pure information
+  disclosure, zero detection-outcome change: actually correcting the
+  chardetng misjudgment was already deliberately punted by #165's own
+  adversarial review (see the comment in `open_document`, lib.rs) as
+  its own follow-up, and a statistical-model behavior change is much
+  harder to bound safely than a new evidence field — same trade-off
+  precedent as the Track A "Detection-boundary documentation" item
+  above. `DetectionExplanation.largeFilePreview` (lib.rs's
+  `explain_detection`) is true whenever the file exceeds
+  `LARGE_FILE_THRESHOLD`, the same condition that sends
+  `open_document`'s real auto-detect through the bounded
+  `PREVIEW_BYTES` window instead of a whole-file read — deliberately
+  distinct from `sampledBytes < totalSize` (this command's own,
+  smaller `EXPLAIN_SAMPLE_BYTES` re-sample cap, true for any file over
+  64 KiB regardless of whether the real open was truncated; conflating
+  the two would warn about files that were never actually truncated).
+  detectcard.ts's new `truncatedSampleNote` fires on `largeFilePreview
+  && reason !== "bom"` — never for a BOM verdict, since a BOM is read
+  from the first few bytes regardless of file size. i18n across four
+  locales. Failing-test-first: a >10 MiB single-line Big5 fixture
+  (reusing #165's `write_large_big5_fixture`) empirically reproduces
+  the swing away from Big5 even at `explain_detection`'s smaller
+  64 KiB sample (verdict: windows-874) — red before `largeFilePreview`
+  existed (compile error), green after. Zero-diff equivalence:
+  `encoding.rs` (`detect_with_extension`, `decode_auto_with_extension`,
+  `decode_with`, `preview_slice`, all `trim_truncated_*` functions) is
+  untouched by this change, so all pre-existing detection results stay
+  bit-identical by construction, not just by re-running the suite. 481
+  cargo test (+1), 850 vitest (+5).
 
 **Track E — encoding transparency**
 - [ ] E1 Document Info dialog: one read-only trust surface (File menu) —
