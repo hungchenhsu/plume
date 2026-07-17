@@ -7,11 +7,12 @@
 // the whole document) and `EditorHandle.transformSelection` (selection
 // verbatim, or the whole document) in editor.ts.
 //
-// Contract shared by the seven `(text: string) => string` transforms below
-// (sortLines/uniqueLines/reverseLines/trimTrailingWhitespace/joinLines/
-// upperCase/lowerCase): input and output are LF text (the editor buffer is
-// always LF-normalized before it reaches the frontend — see CLAUDE.md "Hard
-// constraints"), and an empty string maps to an empty string.
+// Contract shared by the nine `(text: string) => string` transforms below
+// (sortLines/sortLinesCaseInsensitive/sortLinesNumeric/uniqueLines/
+// reverseLines/trimTrailingWhitespace/joinLines/upperCase/lowerCase): input
+// and output are LF text (the editor buffer is always LF-normalized before
+// it reaches the frontend — see CLAUDE.md "Hard constraints"), and an empty
+// string maps to an empty string.
 // `lineSpanForSelection`, at the end of this file, has a different shape —
 // it returns character offsets, not text — because it answers a different
 // question; see its own doc comment.
@@ -83,6 +84,100 @@ export function sortLines(text: string): string {
   if (text === "") return "";
   const { lines, trailingNewline } = splitLines(text);
   lines.sort(compareCodePoints);
+  return linesToText(lines, trailingNewline);
+}
+
+/**
+ * Sort lines case-insensitively (Edit > Line Operations' "Sort Lines
+ * (Case-Insensitive)", ROADMAP.md v0.6 C3): the same `compareCodePoints`
+ * comparison `sortLines` above uses — locale-independent and deterministic
+ * across platforms, unlike `localeCompare` (see `compareCodePoints`'s own
+ * doc comment) — applied to each line's `toLowerCase()` form instead of the
+ * line itself, so `"Apple"`/`"apple"`/`"APPLE"` all compare equal.
+ * `toLowerCase()` is JS's plain Unicode default case mapping, the same
+ * primitive `lowerCase` below uses, not a locale-sensitive casing rule.
+ * Lines that only differ by case (or are identical) keep their original
+ * relative order — same `Array.prototype.sort` ES2019 stability guarantee
+ * `sortLines` relies on — so sorting `["banana", "Apple", "apple"]` keeps
+ * `"Apple"` before `"apple"` (input order), never picks one arbitrarily.
+ * Trailing-newline presence is preserved, same as every transform in this
+ * file.
+ */
+export function sortLinesCaseInsensitive(text: string): string {
+  if (text === "") return "";
+  const { lines, trailingNewline } = splitLines(text);
+  lines.sort((a, b) => compareCodePoints(a.toLowerCase(), b.toLowerCase()));
+  return linesToText(lines, trailingNewline);
+}
+
+/**
+ * Extract the first embedded number in `line` as a sort key for
+ * `sortLinesNumeric` below, or `Infinity` if the line has no number at all
+ * — pushing it after every real number when sorted ascending (the
+ * "lines with no number sort last" rule; two such lines then keep their
+ * relative order via `compareNumbers`'s stability, same as any other tie).
+ *
+ * The pattern is `-?\d+(?:\.\d+)?`: one or more digits, with an optional
+ * leading `-` immediately adjacent to them (no intervening whitespace) read
+ * as that number's sign, plus an optional `.` and more digits for a
+ * decimal fraction. `String.prototype.match` (no `g` flag) finds the
+ * leftmost position in `line` where this pattern matches at all, so:
+ *
+ * - `"pages 3-5"` extracts `3` (the first number, left to right), not `-5`.
+ * - `"temp -5"` extracts `-5` — the `-` sits directly before the digit.
+ * - `"a - 5"` (space before the digit) extracts `+5` — the `-` is not
+ *   adjacent to a digit at that position, so it is never consumed as a
+ *   sign; the match only succeeds once the scan reaches the digit itself.
+ * - `"chapter-5"` extracts `-5` — the `-` is directly adjacent to `5`, so
+ *   the same adjacency rule reads it as that number's sign, with no
+ *   attempt to classify it as a word-separating hyphen from context.
+ *   Deliberately simple, like the rest of this rule.
+ *
+ * A bare leading-dot decimal (`".5"`, no digit before the dot) is not
+ * specially handled: `\d+` requires at least one digit before the optional
+ * `.` group, so the leftmost match is just `"5"` (key `5`, not `0.5`) —
+ * deliberately narrow, same spirit as `toHalfWidth`/`trimTrailingWhitespace`
+ * elsewhere in this file only handling their own documented scope. A
+ * multi-`.` string (e.g. a version like `"v1.2.3"`) similarly only ever
+ * contributes its first `-?\d+(?:\.\d+)?` token (`"1.2"`), not a full
+ * multi-segment parse.
+ */
+function firstNumberKey(line: string): number {
+  const match = line.match(/-?\d+(?:\.\d+)?/);
+  return match ? parseFloat(match[0]) : Infinity;
+}
+
+/**
+ * Comparator for `sortLinesNumeric`'s two `firstNumberKey` results. Equal
+ * keys — including two `Infinity` "no number" sentinels — return exactly
+ * `0` so `Array.prototype.sort`'s ES2019 stability guarantee preserves
+ * their original relative order. Deliberately not a plain `a - b`:
+ * subtracting two `Infinity` keys (two lines with no embedded number) would
+ * produce `NaN`, and `Array.prototype.sort` does not guarantee to treat a
+ * `NaN` comparator result as "equal" — exactly the kind of inconsistent,
+ * platform-dependent comparator behavior `compareCodePoints`'s own doc
+ * comment already avoids by not using `localeCompare`.
+ */
+function compareNumbers(a: number, b: number): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/**
+ * Sort lines by the first number embedded in each (Edit > Line Operations'
+ * "Sort Lines (Numeric)", ROADMAP.md v0.6 C3) — see `firstNumberKey` for
+ * the exact extraction rule. Lines with no number at all sort after every
+ * line that has one; among lines that extract the same key (equal numbers,
+ * or two number-less lines), `compareNumbers` returns exactly `0` so
+ * `Array.prototype.sort`'s ES2019 stability guarantee keeps their relative
+ * order — same tie-breaking contract `sortLines`/`sortLinesCaseInsensitive`
+ * above already give. Trailing-newline presence is preserved, same as
+ * every transform in this file.
+ */
+export function sortLinesNumeric(text: string): string {
+  if (text === "") return "";
+  const { lines, trailingNewline } = splitLines(text);
+  lines.sort((a, b) => compareNumbers(firstNumberKey(a), firstNumberKey(b)));
   return linesToText(lines, trailingNewline);
 }
 

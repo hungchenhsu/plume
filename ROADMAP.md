@@ -1722,10 +1722,48 @@ for incoming contributors.
   panicked on the not-yet-existing `"join_lines"`/`"reverse_lines"` ids
   before their `LABELS` entries were added. 510 cargo test (+2, both in
   menu.rs), 927 vitest (+33: 24 in lineops.test.ts, 9 in editor.test.ts).
-- [ ] C3 sort variants: case-insensitive sort and numeric sort (same
-  family as C2) — first to cut if the cycle runs long
-- [ ] C3 sort variants: case-insensitive sort and numeric sort (same
-  family as C2) — first to cut if the cycle runs long
+- [x] C3 sort variants: `lineops.ts` gained `sortLinesCaseInsensitive`
+  (same `compareCodePoints` comparison `sortLines` uses — locale-
+  independent, not `localeCompare` — applied to each line's
+  `toLowerCase()` form; lines that only differ by case keep their
+  original relative order via `Array.prototype.sort`'s ES2019 stability)
+  and `sortLinesNumeric` (sorts by the first embedded number in each line,
+  `-?\d+(?:\.\d+)?` leftmost match: a `-` immediately adjacent to the
+  digits reads as its sign, e.g. `"temp -5"` → -5 and `"chapter-5"` → -5
+  via the same adjacency rule, but `"a - 5"` (space before the digit) →
+  +5, the space breaking the sign association; a bare leading-dot decimal
+  like `".5"` is deliberately not specially handled, matching only `"5"`,
+  same "deliberately narrow" spirit as `toHalfWidth`/
+  `trimTrailingWhitespace`'s own documented scope limits; lines with no
+  number sort after every line that has one; ties — equal numbers or two
+  number-less lines — keep their relative order via a `compareNumbers`
+  comparator that returns exactly 0 for equal keys, deliberately not a
+  bare `a - b`, since two `Infinity` "no number" sentinels would subtract
+  to `NaN`, which `Array.prototype.sort` does not guarantee to treat as
+  "equal"). Both are plain `splitLines`/`linesToText` transforms with no
+  span logic of their own, same "no selection = whole document" scope via
+  `editor.transformLines` as `sortLines`/`uniqueLines`/`reverseLines`
+  above — no `editor.ts` changes needed. Routes through
+  `dispatchMenuCommand`'s existing `runLineOperation` guard exactly like
+  every other line op; no dialog or `i18n.ts` entry needed, same
+  precedent as sort/unique/trim/case/width/join. `menu.rs` LABELS gained
+  `sort_lines_case_insensitive` ("Sort Lines (Case-Insensitive)"/"排序行
+  （不分大小寫）"/"行を並べ替え（大文字小文字を区別しない）"/"排序行
+  （不区分大小写）") and `sort_lines_numeric` ("Sort Lines (Numeric)"/
+  "排序行（數值）"/"行を並べ替え（数値）"/"排序行（数值）") across
+  en/zh-TW/ja/zh-CN with pinned tests; neither is in
+  `PALETTE_EXCLUDED_IDS`, so both surface in the Command Palette for free
+  and `palette_commands_includes_every_non_excluded_label`'s dynamic
+  count assertion picked them up with no test change needed.
+
+  Failing-test-first: `sortLinesCaseInsensitive`/`sortLinesNumeric`
+  (lineops.test.ts, 24 new cases covering mixed case, numeric prefixes
+  anywhere in the line, no-number lines sorting last, negative/decimal
+  numbers, the hyphen-adjacency sign rule, and stability for both
+  case-only and numeric ties) were run red (`sortLinesCaseInsensitive`/
+  `sortLinesNumeric is not a function`) before the implementations
+  existed. 518 cargo test (+2, both in menu.rs), 951 vitest (+24, all in
+  lineops.test.ts).
 - [ ] C4 clear recent files: clear_recent_files command + a File > Open
   Recent > Clear entry (recent.rs currently has only load/add)
 

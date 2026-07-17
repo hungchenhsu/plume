@@ -98,6 +98,8 @@ import {
   lowerCase,
   reverseLines,
   sortLines,
+  sortLinesCaseInsensitive,
+  sortLinesNumeric,
   toFullWidth,
   toHalfWidth,
   trimTrailingWhitespace,
@@ -2814,8 +2816,9 @@ window.addEventListener("keydown", (event) => {
  * already gate through a shared, independently-tested helper:
  * `runLineOperation`'s no-doc + `blockedByReadOnly` check covers every
  * line-operation case (sort/unique/reverse/trim/case/width/normalize/move/
- * duplicate/delete/join — ROADMAP.md v0.6 C2's join_lines/reverse_lines
- * included, added after this audit but through the same guard); `saveFlow`
+ * duplicate/delete/join — ROADMAP.md v0.6 C2's join_lines/reverse_lines and
+ * C3's sort_lines_case_insensitive/sort_lines_numeric included, both added
+ * after this audit but through the same guard); `saveFlow`
  * has its own no-doc + `blockedByReadOnly`
  * check; `toggleReadOnly`/`handleGotoLine`/`toggleBookmarkFlow`/
  * `nextBookmarkFlow`/`previousBookmarkFlow` each have their own no-doc
@@ -2914,6 +2917,16 @@ function dispatchMenuCommand(id: string): void {
       break;
     case "sort_lines":
       runLineOperation(() => editor.transformLines(sortLines));
+      break;
+    // ROADMAP.md v0.6 C3: same family as sort_lines above -- "no
+    // selection = whole document" via transformLines, no span logic of
+    // their own -- just a different per-line comparison (see lineops.ts's
+    // sortLinesCaseInsensitive/sortLinesNumeric doc comments).
+    case "sort_lines_case_insensitive":
+      runLineOperation(() => editor.transformLines(sortLinesCaseInsensitive));
+      break;
+    case "sort_lines_numeric":
+      runLineOperation(() => editor.transformLines(sortLinesNumeric));
       break;
     case "unique_lines":
       runLineOperation(() => editor.transformLines(uniqueLines));

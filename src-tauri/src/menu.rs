@@ -143,6 +143,20 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "排序行",
     ),
     (
+        "sort_lines_case_insensitive",
+        "Sort Lines (Case-Insensitive)",
+        "排序行（不分大小寫）",
+        "行を並べ替え（大文字小文字を区別しない）",
+        "排序行（不区分大小写）",
+    ),
+    (
+        "sort_lines_numeric",
+        "Sort Lines (Numeric)",
+        "排序行（數值）",
+        "行を並べ替え（数値）",
+        "排序行（数值）",
+    ),
+    (
         "unique_lines",
         "Remove Duplicate Lines",
         "移除重複行",
@@ -462,6 +476,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // array or sync_* command is needed — retitle_menu just walks these ids.
     let line_ops_menu = SubmenuBuilder::with_id(app, "line_ops", l("line_ops"))
         .item(&MenuItemBuilder::with_id("sort_lines", l("sort_lines")).build(app)?)
+        .item(
+            &MenuItemBuilder::with_id(
+                "sort_lines_case_insensitive",
+                l("sort_lines_case_insensitive"),
+            )
+            .build(app)?,
+        )
+        .item(&MenuItemBuilder::with_id("sort_lines_numeric", l("sort_lines_numeric")).build(app)?)
         .item(&MenuItemBuilder::with_id("unique_lines", l("unique_lines")).build(app)?)
         .item(&MenuItemBuilder::with_id("reverse_lines", l("reverse_lines")).build(app)?)
         .item(
@@ -886,6 +908,8 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
                 .map_err(|e| e.to_string())?;
             for id in [
                 "sort_lines",
+                "sort_lines_case_insensitive",
+                "sort_lines_numeric",
                 "unique_lines",
                 "reverse_lines",
                 "trim_trailing_whitespace",
@@ -1268,6 +1292,37 @@ mod tests {
         assert_eq!(label("reverse_lines", "zh-TW"), "反轉行");
         assert_eq!(label("reverse_lines", "ja"), "行を反転");
         assert_eq!(label("reverse_lines", "zh-CN"), "反转行");
+    }
+
+    // ROADMAP.md v0.6 C3 sort variants: the Edit > Line Operations submenu's
+    // two new ids, pinned across all four languages -- same rationale as
+    // join_lines/reverse_lines's dedicated tests above.
+    #[test]
+    fn label_returns_the_correct_sort_lines_case_insensitive_text_for_every_language() {
+        assert_eq!(
+            label("sort_lines_case_insensitive", "en"),
+            "Sort Lines (Case-Insensitive)"
+        );
+        assert_eq!(
+            label("sort_lines_case_insensitive", "zh-TW"),
+            "排序行（不分大小寫）"
+        );
+        assert_eq!(
+            label("sort_lines_case_insensitive", "ja"),
+            "行を並べ替え（大文字小文字を区別しない）"
+        );
+        assert_eq!(
+            label("sort_lines_case_insensitive", "zh-CN"),
+            "排序行（不区分大小写）"
+        );
+    }
+
+    #[test]
+    fn label_returns_the_correct_sort_lines_numeric_text_for_every_language() {
+        assert_eq!(label("sort_lines_numeric", "en"), "Sort Lines (Numeric)");
+        assert_eq!(label("sort_lines_numeric", "zh-TW"), "排序行（數值）");
+        assert_eq!(label("sort_lines_numeric", "ja"), "行を並べ替え（数値）");
+        assert_eq!(label("sort_lines_numeric", "zh-CN"), "排序行（数值）");
     }
 
     #[test]
