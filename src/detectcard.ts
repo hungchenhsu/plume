@@ -65,12 +65,30 @@ export interface DetectionCardModel {
   truncatedSampleNote: string | null;
 }
 
-/** Pure helper: assemble the diagnostic card's text from raw evidence. */
-export function formatDetectionCard(
-  title: string,
+export interface DetectionEvidence {
+  /** BOM / chardetng verdict / sampled-range / would-choose rows — every
+   *  row `formatDetectionCard` shows except "File" (the caller already
+   *  knows which file this is) and "Currently using" (the caller already
+   *  shows the document's own encoding elsewhere). */
+  rows: DetectionCardRow[];
+  manualNote: string | null;
+  detectionBoundaryNote: string | null;
+  truncatedSampleNote: string | null;
+}
+
+/**
+ * Pure helper: the detection-evidence rows and notes, without the "File"/
+ * "Currently using" framing `formatDetectionCard` below adds for its own
+ * status-bar popup. Split out so the Document Info dialog (ROADMAP.md v0.6
+ * E1, docinfo.ts) can reuse the exact same evidence — including the
+ * large-file truncated-sample warning — as its own "Encoding" section
+ * without a second, independently-drifting formatter; `formatDetectionCard`
+ * itself is now a thin wrapper around this.
+ */
+export function formatDetectionEvidence(
   currentEncoding: string,
   info: DetectionExplanation,
-): DetectionCardModel {
+): DetectionEvidence {
   const { encoding: detectedEncoding, reason } = parseWouldChoose(
     info.wouldChoose,
   );
@@ -87,9 +105,7 @@ export function formatDetectionCard(
       : null;
 
   return {
-    title: t("detectcard.title", currentEncoding),
     rows: [
-      { label: t("detectcard.labelFile"), value: title },
       { label: t("detectcard.labelBom"), value: info.bom ?? t("detectcard.noBom") },
       { label: t("detectcard.labelVerdict"), value: info.detectorVerdict },
       {
@@ -107,11 +123,30 @@ export function formatDetectionCard(
         label: t("detectcard.labelWouldChoose"),
         value: t("detectcard.wouldChooseValue", detectedEncoding, reasonLabel(reason)),
       },
-      { label: t("detectcard.labelCurrentlyUsing"), value: currentEncoding },
     ],
     manualNote,
     detectionBoundaryNote,
     truncatedSampleNote,
+  };
+}
+
+/** Pure helper: assemble the diagnostic card's text from raw evidence. */
+export function formatDetectionCard(
+  title: string,
+  currentEncoding: string,
+  info: DetectionExplanation,
+): DetectionCardModel {
+  const evidence = formatDetectionEvidence(currentEncoding, info);
+  return {
+    title: t("detectcard.title", currentEncoding),
+    rows: [
+      { label: t("detectcard.labelFile"), value: title },
+      ...evidence.rows,
+      { label: t("detectcard.labelCurrentlyUsing"), value: currentEncoding },
+    ],
+    manualNote: evidence.manualNote,
+    detectionBoundaryNote: evidence.detectionBoundaryNote,
+    truncatedSampleNote: evidence.truncatedSampleNote,
   };
 }
 

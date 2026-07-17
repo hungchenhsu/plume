@@ -58,6 +58,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
     ),
     ("print", "Print…", "列印…", "印刷…", "打印…"),
     (
+        "document_info",
+        "Document Info…",
+        "文件資訊…",
+        "ドキュメント情報…",
+        "文档信息…",
+    ),
+    (
         "preferences",
         "Preferences…",
         "偏好設定…",
@@ -414,6 +421,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &MenuItemBuilder::with_id("print", l("print"))
                 .accelerator("CmdOrCtrl+Alt+P")
                 .build(app)?,
+        )
+        .separator()
+        .item(
+            // Read-only trust surface (ROADMAP.md v0.6 E1): no accelerator,
+            // opens an in-DOM dialog (src/docinfo.ts), not a further native
+            // flow. Always enabled, including for an untitled tab — the
+            // dialog itself shows a reduced, buffer-only view rather than
+            // the item being disabled (see docinfo.ts's own doc comment for
+            // why that choice was made over a disabled menu item).
+            &MenuItemBuilder::with_id("document_info", l("document_info")).build(app)?,
         );
     #[cfg(not(target_os = "macos"))]
     let file = file.separator().item(
@@ -800,6 +817,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "close_tab",
             "reopen_closed_tab",
             "print",
+            "document_info",
             "preferences",
         ] {
             if let Some(item) = file.get(id).and_then(|item| item.as_menuitem().cloned()) {
@@ -985,6 +1003,17 @@ mod tests {
     // ROADMAP.md v0.5 Track C reopen closed tab: the File menu's new
     // "reopen_closed_tab" item id, pinned across all four languages — same
     // rationale as read_only's dedicated test below.
+    // ROADMAP.md v0.6 E1 Document Info dialog: the File menu's new
+    // "document_info" item id, pinned across all four languages — same
+    // rationale as read_only's dedicated test below.
+    #[test]
+    fn label_returns_the_correct_document_info_text_for_every_language() {
+        assert_eq!(label("document_info", "en"), "Document Info…");
+        assert_eq!(label("document_info", "zh-TW"), "文件資訊…");
+        assert_eq!(label("document_info", "ja"), "ドキュメント情報…");
+        assert_eq!(label("document_info", "zh-CN"), "文档信息…");
+    }
+
     #[test]
     fn label_returns_the_correct_reopen_closed_tab_text_for_every_language() {
         assert_eq!(label("reopen_closed_tab", "en"), "Reopen Closed Tab");

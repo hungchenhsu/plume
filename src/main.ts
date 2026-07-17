@@ -84,6 +84,7 @@ import { showCloseConfirm } from "./confirm";
 import { showLossySaveConfirm } from "./lossysave";
 import { showStaleFileConfirm } from "./stalefile";
 import { showDetectionCard } from "./detectcard";
+import { showDocumentInfo } from "./docinfo";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
@@ -2970,6 +2971,24 @@ void listen<string>("plume://menu", (event) => {
           void reloadFromDisk(target);
         });
       }
+      break;
+    }
+    // Read-only trust surface (ROADMAP.md v0.6 E1): no truncated/read-only
+    // guard needed (nothing here mutates the document) — only a no-active-
+    // tab guard, same as stream_replace above. See docinfo.ts's module doc
+    // comment for the untitled-tab (buffer-only) and truncated-window
+    // (text stats hidden, same as the status bar) handling.
+    case "document_info": {
+      const doc = tabs.active;
+      if (!doc) break;
+      showDocumentInfo({
+        path: doc.path,
+        title: doc.title,
+        encoding: doc.encoding,
+        withBom: doc.withBom,
+        lineEnding: doc.lineEnding,
+        textStats: doc.truncated ? null : textStatsOf(editor.snapshot()),
+      });
       break;
     }
     case "print": {

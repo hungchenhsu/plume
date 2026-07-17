@@ -384,7 +384,7 @@ fn split_line_segments(bytes: &[u8]) -> Vec<&[u8]> {
     }
     let mut breaks: Vec<usize> = Vec::new();
     let mut pending_cr = false;
-    linebreak::scan_line_breaks(bytes, 0, &mut pending_cr, |next_line_start| {
+    linebreak::scan_line_breaks(bytes, 0, &mut pending_cr, |next_line_start, _kind| {
         breaks.push(next_line_start as usize);
     });
     if pending_cr {

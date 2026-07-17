@@ -73,6 +73,28 @@ export interface Messages {
   "detectcard.detectionBoundaryNote": (encoding: string) => string;
   "detectcard.truncatedSampleNote": string;
 
+  // Document Info dialog (File menu; ROADMAP.md v0.6 E1) — a read-only
+  // "file trust surface." See src/docinfo.ts's module doc comment for the
+  // untitled-tab reduced-content decision and the section-independent
+  // error-handling design these keys back.
+  "docinfo.title": (file: string) => string;
+  "docinfo.close": string;
+  "docinfo.labelPath": string;
+  "docinfo.pathUnsaved": (title: string) => string;
+  "docinfo.labelSize": string;
+  "docinfo.labelModified": string;
+  "docinfo.labelEncoding": string;
+  "docinfo.labelLineEnding": string;
+  "docinfo.labelScanned": string;
+  "docinfo.lineEndingSampledNote": (scanned: string) => string;
+  "docinfo.lineEndingUtf16Note": string;
+  "docinfo.labelTextStats": string;
+  /** Shown in place of a section's data when its IPC call genuinely fails
+   *  (e.g. the file was deleted since the dialog opened) — never a blank
+   *  or silently-missing section (CLAUDE.md's decode-error-surfacing
+   *  discipline, generalized to every fact this dialog shows). */
+  "docinfo.loadError": (message: string) => string;
+
   "charinspect.title": (codepoint: string) => string;
   "charinspect.labelChar": string;
   "charinspect.labelCodePoint": string;
@@ -457,6 +479,21 @@ const en: Messages = {
   "detectcard.truncatedSampleNote":
     "Large-file preview: the verdict above is based on a truncated sample, not the whole file — if the text looks garbled, try Reopen with Encoding.",
 
+  "docinfo.title": (file) => `Document Info — ${file}`,
+  "docinfo.close": "Close",
+  "docinfo.labelPath": "Path",
+  "docinfo.pathUnsaved": (title) => `${title} (not saved yet)`,
+  "docinfo.labelSize": "Size",
+  "docinfo.labelModified": "Modified",
+  "docinfo.labelEncoding": "Encoding",
+  "docinfo.labelLineEnding": "Line Ending",
+  "docinfo.labelScanned": "Scanned",
+  "docinfo.lineEndingSampledNote": (scanned) =>
+    `Counted from the first ${scanned} of this file only — these counts do not reflect the whole file.`,
+  "docinfo.lineEndingUtf16Note": "Line-ending distribution isn't available for UTF-16 files.",
+  "docinfo.labelTextStats": "Word/Character/Line Count",
+  "docinfo.loadError": (message) => `Couldn't load this information: ${message}`,
+
   "charinspect.title": (codepoint) => `Character ${codepoint}`,
   "charinspect.labelChar": "Character",
   "charinspect.labelCodePoint": "Code Point",
@@ -817,6 +854,21 @@ const zhTW: Messages = {
   "detectcard.truncatedSampleNote":
     "大型檔案預覽：以上判定結果僅根據截斷樣本，並非整個檔案——若文字顯示為亂碼，可嘗試「以指定編碼重新開啟」。",
 
+  "docinfo.title": (file) => `文件資訊 — ${file}`,
+  "docinfo.close": "關閉",
+  "docinfo.labelPath": "路徑",
+  "docinfo.pathUnsaved": (title) => `${title}（尚未儲存）`,
+  "docinfo.labelSize": "大小",
+  "docinfo.labelModified": "修改時間",
+  "docinfo.labelEncoding": "編碼",
+  "docinfo.labelLineEnding": "行尾",
+  "docinfo.labelScanned": "已掃描",
+  "docinfo.lineEndingSampledNote": (scanned) =>
+    `僅根據此檔案前 ${scanned} 計算——這些數字並非整個檔案的統計。`,
+  "docinfo.lineEndingUtf16Note": "UTF-16 檔案不支援行尾分布統計。",
+  "docinfo.labelTextStats": "詞／字元／行數",
+  "docinfo.loadError": (message) => `無法載入此資訊：${message}`,
+
   "charinspect.title": (codepoint) => `字元 ${codepoint}`,
   "charinspect.labelChar": "字元",
   "charinspect.labelCodePoint": "碼位",
@@ -1144,6 +1196,21 @@ const ja: Messages = {
     `${encoding} は chardetng の検出対象ではありません。BOM、拡張子ごとの既定値、または「エンコーディングを指定して再度開く」でのみ選択できます。`,
   "detectcard.truncatedSampleNote":
     "大容量ファイルのプレビュー: 上記の判定結果はファイル全体ではなく、切り詰められたサンプルに基づいています。文字化けして見える場合は「エンコーディングを指定して再度開く」を試してください。",
+
+  "docinfo.title": (file) => `ドキュメント情報 — ${file}`,
+  "docinfo.close": "閉じる",
+  "docinfo.labelPath": "パス",
+  "docinfo.pathUnsaved": (title) => `${title}（未保存）`,
+  "docinfo.labelSize": "サイズ",
+  "docinfo.labelModified": "更新日時",
+  "docinfo.labelEncoding": "エンコーディング",
+  "docinfo.labelLineEnding": "改行コード",
+  "docinfo.labelScanned": "走査範囲",
+  "docinfo.lineEndingSampledNote": (scanned) =>
+    `このファイルの先頭 ${scanned} のみを対象に集計しています——ファイル全体の値ではありません。`,
+  "docinfo.lineEndingUtf16Note": "UTF-16 ファイルでは改行コードの分布を取得できません。",
+  "docinfo.labelTextStats": "単語数／文字数／行数",
+  "docinfo.loadError": (message) => `この情報を読み込めませんでした: ${message}`,
 
   "charinspect.title": (codepoint) => `文字 ${codepoint}`,
   "charinspect.labelChar": "文字",
@@ -1494,6 +1561,21 @@ const zhCN: Messages = {
     `${encoding} 不在 chardetng 的检测范围内——只能通过 BOM、扩展名默认值，或“以指定编码重新打开”选取。`,
   "detectcard.truncatedSampleNote":
     "大型文件预览：以上判定结果仅根据截断样本，并非整个文件——如果文字显示为乱码，可尝试“以指定编码重新打开”。",
+
+  "docinfo.title": (file) => `文档信息 — ${file}`,
+  "docinfo.close": "关闭",
+  "docinfo.labelPath": "路径",
+  "docinfo.pathUnsaved": (title) => `${title}（尚未保存）`,
+  "docinfo.labelSize": "大小",
+  "docinfo.labelModified": "修改时间",
+  "docinfo.labelEncoding": "编码",
+  "docinfo.labelLineEnding": "换行符",
+  "docinfo.labelScanned": "已扫描",
+  "docinfo.lineEndingSampledNote": (scanned) =>
+    `仅根据此文件前 ${scanned} 计算——这些数字并非整个文件的统计。`,
+  "docinfo.lineEndingUtf16Note": "UTF-16 文件不支持换行符分布统计。",
+  "docinfo.labelTextStats": "词／字符／行数",
+  "docinfo.loadError": (message) => `无法加载此信息：${message}`,
 
   "charinspect.title": (codepoint) => `字符 ${codepoint}`,
   "charinspect.labelChar": "字符",

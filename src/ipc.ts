@@ -219,6 +219,55 @@ export function explainDetection(
   });
 }
 
+export interface DocumentMetadata {
+  size: number;
+  /** Milliseconds since the Unix epoch; negative for a pre-epoch mtime
+   *  (see src-tauri/src/docinfo.rs's `DocumentMetadata` doc comment). Feed
+   *  straight into `new Date(modifiedMs)`. */
+  modifiedMs: number;
+}
+
+/**
+ * Fresh on-disk size and modification time for the Document Info dialog's
+ * "Size"/"Modified" rows (ROADMAP.md v0.6 E1) — a re-read, not a
+ * frontend-cached value, matching `explainDetection`'s own "always
+ * re-verify" precedent. Read-only and side-effect free.
+ */
+export function documentMetadata(path: string): Promise<DocumentMetadata> {
+  return invoke<DocumentMetadata>("document_metadata", { path });
+}
+
+export interface LineEndingDistribution {
+  lf: number;
+  crlf: number;
+  cr: number;
+  /** How many bytes were actually scanned — less than `totalSize` only for
+   *  a file over the Rust core's large-file threshold, in which case only
+   *  a leading sample was scanned. Always show an explicit "sampled"
+   *  disclosure when this is less than `totalSize` — never present a
+   *  partial count as if it were exhaustive. */
+  scannedBytes: number;
+  totalSize: number;
+}
+
+/**
+ * Streaming line-ending distribution (LF/CRLF/lone-CR counts) for the
+ * Document Info dialog (ROADMAP.md v0.6 E1) — reuses the same LF/CRLF/
+ * lone-CR semantics as `doc.lineEnding` (src-tauri/src/linebreak.rs), never
+ * a second, independently-drifting classifier. Bounded at the Rust core's
+ * large-file threshold: exact for anything at or under that size, a
+ * disclosed leading sample beyond it (see `scannedBytes`). `encoding`
+ * should be the document's own detected encoding (`doc.encoding`); rejects
+ * for UTF-16 files, mirroring `buildLineIndex`'s identical exclusion (raw
+ * byte scanning cannot safely find LF/CR in a UTF-16 code unit).
+ */
+export function lineEndingDistribution(
+  path: string,
+  encoding: string,
+): Promise<LineEndingDistribution> {
+  return invoke<LineEndingDistribution>("line_ending_distribution", { path, encoding });
+}
+
 /**
  * Multi-phase save. Call with `allowLossy: false` first. If the target
  * encoding can't represent some characters, the result comes back with

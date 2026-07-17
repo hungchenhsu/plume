@@ -52,7 +52,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use serde::Serialize;
 
-use crate::linebreak::scan_line_breaks;
+use crate::linebreak::{reject_utf16, scan_line_breaks};
 
 /// Streaming read granularity, matching `streamreplace.rs`'s rationale:
 /// large enough to amortize per-read overhead on multi-GB files, small
@@ -93,22 +93,13 @@ fn read_chunk(file: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize
     }
 }
 
-fn reject_utf16(encoding: &str) -> Result<(), String> {
-    let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
-        .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
-    if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
-        return Err("Line index is not supported for UTF-16 files".into());
-    }
-    Ok(())
-}
-
 /// Stream the whole file once, counting lines and recording a checkpoint
 /// byte offset every `CHECKPOINT_INTERVAL` lines. `encoding` is the
 /// document's already-detected encoding (the frontend passes `doc.encoding`
 /// ) — used only to reject UTF-16 up front; the scan itself never decodes.
 #[tauri::command]
 pub fn build_line_index(path: String, encoding: String) -> Result<LineIndexReport, String> {
-    reject_utf16(&encoding)?;
+    reject_utf16(&encoding, "Line index")?;
 
     let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     let indexed_size = file
@@ -137,13 +128,19 @@ pub fn build_line_index(path: String, encoding: String) -> Result<LineIndexRepor
         if n == 0 {
             break;
         }
-        scan_line_breaks(&buf[..n], offset, &mut pending_cr, |next_line_start| {
-            total_lines += 1;
-            last_break_end = next_line_start;
-            if total_lines.is_multiple_of(CHECKPOINT_INTERVAL) && next_line_start < indexed_size {
-                checkpoints.push(next_line_start);
-            }
-        });
+        scan_line_breaks(
+            &buf[..n],
+            offset,
+            &mut pending_cr,
+            |next_line_start, _kind| {
+                total_lines += 1;
+                last_break_end = next_line_start;
+                if total_lines.is_multiple_of(CHECKPOINT_INTERVAL) && next_line_start < indexed_size
+                {
+                    checkpoints.push(next_line_start);
+                }
+            },
+        );
         offset += n as u64;
         if n < buf.len() {
             break; // short read == EOF, matches read_chunk's contract
@@ -219,7 +216,7 @@ pub fn locate_line_offset(
             break;
         }
         let mut found: Option<u64> = None;
-        scan_line_breaks(&buf[..n], offset, &mut pending_cr, |line_start| {
+        scan_line_breaks(&buf[..n], offset, &mut pending_cr, |line_start, _kind| {
             if found.is_some() {
                 return; // target already matched earlier in this chunk
             }
