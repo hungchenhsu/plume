@@ -14,6 +14,8 @@ import {
   lowerCase,
   reverseLines,
   sortLines,
+  sortLinesCaseInsensitive,
+  sortLinesNumeric,
   toFullWidth,
   toHalfWidth,
   trimTrailingWhitespace,
@@ -73,6 +75,140 @@ describe("sortLines", () => {
     // all lowercase ASCII (uppercase letters are U+0041-U+005A, lowercase
     // are U+0061-U+007A).
     expect(sortLines("banana\nApple")).toBe("Apple\nbanana");
+  });
+});
+
+// ROADMAP.md v0.6 C3: Edit > Line Operations' "Sort Lines
+// (Case-Insensitive)". Same family as sortLines above -- deterministic
+// compareCodePoints, not localeCompare -- applied to each line's
+// toLowerCase() form instead of the line itself.
+describe("sortLinesCaseInsensitive", () => {
+  it("sorts lines ascending ignoring case", () => {
+    expect(sortLinesCaseInsensitive("Banana\napple\nCherry")).toBe("apple\nBanana\nCherry");
+  });
+
+  it("keeps the original relative order among lines that only differ by case (stable)", () => {
+    // Lowercased keys: "banana", "apple", "banana", "apple". Within each
+    // key group, the original relative order (Banana before banana; Apple
+    // before apple) must survive -- this is what "stable" means here, not
+    // just "no line dropped".
+    expect(sortLinesCaseInsensitive("Banana\nApple\nbanana\napple")).toBe(
+      "Apple\napple\nBanana\nbanana",
+    );
+  });
+
+  it("keeps every line -- sorting is not deduping -- and groups case-variants together", () => {
+    const input = "b\nA\nb\nc\nA";
+    expect(sortLinesCaseInsensitive(input)).toBe("A\nA\nb\nb\nc");
+  });
+
+  it("does not depend on locale-sensitive collation (compareCodePoints, not localeCompare)", () => {
+    // Lowercased: "über" vs "zebra". Code-point order puts 'ü' (U+00FC)
+    // after 'z' (U+007A), unlike locale-aware collation which usually
+    // treats ü as close to u (before z).
+    expect(sortLinesCaseInsensitive("über\nZebra")).toBe("Zebra\nüber");
+  });
+
+  it("preserves a trailing newline when the input has one", () => {
+    expect(sortLinesCaseInsensitive("B\na\n")).toBe("a\nB\n");
+  });
+
+  it("does not introduce a trailing newline when the input has none", () => {
+    expect(sortLinesCaseInsensitive("B\na")).toBe("a\nB");
+  });
+
+  it("returns an empty string for an empty string", () => {
+    expect(sortLinesCaseInsensitive("")).toBe("");
+  });
+
+  it("leaves a single line with no newline unchanged", () => {
+    expect(sortLinesCaseInsensitive("Only")).toBe("Only");
+  });
+});
+
+// ROADMAP.md v0.6 C3: Edit > Line Operations' "Sort Lines (Numeric)".
+// Sorts by the first embedded number in each line (-?\d+(?:\.\d+)?,
+// leftmost match), not the line's text. Lines with no number at all sort
+// after every line that has one; ties (equal numbers, or two number-less
+// lines) keep their original relative order (Array.prototype.sort's
+// ES2019 stability guarantee), same tie-breaking contract sortLines/
+// sortLinesCaseInsensitive above already give.
+describe("sortLinesNumeric", () => {
+  it("sorts by numeric value, not lexicographically", () => {
+    // Lexicographic order would put "item 10" before "item 2" ('1' < '2'
+    // as characters); numeric order must not.
+    expect(sortLinesNumeric("item 10\nitem 2\nitem 1")).toBe("item 1\nitem 2\nitem 10");
+  });
+
+  it("extracts the number from anywhere in the line, not just a leading prefix", () => {
+    expect(sortLinesNumeric("b 3\na 1\nc 2")).toBe("a 1\nc 2\nb 3");
+  });
+
+  it("extracts the first number when a line has more than one (a range like '10-2')", () => {
+    expect(sortLinesNumeric("pages 10-2\npages 3-9")).toBe("pages 3-9\npages 10-2");
+  });
+
+  it("supports negative numbers when '-' is directly adjacent to the digits", () => {
+    expect(sortLinesNumeric("temp -5\ntemp 3\ntemp -10")).toBe(
+      "temp -10\ntemp -5\ntemp 3",
+    );
+  });
+
+  it("treats a '-' separated from the digits by whitespace as a dash, not a sign", () => {
+    // If the '-' in "x - 9" were (wrongly) read as a sign, "x - 9" would
+    // sort as -9, before "y 3" (3). Since it is separated from "9" by a
+    // space, it must extract +9 and sort after "y 3" instead.
+    expect(sortLinesNumeric("x - 9\ny 3")).toBe("y 3\nx - 9");
+  });
+
+  it("treats a '-' directly adjacent to digits as a sign even with no space at all (e.g. 'chapter-5')", () => {
+    // Deliberately simple adjacency rule, documented on firstNumberKey:
+    // no attempt to classify the '-' by surrounding word context.
+    expect(sortLinesNumeric("a 1\nchapter-5")).toBe("chapter-5\na 1");
+  });
+
+  it("supports decimal numbers", () => {
+    expect(sortLinesNumeric("v3.5\nv3.14\nv3.2")).toBe("v3.14\nv3.2\nv3.5");
+  });
+
+  it("supports negative decimal numbers", () => {
+    expect(sortLinesNumeric("v-3.5\nv2.1\nv-10.25")).toBe("v-10.25\nv-3.5\nv2.1");
+  });
+
+  it("does not specially handle a bare leading-dot decimal (deliberately narrow, matches only the digits after the dot)", () => {
+    // ".5" has no digit before the dot, so the leading \d+ requirement
+    // means the match starts at "5" itself (key 5), not 0.5.
+    expect(sortLinesNumeric(".5 apple\n3 banana")).toBe("3 banana\n.5 apple");
+  });
+
+  it("sorts lines with no number after every line that has one", () => {
+    expect(sortLinesNumeric("banana\n3\napple\n1\ncherry")).toBe(
+      "1\n3\nbanana\napple\ncherry",
+    );
+  });
+
+  it("keeps the original relative order among lines that have no number at all (stable, not an Infinity-minus-Infinity NaN comparator)", () => {
+    expect(sortLinesNumeric("banana\napple\ncherry")).toBe("banana\napple\ncherry");
+  });
+
+  it("keeps the original relative order among lines with equal numeric keys (stable)", () => {
+    expect(sortLinesNumeric("x 5\ny 5\nz 1")).toBe("z 1\nx 5\ny 5");
+  });
+
+  it("preserves a trailing newline when the input has one", () => {
+    expect(sortLinesNumeric("b 2\na 1\n")).toBe("a 1\nb 2\n");
+  });
+
+  it("does not introduce a trailing newline when the input has none", () => {
+    expect(sortLinesNumeric("b 2\na 1")).toBe("a 1\nb 2");
+  });
+
+  it("returns an empty string for an empty string", () => {
+    expect(sortLinesNumeric("")).toBe("");
+  });
+
+  it("leaves a single line with no newline unchanged", () => {
+    expect(sortLinesNumeric("only 1")).toBe("only 1");
   });
 });
 
