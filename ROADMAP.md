@@ -1848,9 +1848,18 @@ for incoming contributors.
   memory. README.md's "What's there today" list gained a one-line
   pointer to this file. No screenshots; agents cannot launch the GUI.
 
-- [ ] Cycle close-out: DIRECTION §2 refresh, session-handoff memory,
-  tag v0.6.0-alpha.1 with zh-TW notes, prerelease published under the
-  standing delegation (final releases remain user-gated)
+- [x] Cycle close-out: version 0.6.0 bumped consistently across
+  tauri.conf.json/package.json/Cargo.toml plus both lockfiles;
+  CHANGELOG's Unreleased section finalized as v0.6.0-alpha.1 (with the
+  post-backfill items — clear-recent, IPC error surfacing, docs —
+  folded in); DIRECTION §2 updated to the v0.6 completion state in the
+  same PR; tag v0.6.0-alpha.1 with zh-TW notes, prerelease published
+  under the standing delegation (final releases remain user-gated).
+  Cycle totals: 19 items (17 execution + planning + close-out) across
+  five tracks, 20 PRs (#229–#249 range), every danger item
+  adversarially reviewed, two P3 follow-ups filed (#231, #236), the
+  whole inherited bug queue closed (#201/#203/#217/#221/#223/#225/
+  #227), tests 831/476 → 955/522
 
 ## Explicit non-goals
 
