@@ -24,7 +24,8 @@
 
 use chardetng::EncodingDetector;
 use encoding_rs::{
-    Encoding, BIG5, EUC_KR, GB18030, GBK, KOI8_R, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1252,
+    Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, KOI8_R, SHIFT_JIS, UTF_8, WINDOWS_1251,
+    WINDOWS_1252,
 };
 use serde::Serialize;
 
@@ -105,14 +106,37 @@ use serde::Serialize;
 /// `windows1251_iso88595_hypotheses_are_mutually_ambiguous` test for the
 /// reproducing case.
 ///
+/// `(WINDOWS_1252, EUC_JP)` -- genuine EUC-JP bytes mis-decoded as
+/// windows-1252 -- was evaluated for ROADMAP v0.6 E2 and passed both
+/// required gates, so unlike the three exclusions just above, this one
+/// was *included*. Gate 1 (reachability): chardetng 0.1.17 carries a
+/// real, positively-detected EUC-JP candidate (`EucJpCandidate` /
+/// `EUC_JP_INDEX` in its `src/lib.rs`; its README lists EUC-JP under
+/// "Detected: Historical locale-specific fallbacks", not aliased away the
+/// way GB18030->GBK or KOI8-R->KOI8-U are) -- structurally unlike the
+/// absent-candidate KOI8-R case above, so this hypothesis is reachable in
+/// principle, confirmed empirically on diverse real Japanese text by
+/// `repairs_eucjp_misdecoded_as_windows1252`. Gate 2 (mutual ambiguity):
+/// unlike the ISO-8859-5 case just above, the reversed hypothesis,
+/// (EUC_JP, WINDOWS_1252), does not also pass on the same genuine-EUC-JP-
+/// as-1252 mojibake (`windows1252_eucjp_reverse_hypothesis_is_rejected`);
+/// legitimate windows-1252 Western-European prose does not trigger this
+/// pair either (`no_candidates_for_normal_western_european_text`); and it
+/// does not shadow the existing Big5/Shift_JIS pairs' correct hits on
+/// their own genuine mojibake
+/// (`windows1252_eucjp_pair_does_not_shadow_existing_cjk_pairs`).
+///
 /// `pub(crate)` so `fuzz_roundtrip.rs`'s reversibility fuzz can iterate
 /// this exact list instead of maintaining a separately-drifting copy.
-pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 9] = [
+pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 10] = [
     (WINDOWS_1252, UTF_8),
     (WINDOWS_1252, BIG5),
     (WINDOWS_1252, GB18030),
     (WINDOWS_1252, SHIFT_JIS),
     (WINDOWS_1252, EUC_KR),
+    // ROADMAP v0.6 E2: see the doc comment above for the two-gate
+    // evaluation this pair passed.
+    (WINDOWS_1252, EUC_JP),
     (BIG5, UTF_8),
     (GBK, UTF_8),
     (SHIFT_JIS, UTF_8),
@@ -288,7 +312,16 @@ fn try_repair(
     // statistically wrong" hypotheses: e.g. genuine Big5 text
     // re-interpreted as GB18030 can sometimes decode without a single
     // malformed sequence, but chardetng's frequency model still tells the
-    // two apart.
+    // two apart. Gatekeeper order matters, though: for the
+    // (windows-1252, multi-byte-CJK) family it is the *structural* gate
+    // above -- the re-encoded high bytes must form valid, contiguous
+    // multi-byte sequences, which real Western prose (accents separated
+    // by ASCII/spaces) never does -- that rejects nearly everything;
+    // chardetng alone would accept a measurable share of dense
+    // high-byte-only strings (adversarial review measured ~7% of random
+    // contiguous A1-FE even-length strings passing it for EUC-JP), so a
+    // future relaxation of the structural gate must not lean on
+    // chardetng as the sole remaining referee.
     if repaired.contains('\u{FFFD}') {
         return None;
     }
@@ -426,6 +459,26 @@ mod tests {
     /// `80..=A0`, which Big5 rejects as a trail byte -- avoided here.)
     const LATIN1_SUPPLEMENT_TEXT: &str = "café où l'étoile étée ça résumé vécu ôté née bébé";
 
+    /// ROADMAP v0.6 E2 evaluation fixture: diverse EUC-JP text for the
+    /// (WINDOWS_1252, EUC_JP) mojibake pair under evaluation. Three
+    /// unrelated-topic sentences (weather, a library/cafe visit, an
+    /// evening meal) so the fixture exercises kanji, hiragana, *and*
+    /// katakana together rather than one script in isolation --
+    /// deliberately distinct content from `SHIFT_JIS_TEXT` above (same
+    /// "reasonably long, multi-sentence" shape for chardetng's statistical
+    /// detection) so this pair's evaluation is not just re-running the
+    /// Shift_JIS fixture under a different label.
+    const EUC_JP_TEXT: &str = "今日は朝から雨が降っていて、少し肌寒い一日でした。図書館で新しい小説を借り、カフェでコーヒーを飲みながら静かな時間を過ごしました。夕方には近所の店で温かい料理を食べて、心も体も温まりました。";
+
+    /// ROADMAP v0.6 E2 evaluation fixture: realistic French prose using
+    /// common windows-1252 Western-European accented characters (é, è, ê,
+    /// ô, ç, ù) in natural sentences. Unlike `LATIN1_SUPPLEMENT_TEXT`
+    /// above -- deliberately restricted to lowercase U+00E1..=U+00FF for
+    /// its Big5-collision property -- this fixture exists purely to stand
+    /// in for "a real windows-1252 document a user might have open", for
+    /// the false-positive check below.
+    const WESTERN_EUROPEAN_TEXT: &str = "Le café est déjà prêt, mais l'hôtel n'a pas encore reçu la réservation. Où puis-je trouver une pharmacie près d'ici ? C'est très important pour moi.";
+
     #[test]
     fn repairs_big5_misdecoded_as_windows1252() {
         let (bytes, _, unmappable) = BIG5.encode(BIG5_TEXT);
@@ -508,6 +561,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(repaired, SHIFT_JIS_TEXT);
+    }
+
+    /// ROADMAP v0.6 E2, gate 1 (reachability): genuine EUC-JP bytes
+    /// mis-decoded as windows-1252, same shape as
+    /// `repairs_shiftjis_misdecoded_as_windows1252` above. chardetng
+    /// 0.1.17 carries a real, positively-detected EUC-JP candidate
+    /// (`EucJpCandidate` / `EUC_JP_INDEX` in its `src/lib.rs`, and its
+    /// README lists EUC-JP under "Detected: Historical locale-specific
+    /// fallbacks", not aliased away the way GB18030->GBK or KOI8-R->KOI8-U
+    /// are) -- structurally unlike the absent-candidate KOI8-R case
+    /// documented on `REPAIR_PAIRS` and in judgment-overlay.md §4, so this
+    /// hypothesis is not dead on arrival. This test is the empirical
+    /// confirmation that gate (c)'s chardetng cross-check actually agrees
+    /// on real, diverse Japanese text, not just the structural possibility.
+    #[test]
+    fn repairs_eucjp_misdecoded_as_windows1252() {
+        let (bytes, _, unmappable) = EUC_JP.encode(EUC_JP_TEXT);
+        assert!(!unmappable, "fixture must be fully EUC-JP-encodable");
+        let (mojibake, malformed) = WINDOWS_1252.decode_without_bom_handling(&bytes);
+        assert!(!malformed, "windows-1252 decodes every byte value");
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, EUC_JP_TEXT, "fixture must actually look garbled");
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "windows-1252" && c.original == "EUC-JP")
+            .unwrap_or_else(|| {
+                panic!("expected a (windows-1252, EUC-JP) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, EUC_JP_TEXT);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "windows-1252".to_string(), "EUC-JP".to_string())
+                .unwrap();
+        assert_eq!(repaired, EUC_JP_TEXT);
     }
 
     #[test]
@@ -636,6 +725,29 @@ mod tests {
         );
     }
 
+    /// ROADMAP v0.6 E2, gate 2a (false-positive check): a real, correctly-
+    /// decoded windows-1252 Western-European document -- never touched by
+    /// any mis-decode -- must not trigger the new (WINDOWS_1252, EUC_JP)
+    /// hypothesis. Same family as `no_candidates_for_normal_japanese`
+    /// /`_korean`/`_cyrillic` above, extended to the script this new
+    /// pair's `intermediate` encoding natively serves. Scoped to the
+    /// specific new candidate (not "candidates must be empty" overall)
+    /// because that is the literal risk this pair introduces: whether
+    /// legitimate windows-1252 prose can also pass this one new gate,
+    /// independent of whatever the four pre-existing (WINDOWS_1252, *)
+    /// pairs already do or don't do with this text.
+    #[test]
+    fn no_candidates_for_normal_western_european_text() {
+        let candidates = detect_mojibake(WESTERN_EUROPEAN_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1252" && c.original == "EUC-JP"),
+            "correct Western-European windows-1252 text must not trigger a false-positive \
+             (windows-1252, EUC-JP) repair candidate: {candidates:?}"
+        );
+    }
+
     /// Adversarial-review regression: the 64 KiB sample cut lands
     /// mid-character in the *recovered* byte stream about half the time
     /// for CJK mojibake, and gate (b) used to reject the whole hypothesis
@@ -753,6 +865,91 @@ mod tests {
              text is the documented collision -- if this ever starts recovering the \
              right text too, the ambiguity argument in REPAIR_PAIRS's doc comment \
              needs re-checking before adding ISO-8859-5 pairs"
+        );
+    }
+
+    /// ROADMAP v0.6 E2, gate 2b (mutual-ambiguity check): same shape as
+    /// `windows1251_iso88595_hypotheses_are_mutually_ambiguous` above, but
+    /// checking the *reverse* of the pair under evaluation here. Genuine
+    /// EUC-JP bytes mis-decoded as windows-1252 pass the forward
+    /// hypothesis, (WINDOWS_1252, EUC_JP) -- the one ROADMAP v0.6 E2 asks
+    /// to evaluate -- and recover the real text. Unlike the ISO-8859-5
+    /// case, the reversed hypothesis, (EUC_JP, WINDOWS_1252) (i.e. "this
+    /// text is EUC-JP-decoded bytes that were really windows-1252"), must
+    /// NOT also pass: if it did, the same mojibake string would have two
+    /// structurally-clean-but-contradictory readings, exactly the
+    /// ambiguity that kept ISO-8859-5 out.
+    #[test]
+    fn windows1252_eucjp_reverse_hypothesis_is_rejected() {
+        let (real_bytes, _, unmappable) = EUC_JP.encode(EUC_JP_TEXT);
+        assert!(!unmappable, "fixture must be fully EUC-JP-encodable");
+        let (mojibake, malformed) = WINDOWS_1252.decode_without_bom_handling(&real_bytes);
+        assert!(!malformed, "windows-1252 decodes every byte value");
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, EUC_JP_TEXT, "fixture must actually look garbled");
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1252, EUC_JP)
+            .expect("the forward (windows-1252, EUC-JP) hypothesis must pass every gate");
+        assert_eq!(
+            correct_text, EUC_JP_TEXT,
+            "the forward hypothesis must recover the real text"
+        );
+
+        assert_eq!(
+            try_repair(&mojibake, EUC_JP, WINDOWS_1252),
+            None,
+            "the reversed (EUC_JP, windows-1252) hypothesis must not also pass -- if it \
+             ever starts passing, this pair has the same mutual-ambiguity problem that \
+             kept (windows-1251, ISO-8859-5) out of REPAIR_PAIRS"
+        );
+    }
+
+    /// ROADMAP v0.6 E2, gate 2c (interaction with the nine pairs that
+    /// predate this evaluation): the new (WINDOWS_1252, EUC_JP)
+    /// hypothesis must not shadow an existing pair's correct hit on real
+    /// mojibake. Reuses the same
+    /// Big5- and Shift_JIS-via-windows-1252 mojibake the `repairs_*` tests
+    /// above already build and pin -- a real Big5 (or Shift_JIS) file
+    /// mis-decoded as windows-1252 must keep resolving to its own correct
+    /// pair only, never spuriously also to (windows-1252, EUC-JP).
+    #[test]
+    fn windows1252_eucjp_pair_does_not_shadow_existing_cjk_pairs() {
+        let (big5_bytes, _, unmappable) = BIG5.encode(BIG5_TEXT);
+        assert!(!unmappable);
+        let (big5_mojibake, malformed) = WINDOWS_1252.decode_without_bom_handling(&big5_bytes);
+        assert!(!malformed);
+        let big5_candidates = detect_mojibake(big5_mojibake.into_owned());
+        assert!(
+            big5_candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1252" && c.original == "Big5"),
+            "the real Big5 pair must still be found: {big5_candidates:?}"
+        );
+        assert!(
+            !big5_candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1252" && c.original == "EUC-JP"),
+            "a genuine Big5-as-windows-1252 mojibake must not also spuriously match the \
+             EUC-JP hypothesis: {big5_candidates:?}"
+        );
+
+        let (sjis_bytes, _, unmappable) = SHIFT_JIS.encode(SHIFT_JIS_TEXT);
+        assert!(!unmappable);
+        let (sjis_mojibake, malformed) = WINDOWS_1252.decode_without_bom_handling(&sjis_bytes);
+        assert!(!malformed);
+        let sjis_candidates = detect_mojibake(sjis_mojibake.into_owned());
+        assert!(
+            sjis_candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1252" && c.original == "Shift_JIS"),
+            "the real Shift_JIS pair must still be found: {sjis_candidates:?}"
+        );
+        assert!(
+            !sjis_candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1252" && c.original == "EUC-JP"),
+            "a genuine Shift_JIS-as-windows-1252 mojibake must not also spuriously match \
+             the EUC-JP hypothesis: {sjis_candidates:?}"
         );
     }
 
