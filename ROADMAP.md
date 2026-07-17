@@ -1605,14 +1605,80 @@ for incoming contributors.
   ever renders whatever `detect_mojibake` returns).
 
 **Track C — comfort**
-- [ ] C1 Command palette (Mod+Shift+P): a Rust command exposes menu.rs's
-  LABELS as (id, current-locale label) pairs; frontend palette overlay
-  with a hand-rolled subsequence fuzzy match (no new dependency);
-  selection dispatches into the existing menu switch. Danger-lite:
-  acceptance includes verifying that commands without their own
-  read-only/truncated/no-doc guards no-op cleanly (or gain a guard)
-  when dispatched from the palette in an invalid state; v1 lists all
-  commands with no per-command enabled filtering (documented trade-off)
+- [x] C1 Command palette (Mod+Shift+P): a fuzzy-searchable overlay
+  (src/palette.ts) over every dispatchable native-menu command — pure
+  discoverability, no new capability. Rust: `menu::palette_commands(locale)`
+  (menu.rs) returns LABELS as `(id, label)` pairs already resolved to the
+  caller's locale (same "already-resolved, never system" contract as
+  `retitle_menu` — the frontend passes `i18n.ts`'s `getLocale()`), filtered
+  through a new `PALETTE_EXCLUDED_IDS`: the 6 pure submenu containers
+  (file/edit/view/line_ops/theme/window, which have no `plume://menu` case
+  of their own) plus the palette's own entry, since opening the palette
+  from inside itself isn't useful. LABELS grew to 57 entries (the new
+  `command_palette` id); 7 excluded, 50 real commands surfaced — both
+  counts pinned by dedicated tests rather than asserted as a magic number.
+
+  Frontend: `fuzzyMatch` (palette.ts) is a hand-rolled, case-insensitive,
+  greedy-leftmost subsequence matcher (no new dependency) — each query
+  character claims the earliest position in the label after the previous
+  character's claim, a documented simplification over an optimal DP-based
+  scorer, pinned by a dedicated test showing it is not always optimal
+  ("ababc" vs query "abc"). Scoring weights consecutive matched-character
+  runs (`CONSECUTIVE_RUN_WEIGHT = 1000`) heavily enough to dominate an
+  earlier-position tiebreak, matching the plan's "connected runs
+  preferred, earlier position preferred" spec exactly.
+  `filterAndSortCommands`/`moveSelection`/`clampSelectedIndex` are
+  extracted, pure, and fully vitest-covered (23 new tests) — an upgrade
+  over quickopen.ts's own precedent, which inlines equivalent navigation
+  math untested. `showPalette` otherwise mirrors `showQuickOpen`'s
+  overlay/panel/input/list shape almost exactly (own `.palette-*` CSS
+  namespace reusing styles.css tokens — same per-module-namespace
+  convention as `.goto-*`/`.fif-*` alongside `.quickopen-*`), and stays
+  DOM-untested like every other dialog module in this codebase.
+
+  Dispatch: the `plume://menu` listener's switch body was extracted into a
+  named `dispatchMenuCommand(id)` (main.ts) so the palette's `onRun`
+  callback can call the exact same function the native menu calls — a
+  direct synchronous call, not a simulated IPC round trip — guaranteeing
+  the two entry points can never diverge. Danger-lite guard audit (the
+  plan's acceptance criterion): every case was checked against no-active-
+  doc/truncated/read-only. Every line-operation case already gates through
+  `runLineOperation`'s `blockedByReadOnly` + no-doc check; `saveFlow`,
+  `toggleReadOnly`, `handleGotoLine`, `toggleBookmarkFlow`/
+  `nextBookmarkFlow`/`previousBookmarkFlow`, `stream_replace`, and
+  `document_info` each already have their own no-doc (and, where
+  relevant, truncated/read-only) check; the remaining cases are
+  state-independent by construction (preference toggles; dialog openers
+  not scoped to the active doc; non-mutating CM6 selection/search/fold
+  commands, which self-no-op on an unmet precondition rather than throw —
+  verified from source, not assumed). The one bare case found was `print`
+  (no doc guard at all, though harmless in practice since
+  `editor.content()` never throws) — given a defensive
+  `if (!tabs.active) break;` for consistency with its
+  `stream_replace`/`document_info` siblings.
+
+  Shortcut: `CmdOrCtrl+Shift+P`, a native View-menu accelerator
+  ("Command Palette…", first item, above a new separator) rather than a
+  second JS-level keydown binding — mirrors this file's own "menu
+  accelerators own the shortcut, the frontend must not also bind it"
+  convention already used for the file shortcuts. Verified no collision:
+  grepped the installed `@codemirror/*` bundles for any `Shift-p` keymap
+  entry (none exist) and confirmed no other menu.rs accelerator uses
+  Shift+P (`open_recent` already owns plain `CmdOrCtrl+P`). `retitle_menu`
+  gained the new item to its relabel sweep. i18n: `command_palette` LABELS
+  entry across en/zh-TW/ja/zh-CN with a pinned-translation test mirroring
+  `read_only`'s; `palette.searchPlaceholder`/`palette.noResults` in
+  i18n.ts across the same four locales (the palette's own chrome text —
+  command labels themselves come from menu.rs, not this dictionary, same
+  split as every other menu-adjacent feature per this file's header
+  comment).
+
+  Failing-test-first: palette.test.ts was written and run red (`Failed to
+  resolve import "./palette"`) before palette.ts existed; menu.rs's new
+  test-module additions (referencing not-yet-existing `palette_commands`/
+  `PALETTE_EXCLUDED_IDS`) failed to compile before being implemented; both
+  went green after. 504 cargo test (+7, all in menu.rs), 894 vitest (+23,
+  all in palette.test.ts).
 - [ ] C2 join lines / reverse lines: lineops.ts pure functions + Edit >
   Line Operations entries + i18n ×4 + pinned translation tests
 - [ ] C3 sort variants: case-insensitive sort and numeric sort (same

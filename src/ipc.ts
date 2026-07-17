@@ -465,6 +465,28 @@ export function retitleMenu(locale: string): Promise<void> {
   return invoke<void>("retitle_menu", { locale });
 }
 
+export interface PaletteCommand {
+  id: string;
+  label: string;
+}
+
+/**
+ * List every dispatchable native-menu command as `(id, label)` pairs in
+ * `locale`, for the Command Palette (ROADMAP.md v0.6 C1). `id` is the same
+ * string `main.ts`'s `plume://menu` listener dispatches on; `label` is
+ * exactly what's currently shown for that id in the native menu — `locale`
+ * is already-resolved ("en" | "zh-TW" | "ja" | "zh-CN"), the same contract
+ * as `retitleMenu`, so the frontend should pass `i18n.ts`'s `getLocale()`
+ * directly and the palette can never disagree with the menu it wraps. Pure
+ * submenu containers (File/Edit/View/…) and the palette's own entry are
+ * never included (see menu.rs `PALETTE_EXCLUDED_IDS`). v1 returns every
+ * remaining command with no per-command enabled/disabled filtering — a
+ * documented trade-off (src/palette.ts's module doc comment).
+ */
+export function paletteCommands(locale: string): Promise<PaletteCommand[]> {
+  return invoke<PaletteCommand[]>("palette_commands", { locale });
+}
+
 /** Files queued by the OS (file association / CLI) before startup. */
 export function takePendingFiles(): Promise<string[]> {
   return invoke<string[]>("take_pending_files");

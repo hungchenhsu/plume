@@ -726,6 +726,7 @@ pub fn run() {
             menu::sync_read_only_menu,
             menu::sync_reopen_closed_tab_menu,
             menu::retitle_menu,
+            menu::palette_commands,
             take_pending_files,
             print_window,
             chunk::read_document_chunk,
