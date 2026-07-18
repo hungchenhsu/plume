@@ -14,12 +14,12 @@
 //   baseline) and sets doc.dirty. Applying a response captured before
 //   those keystrokes landed would silently discard them — no second
 //   confirmation — and the hot-exit backup covering them gets dropped in
-//   the same stroke (applyOpenedForReload's dropBackup call), so there's
+//   the same stroke (applyOpenedForReload's backups.drop call), so there's
 //   nothing left to recover them from either.
 // - The tab gets closed. `doc` survives as a plain JS object (main.ts's
 //   fetchAndApplyReload/fetchAndApplyReopen hold it via closure, not a
 //   fresh tabs lookup by id), so applying to it wouldn't crash — it would
-//   just mutate, and run dropBackup's real delete-the-file IPC for, an
+//   just mutate, and run backups.drop's real delete-the-file IPC for, an
 //   orphaned Doc nothing displays anymore.
 //
 // Neither hazard is issue #124's own — that fix (savemutex.ts's
