@@ -94,7 +94,7 @@ import { showDocumentInfo } from "./docinfo";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
-import { clampLine, selectCheckpoint } from "./lineindex";
+import { clampLine, indexMatchesBaseline, selectCheckpoint } from "./lineindex";
 import {
   convertLeadingSpacesToTabs,
   convertLeadingTabsToSpaces,
@@ -947,6 +947,20 @@ async function ensureLineIndex(doc: Doc, myGeneration: number): Promise<LineInde
   try {
     const report = await buildLineIndex(doc.path, doc.encoding);
     if (doc.chunkGeneration !== myGeneration) return null;
+    // A fresh index describing a *different* file version than the doc's
+    // own baseline means the file was replaced under a missed watcher
+    // event (issue #267). Adopting it anyway would mix versions in one
+    // Doc — a goto would show the new file's bytes while the buffer,
+    // encoding and fingerprint still describe the old one, and every
+    // continuation page (which validates against doc.fingerprint) would
+    // then flag stale, with this reuse guard rebuilding the index on
+    // every jump. Route through the watcher's own external-change flow
+    // instead: a read-only preview is never dirty, so this reloads
+    // silently and re-establishes one coherent baseline.
+    if (!indexMatchesBaseline(report.fingerprint, doc.fingerprint)) {
+      await handleExternalChange(doc.path);
+      return null;
+    }
     doc.lineIndex = report;
     // Keep totalSize in lockstep with what was actually just scanned, so
     // the staleness check above compares against the index's own baseline
