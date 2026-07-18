@@ -19,12 +19,17 @@ pub fn load_recent_files<R: Runtime>(app: AppHandle<R>) -> Vec<String> {
     crate::store::read_json(&app, FILE).unwrap_or_default()
 }
 
+/// Push `path` onto the recent list and persist it. Returns the updated
+/// list only if the write landed on disk — a swallowed write error here
+/// would hand the frontend a list that evaporates on the next launch
+/// (issue #252), so the error propagates and the frontend keeps its last
+/// disk-confirmed cache instead.
 #[tauri::command]
-pub fn add_recent_file<R: Runtime>(app: AppHandle<R>, path: String) -> Vec<String> {
+pub fn add_recent_file<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Vec<String>, String> {
     let list: Vec<String> = crate::store::read_json(&app, FILE).unwrap_or_default();
     let list = push_recent(list, path);
-    let _ = crate::store::write_json(&app, FILE, &list);
-    list
+    crate::store::write_json(&app, FILE, &list)?;
+    Ok(list)
 }
 
 /// The list `clear_recent_files` persists and returns — always empty,
@@ -39,14 +44,17 @@ fn cleared_list() -> Vec<String> {
 
 /// Empty the recent list (ROADMAP.md v0.6 C4: File > Clear Recently
 /// Opened). Same shape as `add_recent_file`: writes `recent.json` via
-/// `store::write_json` (best-effort, matching `add_recent_file`'s own
-/// `let _ =`) and returns the resulting list so the frontend can replace
-/// its cached `recentFiles` with the exact value now on disk.
+/// `store::write_json` and returns the resulting list so the frontend can
+/// replace its cached `recentFiles` with the exact value now on disk.
+/// The write error propagates rather than being swallowed: a clear the
+/// user explicitly asked for that silently didn't reach disk resurrects
+/// the whole list on the next launch (issue #252), which the frontend
+/// must be able to tell the user about.
 #[tauri::command]
-pub fn clear_recent_files<R: Runtime>(app: AppHandle<R>) -> Vec<String> {
+pub fn clear_recent_files<R: Runtime>(app: AppHandle<R>) -> Result<Vec<String>, String> {
     let list = cleared_list();
-    let _ = crate::store::write_json(&app, FILE, &list);
-    list
+    crate::store::write_json(&app, FILE, &list)?;
+    Ok(list)
 }
 
 #[cfg(test)]

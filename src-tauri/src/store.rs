@@ -135,4 +135,28 @@ mod tests {
         let result: Option<Sample> = read_json_from_path(&path);
         assert!(result.is_none());
     }
+
+    /// Issue #252's failure mode: an unwritable config location must
+    /// surface as `Err`, not vanish — recent.rs's commands propagate this
+    /// to the frontend so a Clear/add that never reached disk is never
+    /// reported as success. Simulated by parking a *file* where the
+    /// parent directory should be, which fails `create_dir_all`
+    /// deterministically on every platform (no chmod, works as root).
+    #[test]
+    fn write_json_to_path_unwritable_parent_is_err() {
+        let blocker = std::env::temp_dir().join("plume-store-unwritable-parent-test");
+        let _ = std::fs::remove_dir_all(&blocker);
+        let _ = std::fs::remove_file(&blocker);
+        std::fs::write(&blocker, b"not a directory").unwrap();
+
+        let path = blocker.join("recent.json");
+        let value = Sample {
+            name: "never lands".into(),
+            count: 1,
+        };
+        let result = write_json_to_path(&path, &value);
+        assert!(result.is_err());
+
+        std::fs::remove_file(&blocker).ok();
+    }
 }
