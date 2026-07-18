@@ -340,7 +340,7 @@ mod tests {
     }
 
     fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(name);
+        let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
         std::fs::write(&path, content).unwrap();
         path
     }

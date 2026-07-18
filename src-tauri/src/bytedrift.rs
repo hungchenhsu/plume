@@ -185,7 +185,8 @@ mod tests {
     /// one directory per test function so parallel `cargo test` runs never
     /// collide.
     fn write_fixture(case: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("plume-bytedrift-{case}"));
+        let dir =
+            std::env::temp_dir().join(format!("plume-bytedrift-{case}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("doc.txt");

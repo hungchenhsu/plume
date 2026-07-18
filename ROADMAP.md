@@ -67,7 +67,7 @@ the good-first-issue surface.
   Result fields so the dialog's existing per-section error degradation
   survives (adversarial-review addition); explain_detection itself
   stays, detectcard.ts uses it independently [danger]
-- [ ] #236: per-process fixture_dir isolation for the five listed test
+- [x] #236: per-process fixture_dir isolation for the five listed test
   files (batch.rs, fsguard.rs, replaceinfiles.rs, search.rs,
   streamcodec.rs), applying the #237 pattern; sweep the other
   fixed-temp-name test files in the same PR where the same mechanical

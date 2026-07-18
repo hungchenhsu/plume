@@ -1138,7 +1138,7 @@ mod tests {
         dir_name: &str,
         ext_encoding: Option<&str>,
     ) {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -1778,7 +1778,7 @@ mod tests {
     /// file path and the exact bytes written, so a test can compute an
     /// expected value from the same content without a second disk read.
     fn write_line_fixture(dir_name: &str, n: u32) -> (std::path::PathBuf, String) {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big.txt");
@@ -1874,7 +1874,7 @@ mod tests {
     /// of `encoding::utf16_variant` separately (issue #61). Returns the
     /// file path.
     fn write_utf16le_line_fixture(dir_name: &str, n: u32, with_bom: bool) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big16.txt");
@@ -1990,7 +1990,7 @@ mod tests {
         n: u32,
         label: &str,
     ) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big16-nonascii.txt");
@@ -2102,7 +2102,7 @@ mod tests {
     /// (accidentally) lands on a complete code unit already. See
     /// `open_document_large_bomless_utf16be_via_ext_hint_not_malformed`.
     fn write_utf16be_high_byte_0a_fixture(dir_name: &str, n: usize) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big16be-0a-probe.txt");
@@ -2184,7 +2184,7 @@ mod tests {
     /// gate stops an extension hint from silently reinterpreting the whole
     /// preview as mojibake.
     fn write_large_cjk_utf8_fixture(dir_name: &str, multiline: bool) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("cjk-utf8.txt");
@@ -2466,7 +2466,7 @@ mod tests {
     /// offset, so the even `PREVIEW_BYTES` cut always splits the
     /// character straddling it after exactly its first byte.
     fn write_large_big5_fixture(dir_name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big5.txt");
@@ -2613,7 +2613,7 @@ mod tests {
     /// `assert_open_document_large_gb18030_split_not_corrupted` below.
     fn write_large_gb18030_fixture(dir_name: &str, pad: usize) -> std::path::PathBuf {
         assert!((1..=3).contains(&pad), "pad must leave 1..=3 bytes visible");
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("gb18030.txt");
@@ -2870,7 +2870,7 @@ mod tests {
     /// two-byte sequence (whose bytes occupy 0x21-0x7E), so the cut is
     /// unambiguous regardless of shift state. Returns the file path.
     fn write_iso2022jp_line_fixture(dir_name: &str, n: u32) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("big-iso2022jp.txt");
