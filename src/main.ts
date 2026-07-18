@@ -70,6 +70,7 @@ import {
   type GuardIdentity,
 } from "./asyncguard";
 import { dropBackup } from "./backup";
+import { createBackupFlushScheduler } from "./backupflush";
 import { showBatchConvert } from "./batchconvert";
 import {
   nextBookmark,
@@ -193,7 +194,7 @@ const tabs = new TabStore(document.querySelector<HTMLElement>("#tabbar")!, {
 // There's no existing throttle on that cursor/doc-changed path to
 // piggyback on — editor.ts's updateListener calls it synchronously on
 // every CM6 transaction — so the expensive recompute gets its own
-// debounce instead, mirroring scheduleBackup's setTimeout debounce below.
+// debounce instead, mirroring backupFlush.schedule()'s debounce below.
 const TEXTSTATS_DEBOUNCE_MS = 300;
 let textStatsTimer: number | null = null;
 
@@ -384,7 +385,7 @@ const editor = createEditor(
         tabs.render();
         updateWindowTitle();
       }
-      scheduleBackup();
+      backupFlush.schedule();
     }
   },
   onCursorMoved,
@@ -396,7 +397,6 @@ const editor = createEditor(
 // window never needs to ask about unsaved changes.
 
 const BACKUP_DEBOUNCE_MS = 2000;
-let backupTimer: number | null = null;
 
 function backupNameFor(doc: Doc): string {
   if (!doc.backupName) doc.backupName = `bk-${doc.id}-${Date.now()}.txt`;
@@ -417,16 +417,16 @@ async function flushBackup(doc: Doc, content: string): Promise<boolean> {
   }
 }
 
-function scheduleBackup(): void {
-  if (backupTimer !== null) window.clearTimeout(backupTimer);
-  backupTimer = window.setTimeout(() => {
-    backupTimer = null;
-    const doc = tabs.active;
-    if (doc?.dirty && !doc.truncated) {
-      void flushBackup(doc, editor.content()).then(persistSession);
-    }
-  }, BACKUP_DEBOUNCE_MS);
-}
+/** Debounced hot-exit backup of the active document (see backupflush.ts's
+ *  header for the timer-vs-tab-switch contract this enforces, issue #253).
+ *  persistSession runs only after the backup write settles, so the session
+ *  file never references a backup that hasn't landed on disk yet. */
+const backupFlush = createBackupFlushScheduler<Doc>({
+  debounceMs: BACKUP_DEBOUNCE_MS,
+  active: () => tabs.active,
+  activeContent: () => editor.content(),
+  flush: (doc, content) => flushBackup(doc, content).then(persistSession),
+});
 
 function updateWindowTitle(): void {
   const doc = tabs.active;
@@ -567,33 +567,36 @@ function persistSession(): void {
   });
 }
 
+/** Snapshot the active document's buffer and flush its pending hot-exit
+ *  backup before the editor switches away. Every switch-away path —
+ *  activate, newTab, cycleTab, openPath — must run this rather than
+ *  snapshotting on its own: a path that skips the flush leaves the
+ *  debounce timer running, and when it fires it sees the *new* active
+ *  document, so the previous document's last edits never reach their
+ *  backup (issue #253). */
+function stashActive(): void {
+  const current = tabs.active;
+  if (!current) return;
+  current.buffer = editor.snapshot();
+  backupFlush.flushPending(current, contentOf(current.buffer));
+}
+
 function activate(id: number): void {
   if (id === tabs.activeId) return;
-  const current = tabs.active;
-  if (current) {
-    current.buffer = editor.snapshot();
-    // Flush a pending backup before the editor switches away.
-    if (backupTimer !== null && current.dirty && !current.truncated) {
-      window.clearTimeout(backupTimer);
-      backupTimer = null;
-      void flushBackup(current, contentOf(current.buffer));
-    }
-  }
+  stashActive();
   tabs.setActive(id);
   showActive();
   persistSession();
 }
 
 function newTab(): void {
-  const current = tabs.active;
-  if (current) current.buffer = editor.snapshot();
+  stashActive();
   tabs.add(makeUntitled());
   showActive();
 }
 
 function cycleTab(offset: number): void {
-  const current = tabs.active;
-  if (current) current.buffer = editor.snapshot();
+  stashActive();
   tabs.cycle(offset);
   showActive();
 }
@@ -1617,8 +1620,8 @@ async function openPath(path: string, cursor = 0): Promise<void> {
   }
   try {
     const opened = await openDocument(path, undefined, extensionHint(path));
+    stashActive();
     const previous = tabs.active;
-    if (previous) previous.buffer = editor.snapshot();
     tabs.add(docFromOpened(opened, cursor));
     if (previous && isPristineUntitled(previous)) tabs.close(previous.id);
     showActive();
@@ -2087,7 +2090,7 @@ function setLineEnding(lineEnding: string): void {
   // backup coverage a content edit gets — without this, an app crash right
   // after a pure line-ending change had no backup of it; a normal close
   // still had flushBackup as a fallback either way (#192).
-  scheduleBackup();
+  backupFlush.schedule();
   updateStatusBar(doc);
 }
 
@@ -2325,7 +2328,7 @@ function showEncodingMenu(anchor: HTMLElement): void {
               // Also mirrors setLineEnding/onChange: this mutation is a
               // save-relevant change with no disk copy yet, so it needs the
               // same hot-exit backup coverage a content edit gets.
-              scheduleBackup();
+              backupFlush.schedule();
               updateStatusBar(doc);
               void saveFlow(false)
                 .then((written) => {
@@ -3158,10 +3161,7 @@ void listen<string>("plume://menu", (event) => dispatchMenuCommand(event.payload
 // closing would silently break that promise, so the window stays open
 // and the user chooses: fix the problem, or discard knowingly (#63).
 void getCurrentWindow().onCloseRequested(async (event) => {
-  if (backupTimer !== null) {
-    window.clearTimeout(backupTimer);
-    backupTimer = null;
-  }
+  backupFlush.cancel();
   const failedTitles: string[] = [];
   for (const doc of tabs.docs) {
     if (!doc.dirty || doc.truncated) continue;
