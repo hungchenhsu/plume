@@ -48,6 +48,7 @@ import {
   readDocumentChunkBefore,
   reportOpenfileReady,
   reportStartupReady,
+  deleteBackup,
   saveBackup,
   saveDocument,
   saveSession,
@@ -69,7 +70,7 @@ import {
   validateIdentity,
   type GuardIdentity,
 } from "./asyncguard";
-import { dropBackup } from "./backup";
+import { createBackupPipeline } from "./backuppipeline";
 import { createBackupFlushScheduler } from "./backupflush";
 import { createOpQueue } from "./opqueue";
 import { showBatchConvert } from "./batchconvert";
@@ -399,34 +400,33 @@ const editor = createEditor(
 
 const BACKUP_DEBOUNCE_MS = 2000;
 
-function backupNameFor(doc: Doc): string {
-  if (!doc.backupName) doc.backupName = `bk-${doc.id}-${Date.now()}.txt`;
-  return doc.backupName;
-}
-
-/** Write one document's unsaved content to its hot-exit backup. Returns
- *  false instead of throwing on failure: mid-editing flushes stay
- *  best-effort, but the close handler must know — closing on a failed
- *  flush would silently lose the content hot exit promised to keep
- *  (issue #63). */
-async function flushBackup(doc: Doc, content: string): Promise<boolean> {
-  try {
-    await saveBackup(backupNameFor(doc), content);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** Per-document ordered backup writes/deletes; `doc.backupName` is
+ *  committed only after a write verifiably lands, so `collectSession`
+ *  can never reference a backup file that doesn't exist (issue #263 —
+ *  see backuppipeline.ts's header for the full failure-mode inventory).
+ *  Flush results stay boolean rather than throwing: mid-editing flushes
+ *  are best-effort, but the close handler must know — closing on a
+ *  failed flush would silently lose the content hot exit promised to
+ *  keep (issue #63). */
+const backups = createBackupPipeline({
+  save: saveBackup,
+  remove: deleteBackup,
+});
 
 /** Debounced hot-exit backup of the active document (see backupflush.ts's
  *  header for the timer-vs-tab-switch contract this enforces, issue #253).
- *  persistSession runs only after the backup write settles, so the session
- *  file never references a backup that hasn't landed on disk yet. */
+ *  persistSession runs only after a *successful* backup write, so the
+ *  session file never references a backup that hasn't landed on disk —
+ *  a failed or superseded write keeps the last consistent session
+ *  instead (issue #263). */
 const backupFlush = createBackupFlushScheduler<Doc>({
   debounceMs: BACKUP_DEBOUNCE_MS,
   active: () => tabs.active,
   activeContent: () => editor.content(),
-  flush: (doc, content) => flushBackup(doc, content).then(persistSession),
+  flush: (doc, content) =>
+    backups.flush(doc, content).then((ok) => {
+      if (ok) persistSession();
+    }),
 });
 
 function updateWindowTitle(): void {
@@ -1428,13 +1428,13 @@ async function fetchAndApplyReload(doc: Doc): Promise<void> {
  * itself an unguarded await gap, unlike fetchAndApplyReload/
  * fetchAndApplyReopen's own openDocument call just above (issue #159): a
  * same-tab edit or a tab close landing between the discard-confirm
- * resolving and this call resolving was applied (or dropBackup'd)
+ * resolving and this call resolving was applied (or backups.drop'd)
  * unconditionally. Same capture-before-IPC / validate-after-IPC shape as
  * those two, reused here instead of re-derived a third and fourth time.
  *
  * "closed": the tab closed while this fetch was in flight — discard
  * outright, same as fetchAndApplyReload/fetchAndApplyReopen's own "closed".
- * No mutation of the detached doc, no dropBackup.
+ * No mutation of the detached doc, no backups.drop.
  *
  * "edited": the user typed again after already consenting to discard once.
  * Applying this fetch's result would silently discard THOSE keystrokes with
@@ -1614,7 +1614,7 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
   // launch's orphan recovery resurrect that discarded content as a
   // spurious dirty tab (issue #115). dropBackup no-ops when there is
   // nothing to drop.
-  dropBackup(doc);
+  backups.drop(doc);
   // A fresh baseline unrelated to whatever a still-in-flight saveFlow
   // snapshotted before this reload — draws a new value from the shared
   // sequence rather than resetting to a fixed 0 (issue #112).
@@ -1944,7 +1944,7 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     // covering the newer, still-unsaved edits (issue #112) — no retry, no
     // dialog; the next explicit Save naturally writes the newer content.
     if (completion.clearDirty) doc.dirty = false;
-    if (completion.dropBackup) dropBackup(doc);
+    if (completion.dropBackup) backups.drop(doc);
     // Mixed line endings are written out as LF by the core.
     if (doc.lineEnding === "Mixed") doc.lineEnding = "LF";
     tabs.render();
@@ -2106,7 +2106,7 @@ function applyOpenedForReopen(doc: Doc, opened: OpenedDocument): void {
   // point the user either wasn't dirty or explicitly confirmed discarding
   // (initially, or again via reevaluateReopen), so the buffer's previous
   // content — and whatever backup covered it — is gone for good.
-  dropBackup(doc);
+  backups.drop(doc);
   // Same fresh-baseline reasoning as reloadFromDisk (issue #112).
   doc.revision = nextRevision++;
   doc.fingerprint = opened.fingerprint;
@@ -2650,7 +2650,7 @@ async function closeTab(id: number): Promise<void> {
     }
   }
   if (doc.path) void unwatchFile(doc.path).catch(() => {});
-  dropBackup(doc);
+  backups.drop(doc);
   const wasActive = id === tabs.activeId;
   // Record for File > Reopen Closed Tab now that the close is definitely
   // going through (both cancel paths returned above). recordClosedTab
@@ -2665,6 +2665,9 @@ async function closeTab(id: number): Promise<void> {
   );
   syncReopenClosedTabState();
   tabs.close(id);
+  // The tab is gone for good — release its backup-pipeline queue/epoch
+  // state. Ops already queued (the drop's delete above) still settle.
+  backups.forget(doc.id);
   if (tabs.docs.length === 0) tabs.add(makeUntitled());
   if (wasActive) showActive();
   else tabs.render();
@@ -3249,7 +3252,7 @@ void getCurrentWindow().onCloseRequested(async (event) => {
     if (!doc.dirty || doc.truncated) continue;
     const content =
       doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
-    if (!(await flushBackup(doc, content))) failedTitles.push(doc.title);
+    if (!(await backups.flush(doc, content))) failedTitles.push(doc.title);
   }
   if (failedTitles.length > 0) {
     event.preventDefault();
