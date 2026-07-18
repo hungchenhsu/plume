@@ -3092,6 +3092,9 @@ function dispatchMenuCommand(id: string): void {
         encoding: doc.encoding,
         withBom: doc.withBom,
         lineEnding: doc.lineEnding,
+        // The same hint openDocument got (issue #255) — see
+        // showDocumentInfo's doc comment.
+        extensionEncoding: doc.path ? extensionHint(doc.path) : undefined,
         textStats: doc.truncated ? null : textStatsOf(editor.snapshot()),
       });
       break;

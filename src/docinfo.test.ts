@@ -1,5 +1,28 @@
-import { describe, expect, it } from "vitest";
-import { buildDocumentInfoDialogContent, formatDateTime, type DocInfoFetch } from "./docinfo";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const documentMetadata = vi.fn();
+const explainDetection = vi.fn();
+const lineEndingDistribution = vi.fn();
+// vi.mock calls are hoisted above the static imports by vitest, so ./ipc
+// is already mocked by the time ./docinfo is evaluated — same pattern as
+// backup.test.ts. Only showDocumentInfo's own describe block below uses
+// these; every buildDocumentInfoDialogContent test feeds pre-resolved
+// DocInfoFetch objects and never touches IPC.
+vi.mock("./ipc", () => ({
+  documentMetadata: (...a: unknown[]) =>
+    (documentMetadata as (...x: unknown[]) => unknown)(...a),
+  explainDetection: (...a: unknown[]) =>
+    (explainDetection as (...x: unknown[]) => unknown)(...a),
+  lineEndingDistribution: (...a: unknown[]) =>
+    (lineEndingDistribution as (...x: unknown[]) => unknown)(...a),
+}));
+
+import {
+  buildDocumentInfoDialogContent,
+  formatDateTime,
+  showDocumentInfo,
+  type DocInfoFetch,
+} from "./docinfo";
 import type { DetectionExplanation, DocumentMetadata, LineEndingDistribution } from "./ipc";
 
 const okMetadata: DocInfoFetch<DocumentMetadata> = {
@@ -232,5 +255,61 @@ describe("formatDateTime", () => {
 
   it("does not throw for a negative (pre-epoch) offset and still returns a string", () => {
     expect(formatDateTime(-3_600_000)).toBe(new Date(-3_600_000).toLocaleString());
+  });
+});
+
+// Issue #255: openDocument chose this document's encoding using the
+// per-extension hint (main.ts's extensionHint), and detectcard.ts's Why
+// Encoding? card forwards the same hint to explain_detection so the
+// diagnostics describe the detection that actually ran. Document Info
+// dropped the hint, silently re-running detection with different inputs —
+// its evidence could then contradict the status bar's for the same file
+// (spurious manual-override note, different would-choose verdict). These
+// pin the caller-to-IPC contract.
+describe("showDocumentInfo — explainDetection hint contract (issue #255)", () => {
+  function openInfo(extensionEncoding?: string): void {
+    documentMetadata.mockResolvedValue({
+      size: 2048,
+      modifiedMs: 1_700_000_000_000,
+    });
+    explainDetection.mockResolvedValue(cleanDetection);
+    lineEndingDistribution.mockResolvedValue({
+      lf: 10,
+      crlf: 0,
+      cr: 0,
+      scannedBytes: 2048,
+      totalSize: 2048,
+    });
+    showDocumentInfo({
+      path: "/home/user/notes.txt",
+      title: "notes.txt",
+      encoding: "UTF-8",
+      withBom: false,
+      lineEnding: "LF",
+      extensionEncoding,
+      textStats: null,
+    });
+  }
+
+  afterEach(async () => {
+    // Let the Promise.all render settle, close the dialog (so the next
+    // test's already-open guard doesn't trip), and drop the keydown
+    // listener the dialog registered.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.body.innerHTML = "";
+    documentMetadata.mockReset();
+    explainDetection.mockReset();
+    lineEndingDistribution.mockReset();
+  });
+
+  it("forwards the caller's per-extension hint — the same one openDocument used", () => {
+    openInfo("Big5");
+    expect(explainDetection).toHaveBeenCalledWith("/home/user/notes.txt", "Big5");
+  });
+
+  it("passes no hint when the caller has none for this extension", () => {
+    openInfo(undefined);
+    expect(explainDetection).toHaveBeenCalledWith("/home/user/notes.txt", undefined);
   });
 });
