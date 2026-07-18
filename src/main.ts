@@ -71,6 +71,7 @@ import {
 } from "./asyncguard";
 import { dropBackup } from "./backup";
 import { createBackupFlushScheduler } from "./backupflush";
+import { createOpQueue } from "./opqueue";
 import { showBatchConvert } from "./batchconvert";
 import {
   nextBookmark,
@@ -1131,17 +1132,29 @@ function previousBookmarkFlow(): void {
   jumpToBookmark(doc, previousBookmark(doc.bookmarks, current));
 }
 
-/** Cached recent-files list, refreshed by the backend on every addition. */
+/** Cached recent-files list, refreshed by the backend on every addition.
+ *  Only ever updated from a response whose write reached disk (the
+ *  backend commands are Result-returning since issue #252), so the cache
+ *  never claims a list the next launch won't see. */
 let recentFiles: string[] = [];
 
+/** Serializes the recent-list IPC pair (add/clear). Both are backend
+ *  read-modify-writes over recent.json, and their responses replace
+ *  `recentFiles` wholesale — without ordering, an in-flight add resolving
+ *  after a later Clear writes the pre-clear list back over both the disk
+ *  file and the cache (issue #252). */
+const recentOps = createOpQueue();
+
 function rememberRecent(path: string): void {
-  void addRecentFile(path)
+  void recentOps
+    .enqueue(() => addRecentFile(path))
     .then((list) => {
       recentFiles = list;
       syncClearRecentState();
     })
     .catch(() => {
-      // Best-effort; quick open just shows a slightly stale list.
+      // Best-effort: the write never landed, so the cache keeps its last
+      // disk-confirmed list; quick open just shows a slightly stale one.
     });
 }
 
@@ -1149,13 +1162,20 @@ function rememberRecent(path: string): void {
  *  and the frontend's cached copy together, so a Quick Open opened right
  *  after shows nothing stale and a relaunch doesn't bring the list back. */
 function clearRecent(): void {
-  void clearRecentFiles()
+  void recentOps
+    .enqueue(() => clearRecentFiles())
     .then((list) => {
       recentFiles = list;
       syncClearRecentState();
     })
-    .catch(() => {
-      // Best-effort, same as rememberRecent above.
+    .catch(async (error) => {
+      // Unlike rememberRecent's silent catch, a failed clear must be
+      // said out loud: the user explicitly asked for it, and a list that
+      // silently survives on disk resurrects on the next launch.
+      await messageDialog(String(error), {
+        title: t("dialog.clearRecentFailedTitle"),
+        kind: "error",
+      });
     });
 }
 
