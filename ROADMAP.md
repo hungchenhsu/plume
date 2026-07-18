@@ -59,7 +59,7 @@ the good-first-issue surface.
   revision is unchanged; also reconcile the backup flush already
   scheduled for the rolled-back state (adversarial-review addition)
   [danger]
-- [ ] #254 (remaining half): one consistent-snapshot backend command
+- [x] #254 (remaining half): one consistent-snapshot backend command
   for Document Info — a single Rust command opens the file once and
   derives all three sections (file metadata, detection evidence,
   line-ending distribution) from that one read, replacing the three

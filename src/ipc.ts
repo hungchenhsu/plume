@@ -301,6 +301,64 @@ export function lineEndingDistribution(
   return invoke<LineEndingDistribution>("line_ending_distribution", { path, encoding });
 }
 
+/** One section of a `DocumentInfoSnapshot`: independently "ok" or "error",
+ *  mirroring the Rust core's `SectionOutcome<T>` (src-tauri/src/docinfo.rs)
+ *  — a failure deriving one section never discards data already derived
+ *  for another. Named `*Result`, not `*Section`, to avoid colliding with
+ *  docinfo.ts's own `DocumentInfoSection` (that one is a *rendered UI*
+ *  section — rows/notes — a different concept from this raw IPC outcome). */
+export type DocumentInfoSectionResult<T> =
+  | { status: "ok"; data: T }
+  | { status: "error"; message: string };
+
+/** The line-ending section's three-way counterpart: it alone can also be
+ *  "skipped" for a UTF-16 document (mirrors the Rust core's
+ *  `LineEndingOutcome`) — a deliberate non-attempt, not a failure. */
+export type DocumentInfoLineEndingResult =
+  | DocumentInfoSectionResult<LineEndingDistribution>
+  | { status: "skipped"; reason: "utf16" };
+
+export interface DocumentInfoSnapshot {
+  metadata: DocumentInfoSectionResult<DocumentMetadata>;
+  detection: DocumentInfoSectionResult<DetectionExplanation>;
+  lineEnding: DocumentInfoLineEndingResult;
+}
+
+/**
+ * Single-open, single-`metadata()` snapshot backing the whole Document Info
+ * dialog (issue #254): the Rust core opens `path` once and derives all
+ * three sections below from that one handle, so they can never describe
+ * three different states of a file that changes underneath the dialog
+ * while it's loading — unlike calling `documentMetadata`/`explainDetection`/
+ * `lineEndingDistribution` independently (still exported above/below for
+ * their own callers — `explainDetection` alone is also used by
+ * `detectcard.ts`'s "Why {encoding}?" popup). `docinfo.ts`'s `showDocumentInfo`
+ * is the only caller.
+ *
+ * `extensionEncoding` is the same per-extension hint `explainDetection`
+ * takes (see there); `encoding` is the document's own already-known
+ * encoding (`doc.encoding`), used only to decide the line-ending section's
+ * outcome (`"skipped"` for UTF-16, an `"error"` for an unrecognized label,
+ * otherwise the scan itself) — never re-derived from the file's bytes here.
+ *
+ * A rejected promise here means not even `total_size` could be established
+ * (the file didn't open, or the fstat on it failed) — nothing could be
+ * derived at all, so every section is lost, not just one; see
+ * `document_info_snapshot`'s own doc comment in docinfo.rs for the full
+ * failure-granularity contract past that point.
+ */
+export function documentInfoSnapshot(
+  path: string,
+  extensionEncoding: string | undefined,
+  encoding: string,
+): Promise<DocumentInfoSnapshot> {
+  return invoke<DocumentInfoSnapshot>("document_info_snapshot", {
+    path,
+    extensionEncoding,
+    encoding,
+  });
+}
+
 /**
  * Multi-phase save. Call with `allowLossy: false` first. If the target
  * encoding can't represent some characters, the result comes back with

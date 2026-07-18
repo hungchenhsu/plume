@@ -1,20 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const documentMetadata = vi.fn();
-const explainDetection = vi.fn();
-const lineEndingDistribution = vi.fn();
+const documentInfoSnapshot = vi.fn();
 // vi.mock calls are hoisted above the static imports by vitest, so ./ipc
 // is already mocked by the time ./docinfo is evaluated — same pattern as
-// backup.test.ts. Only showDocumentInfo's own describe block below uses
-// these; every buildDocumentInfoDialogContent test feeds pre-resolved
+// backup.test.ts. Only showDocumentInfo's own describe blocks below use
+// this; every buildDocumentInfoDialogContent test feeds pre-resolved
 // DocInfoFetch objects and never touches IPC.
 vi.mock("./ipc", () => ({
-  documentMetadata: (...a: unknown[]) =>
-    (documentMetadata as (...x: unknown[]) => unknown)(...a),
-  explainDetection: (...a: unknown[]) =>
-    (explainDetection as (...x: unknown[]) => unknown)(...a),
-  lineEndingDistribution: (...a: unknown[]) =>
-    (lineEndingDistribution as (...x: unknown[]) => unknown)(...a),
+  documentInfoSnapshot: (...a: unknown[]) =>
+    (documentInfoSnapshot as (...x: unknown[]) => unknown)(...a),
 }));
 
 import {
@@ -259,6 +253,15 @@ describe("formatDateTime", () => {
   });
 });
 
+const okSnapshot = {
+  metadata: { status: "ok" as const, data: { size: 2048, modifiedMs: 1_700_000_000_000 } },
+  detection: { status: "ok" as const, data: cleanDetection },
+  lineEnding: {
+    status: "ok" as const,
+    data: { lf: 10, crlf: 0, cr: 0, scannedBytes: 2048, totalSize: 2048 },
+  },
+};
+
 // Issue #255: openDocument chose this document's encoding using the
 // per-extension hint (main.ts's extensionHint), and detectcard.ts's Why
 // Encoding? card forwards the same hint to explain_detection so the
@@ -266,21 +269,12 @@ describe("formatDateTime", () => {
 // dropped the hint, silently re-running detection with different inputs —
 // its evidence could then contradict the status bar's for the same file
 // (spurious manual-override note, different would-choose verdict). These
-// pin the caller-to-IPC contract.
-describe("showDocumentInfo — explainDetection hint contract (issue #255)", () => {
+// pin the caller-to-IPC contract — now a single documentInfoSnapshot call
+// (issue #254) rather than three, but the hint-forwarding contract is
+// unchanged.
+describe("showDocumentInfo — documentInfoSnapshot hint contract (issue #255)", () => {
   function openInfo(extensionEncoding?: string): void {
-    documentMetadata.mockResolvedValue({
-      size: 2048,
-      modifiedMs: 1_700_000_000_000,
-    });
-    explainDetection.mockResolvedValue(cleanDetection);
-    lineEndingDistribution.mockResolvedValue({
-      lf: 10,
-      crlf: 0,
-      cr: 0,
-      scannedBytes: 2048,
-      totalSize: 2048,
-    });
+    documentInfoSnapshot.mockResolvedValue(okSnapshot);
     showDocumentInfo({
       path: "/home/user/notes.txt",
       title: "notes.txt",
@@ -294,25 +288,109 @@ describe("showDocumentInfo — explainDetection hint contract (issue #255)", () 
   }
 
   afterEach(async () => {
-    // Let the Promise.all render settle, close the dialog (so the next
+    // Let the snapshot promise settle, close the dialog (so the next
     // test's already-open guard doesn't trip), and drop the keydown
     // listener the dialog registered.
     await new Promise((resolve) => setTimeout(resolve, 0));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     document.body.innerHTML = "";
-    documentMetadata.mockReset();
-    explainDetection.mockReset();
-    lineEndingDistribution.mockReset();
+    documentInfoSnapshot.mockReset();
   });
 
   it("forwards the caller's per-extension hint — the same one openDocument used", () => {
     openInfo("Big5");
-    expect(explainDetection).toHaveBeenCalledWith("/home/user/notes.txt", "Big5");
+    expect(documentInfoSnapshot).toHaveBeenCalledWith("/home/user/notes.txt", "Big5", "UTF-8");
   });
 
   it("passes no hint when the caller has none for this extension", () => {
     openInfo(undefined);
-    expect(explainDetection).toHaveBeenCalledWith("/home/user/notes.txt", undefined);
+    expect(documentInfoSnapshot).toHaveBeenCalledWith(
+      "/home/user/notes.txt",
+      undefined,
+      "UTF-8",
+    );
+  });
+});
+
+// Issue #254: documentInfoSnapshot bundles all three sections into one IPC
+// round trip, so this module's adapter (sectionToFetch, and the inline
+// mapping in showDocumentInfo) is now responsible for the per-section
+// degrade the three-separate-calls design used to get for free from
+// Promise.all. These drive the adapter end to end (through the rendered
+// DOM, not just buildDocumentInfoDialogContent's pure mapping, which is
+// already covered above) to prove it actually wires the Rust core's
+// SectionOutcome shapes into the right per-section notes.
+describe("showDocumentInfo — single-snapshot per-section degrade (issue #254)", () => {
+  afterEach(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    document.body.innerHTML = "";
+    documentInfoSnapshot.mockReset();
+  });
+
+  function notesText(): string[] {
+    return Array.from(document.querySelectorAll(".docinfo-note")).map(
+      (node) => node.textContent ?? "",
+    );
+  }
+
+  it("shows only the encoding section's error note when detection alone fails", async () => {
+    documentInfoSnapshot.mockResolvedValue({
+      ...okSnapshot,
+      detection: { status: "error", message: "sample read failed" },
+    });
+    showDocumentInfo({
+      path: "/home/user/notes.txt",
+      title: "notes.txt",
+      encoding: "UTF-8",
+      withBom: false,
+      lineEnding: "LF",
+      dirty: false,
+      textStats: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notesText()).toEqual(["Couldn't load this information: sample read failed"]);
+  });
+
+  it("maps a skipped (UTF-16) line-ending section to the UTF-16 note, leaving other sections intact", async () => {
+    documentInfoSnapshot.mockResolvedValue({
+      ...okSnapshot,
+      // wouldChoose agrees with the doc's own UTF-16LE encoding so the
+      // encoding section's unrelated manual-override note (tested
+      // separately above) doesn't also fire here.
+      detection: { status: "ok", data: { ...cleanDetection, wouldChoose: "UTF-16LE (bom)" } },
+      lineEnding: { status: "skipped", reason: "utf16" },
+    });
+    showDocumentInfo({
+      path: "/home/user/notes.txt",
+      title: "notes.txt",
+      encoding: "UTF-16LE",
+      withBom: false,
+      lineEnding: "CRLF",
+      dirty: false,
+      textStats: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notesText()).toEqual(["Line-ending distribution isn't available for UTF-16 files."]);
+  });
+
+  it("shows an error note in all three sections when the snapshot call itself rejects", async () => {
+    documentInfoSnapshot.mockRejectedValue(new Error("file gone"));
+    showDocumentInfo({
+      path: "/home/user/notes.txt",
+      title: "notes.txt",
+      encoding: "UTF-8",
+      withBom: false,
+      lineEnding: "LF",
+      dirty: false,
+      textStats: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notesText()).toEqual([
+      "Couldn't load this information: Error: file gone",
+      "Couldn't load this information: Error: file gone",
+      "Couldn't load this information: Error: file gone",
+    ]);
   });
 });
 

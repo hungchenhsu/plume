@@ -32,20 +32,29 @@
 // `explain_detection`'s own callers already make.
 //
 // Each of the three IPC-backed sections (file metadata, encoding evidence,
-// line-ending distribution) is independently resilient: one call failing
-// (the file was deleted, permissions changed, whatever) shows an inline
-// error note in place of just that section rather than blanking the whole
-// dialog or leaving it silently incomplete (CLAUDE.md's decode-error-
-// surfacing discipline, generalized here to every fact this dialog shows).
+// line-ending distribution) is independently resilient: one failing (the
+// file was deleted, permissions changed, whatever) shows an inline error
+// note in place of just that section rather than blanking the whole dialog
+// or leaving it silently incomplete (CLAUDE.md's decode-error-surfacing
+// discipline, generalized here to every fact this dialog shows). Issue
+// #254: all three now come from one `documentInfoSnapshot` IPC round trip
+// (backed by a single Rust-side `File::open` + `metadata()`) instead of
+// three independent calls each doing its own open/stat — so the three can
+// no longer describe three different moments of a file that changes
+// underneath the dialog while it's loading. Per-section resilience still
+// holds past that: the snapshot's `metadata`/`detection`/`lineEnding`
+// fields are each independently "ok"/"error" (`lineEnding` additionally
+// "skipped" for UTF-16), adapted below into this module's own `DocInfoFetch`
+// shape, which predates the merge and is unaffected by it (still shared with
+// the untitled-tab "skipped: untitled" case, which has no IPC call at all).
 import { t } from "./i18n";
 import { formatDetectionEvidence } from "./detectcard";
 import { formatSize } from "./statusbar";
 import type { TextStats } from "./textstats";
 import {
-  documentMetadata,
-  explainDetection,
-  lineEndingDistribution,
+  documentInfoSnapshot,
   type DetectionExplanation,
+  type DocumentInfoSectionResult,
   type DocumentMetadata,
   type LineEndingDistribution,
 } from "./ipc";
@@ -293,23 +302,27 @@ function renderDialog(dialog: HTMLElement, content: DocumentInfoDialogContent, o
   close.focus();
 }
 
-/** Adapt a settled IPC promise into a `DocInfoFetch`, never letting a
- *  rejection propagate past this module — every section renders
- *  independently regardless of which of the three calls (if any) failed. */
-function fetchOrError<T>(promise: Promise<T>): Promise<DocInfoFetch<T>> {
-  return promise.then(
-    (data): DocInfoFetch<T> => ({ status: "ok", data }),
-    (reason): DocInfoFetch<T> => ({ status: "error", message: String(reason) }),
-  );
+/** Narrow one section of a `documentInfoSnapshot` response (ipc.ts's
+ *  `DocumentInfoSectionResult<T>`, "ok" | "error") into this module's own
+ *  `DocInfoFetch<T>` — a strict subset of it missing only the "skipped"
+ *  variant, which `sectionToFetch` itself never needs to produce: the
+ *  untitled-tab case is decided before any IPC call is made at all (see
+ *  `showDocumentInfo` below), and the line-ending section's own "skipped"
+ *  (UTF-16) case is handled separately where it's read, since `ipc.ts`'s
+ *  `DocumentInfoLineEndingResult` isn't a `DocumentInfoSectionResult<T>`
+ *  itself. */
+function sectionToFetch<T>(section: DocumentInfoSectionResult<T>): DocInfoFetch<T> {
+  return section.status === "ok"
+    ? { status: "ok", data: section.data }
+    : { status: "error", message: section.message };
 }
 
 /**
  * Open the read-only Document Info dialog for the active document. Fires
- * every IPC call in parallel (independent of one another — one failing
- * must not blank out the rest) and renders once all have settled; see the
- * module doc comment for the untitled-tab and error-handling design. Only
- * one instance can be open at a time (mirrors detectcard.ts's `.detectcard-
- * panel` already-open guard).
+ * one `documentInfoSnapshot` IPC round trip (issue #254) and renders once
+ * it settles; see the module doc comment for the untitled-tab and
+ * error-handling design. Only one instance can be open at a time (mirrors
+ * detectcard.ts's `.detectcard-panel` already-open guard).
  *
  * `textStats` is precomputed by the caller (main.ts) — this module
  * deliberately never reaches into editor.ts itself, matching every other
@@ -319,10 +332,10 @@ function fetchOrError<T>(promise: Promise<T>): Promise<DocInfoFetch<T>> {
  *
  * `extensionEncoding` is the same per-extension hint `openDocument` got
  * for this path (main.ts's `extensionHint`), forwarded to
- * `explainDetection` so the dialog explains the detection that actually
+ * `documentInfoSnapshot` so the dialog explains the detection that actually
  * ran — omitting it re-runs detection with different inputs and can show
  * a different verdict/provenance than the one that chose the document's
- * encoding (issue #255; ipc.ts's `explainDetection` doc comment and
+ * encoding (issue #255; ipc.ts's `documentInfoSnapshot` doc comment and
  * detectcard.ts's Why Encoding? card follow the same contract).
  */
 export function showDocumentInfo(doc: {
@@ -359,38 +372,60 @@ export function showDocumentInfo(doc: {
   };
   document.addEventListener("keydown", onKey, true);
 
-  const isUtf16 = doc.encoding.startsWith("UTF-16");
-  const metadataFetch: Promise<DocInfoFetch<DocumentMetadata>> =
-    doc.path === null
-      ? Promise.resolve({ status: "skipped", reason: "untitled" })
-      : fetchOrError(documentMetadata(doc.path));
-  const detectionFetch: Promise<DocInfoFetch<DetectionExplanation>> =
-    doc.path === null
-      ? Promise.resolve({ status: "skipped", reason: "untitled" })
-      : fetchOrError(explainDetection(doc.path, doc.extensionEncoding));
-  const lineEndingFetch: Promise<DocInfoFetch<LineEndingDistribution>> =
-    doc.path === null
-      ? Promise.resolve({ status: "skipped", reason: "untitled" })
-      : isUtf16
-        ? Promise.resolve({ status: "skipped", reason: "utf16" })
-        : fetchOrError(lineEndingDistribution(doc.path, doc.encoding));
+  interface Resolved {
+    metadata: DocInfoFetch<DocumentMetadata>;
+    detection: DocInfoFetch<DetectionExplanation>;
+    lineEndingDist: DocInfoFetch<LineEndingDistribution>;
+  }
 
-  void Promise.all([metadataFetch, detectionFetch, lineEndingFetch]).then(
-    ([metadata, detection, lineEndingDist]) => {
-      if (!document.body.contains(overlay)) return; // closed while loading
-      const content = buildDocumentInfoDialogContent({
-        path: doc.path,
-        title: doc.title,
-        encoding: doc.encoding,
-        withBom: doc.withBom,
-        lineEnding: doc.lineEnding,
-        dirty: doc.dirty,
-        metadata,
-        detection,
-        lineEndingDist,
-        textStats: doc.textStats,
-      });
-      renderDialog(dialog, content, finish);
-    },
-  );
+  // Untitled tabs have no path to snapshot — decided here, before any IPC
+  // call, exactly as before the merge (documentInfoSnapshot is never
+  // invoked at all in this case, not called-and-ignored).
+  const resolvedFetch: Promise<Resolved> =
+    doc.path === null
+      ? Promise.resolve({
+          metadata: { status: "skipped", reason: "untitled" },
+          detection: { status: "skipped", reason: "untitled" },
+          lineEndingDist: { status: "skipped", reason: "untitled" },
+        })
+      : documentInfoSnapshot(doc.path, doc.extensionEncoding, doc.encoding).then(
+          (snapshot): Resolved => ({
+            metadata: sectionToFetch(snapshot.metadata),
+            detection: sectionToFetch(snapshot.detection),
+            lineEndingDist:
+              snapshot.lineEnding.status === "skipped"
+                ? { status: "skipped", reason: "utf16" }
+                : sectionToFetch(snapshot.lineEnding),
+          }),
+          (reason: unknown): Resolved => {
+            // The snapshot call itself rejected: not even total_size could
+            // be established (the file didn't open, or its fstat failed),
+            // so nothing could be derived for *any* section — every
+            // section shows the same load error rather than only one
+            // (docinfo.rs's `document_info_snapshot` doc comment).
+            const message = String(reason);
+            return {
+              metadata: { status: "error", message },
+              detection: { status: "error", message },
+              lineEndingDist: { status: "error", message },
+            };
+          },
+        );
+
+  void resolvedFetch.then(({ metadata, detection, lineEndingDist }) => {
+    if (!document.body.contains(overlay)) return; // closed while loading
+    const content = buildDocumentInfoDialogContent({
+      path: doc.path,
+      title: doc.title,
+      encoding: doc.encoding,
+      withBom: doc.withBom,
+      lineEnding: doc.lineEnding,
+      dirty: doc.dirty,
+      metadata,
+      detection,
+      lineEndingDist,
+      textStats: doc.textStats,
+    });
+    renderDialog(dialog, content, finish);
+  });
 }
