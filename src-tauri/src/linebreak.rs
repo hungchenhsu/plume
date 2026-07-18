@@ -243,6 +243,22 @@ pub(crate) fn is_line_start(prev: u8, at: Option<u8>) -> bool {
     prev == b'\n' || (prev == b'\r' && at != Some(b'\n'))
 }
 
+/// Whether `encoding`'s label names UTF-16 (LE or BE) — the one case
+/// [`scan_line_breaks`]'s byte-level scan is unsound for (module doc
+/// comment above). `false` both for every other recognized label *and*
+/// for an unrecognized one — a caller that needs to tell "valid,
+/// non-UTF-16" apart from "not a real encoding label at all" still needs
+/// [`reject_utf16`] for that. Split out for `docinfo.rs`'s
+/// `document_info_snapshot` (issue #254), which routes a UTF-16 document
+/// to a "skipped" outcome distinct from the "error" `reject_utf16` alone
+/// would report for both cases alike.
+pub(crate) fn is_utf16_label(encoding: &str) -> bool {
+    matches!(
+        encoding_rs::Encoding::for_label(encoding.as_bytes()),
+        Some(enc) if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE
+    )
+}
+
 /// Reject a raw byte-level scan over `encoding`'s on-disk bytes when doing
 /// so would be unsound — this module's own doc comment above explains why
 /// byte scanning is safe for every supported encoding except UTF-16 (LF/CR
@@ -254,9 +270,10 @@ pub(crate) fn is_line_start(prev: u8, at: Option<u8>) -> bool {
 /// than each carrying their own copy of the same check. `context` names the
 /// caller for the error message, e.g. `"Line index"`.
 pub(crate) fn reject_utf16(encoding: &str, context: &str) -> Result<(), String> {
-    let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
-        .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
-    if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+    if encoding_rs::Encoding::for_label(encoding.as_bytes()).is_none() {
+        return Err(format!("Unknown encoding label: {encoding}"));
+    }
+    if is_utf16_label(encoding) {
         return Err(format!("{context} is not supported for UTF-16 files"));
     }
     Ok(())
@@ -453,6 +470,23 @@ mod tests {
             "Line-ending distribution is not supported for UTF-16 files"
         );
         assert!(reject_utf16("not-a-real-encoding", "Test").is_err());
+    }
+
+    /// `is_utf16_label` is `reject_utf16`'s finer-grained sibling
+    /// (`docinfo.rs`'s `document_info_snapshot`, issue #254): it must
+    /// answer `true` only for an actually-UTF-16 label, `false` for both
+    /// "valid, not UTF-16" and "not a real label at all" — the two cases
+    /// `reject_utf16` alone cannot tell apart (both are just `Err`).
+    #[test]
+    fn is_utf16_label_is_true_only_for_utf16_and_false_for_unknown_labels_too() {
+        assert!(is_utf16_label("UTF-16LE"));
+        assert!(is_utf16_label("UTF-16BE"));
+        assert!(!is_utf16_label("UTF-8"));
+        assert!(!is_utf16_label("Big5"));
+        assert!(
+            !is_utf16_label("not-a-real-encoding"),
+            "an unrecognized label is not UTF-16 either — reject_utf16 is still the one that flags it as invalid"
+        );
     }
 
     #[test]

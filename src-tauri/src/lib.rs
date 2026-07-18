@@ -372,7 +372,7 @@ fn open_document(
 /// Diagnostics evidence never touches raw bytes: `bom` is a formatted
 /// description, not the bytes themselves (ARCHITECTURE.md: raw bytes never
 /// cross IPC).
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectionExplanation {
     /// e.g. "UTF-8 BOM (EF BB BF)"; `None` when no BOM was found.
@@ -411,44 +411,57 @@ pub struct DetectionExplanation {
 
 /// Diagnostics sample size: large enough for chardetng to reach a stable
 /// verdict, small enough to never require reading a whole large file just
-/// to explain a detection.
-const EXPLAIN_SAMPLE_BYTES: usize = 64 * 1024;
+/// to explain a detection. `pub(crate)` so `docinfo.rs`'s
+/// `document_info_snapshot` (issue #254) can read this exact same bounded
+/// prefix once, off its own single open handle, and reuse it for both the
+/// detection section and the leading portion of its line-ending scan,
+/// rather than re-reading the same leading bytes a second time under a
+/// separate command.
+pub(crate) const EXPLAIN_SAMPLE_BYTES: usize = 64 * 1024;
 
-/// Re-read a bounded prefix of `path` and report the evidence behind the
-/// encoding auto-detection would use, without decoding or returning any
-/// raw bytes. This is a read-only diagnostics command: it never affects
-/// `open_document`'s behavior and reuses `encoding::detect_with_extension`,
-/// the same function `decode_auto_with_extension` (and therefore
-/// `open_document`) calls, so the two can never disagree for files at or
-/// under the sample size — see the `detect_agrees_with_decode_auto_*`
-/// tests in `encoding.rs`. `extension_encoding` is the same advisory hint
-/// the frontend passes to `open_document` (see there).
+/// Read a bounded `EXPLAIN_SAMPLE_BYTES` prefix from `file` (whose read
+/// cursor must already be positioned where the sample should start — every
+/// current caller passes a freshly-opened handle, so that's always offset
+/// 0). Exact for a file at or under `EXPLAIN_SAMPLE_BYTES`, a leading
+/// sample beyond it. The bound is enforced on the disk read itself via
+/// `Read::take`, not by reading the whole file and slicing the sample out
+/// in memory afterward — so this costs `O(EXPLAIN_SAMPLE_BYTES)` I/O
+/// regardless of how large the file actually is (issue #59).
 ///
-/// The bound is enforced on the disk read itself via `Read::take`, not by
-/// reading the whole file and slicing the sample out in memory afterward
-/// — so explaining a detection on a multi-GB file costs
-/// `O(EXPLAIN_SAMPLE_BYTES)` I/O, matching what this comment already
-/// promised (issue #59).
-#[tauri::command]
-fn explain_detection(
-    path: String,
-    extension_encoding: Option<String>,
-) -> Result<DetectionExplanation, String> {
-    let total_size = std::fs::metadata(&path)
-        .map_err(|e| format!("Failed to read {path}: {e}"))?
-        .len();
-    let file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+/// Split out of `explain_detection` so `document_info_snapshot`
+/// (`docinfo.rs`, issue #254) can call it once against its own single open
+/// handle and hand the result to both the detection section and (as the
+/// seed for) the line-ending scan.
+pub(crate) fn read_explain_sample(file: &mut std::fs::File, path: &str) -> Result<Vec<u8>, String> {
     let mut sample = Vec::with_capacity(EXPLAIN_SAMPLE_BYTES);
     file.take(EXPLAIN_SAMPLE_BYTES as u64)
         .read_to_end(&mut sample)
         .map_err(|e| format!("Failed to read {path}: {e}"))?;
-    let sample_len = sample.len();
+    Ok(sample)
+}
 
-    let detection = encoding::detect_with_extension(&sample, extension_encoding.as_deref());
-    Ok(DetectionExplanation {
-        bom: encoding::describe_bom(&sample),
+/// Build the detection evidence (`DetectionExplanation`) from an
+/// already-read `sample` (the file's first `sample.len()` bytes) and the
+/// file's already-known `total_size`. Pure, no I/O — reuses
+/// `encoding::detect_with_extension`, the same function
+/// `decode_auto_with_extension` (and therefore `open_document`) calls, so
+/// this can never disagree with what `open_document` would choose for
+/// files at or under the sample size — see the
+/// `detect_agrees_with_decode_auto_*` tests in `encoding.rs`.
+///
+/// Split out of `explain_detection` so `document_info_snapshot`
+/// (`docinfo.rs`, issue #254) can reuse it against a sample it read from
+/// its own single open handle, instead of a second, independent read.
+pub(crate) fn build_detection_explanation(
+    sample: &[u8],
+    total_size: u64,
+    extension_encoding: Option<&str>,
+) -> DetectionExplanation {
+    let detection = encoding::detect_with_extension(sample, extension_encoding);
+    DetectionExplanation {
+        bom: encoding::describe_bom(sample),
         detector_verdict: detection.detector_guess.name().to_string(),
-        sampled_bytes: sample_len,
+        sampled_bytes: sample.len(),
         total_size,
         would_choose: format!("{} ({})", detection.chosen.name(), detection.reason),
         // Same threshold `open_document` uses to decide whether *it* reads
@@ -459,7 +472,36 @@ fn explain_detection(
         // above is already a fresh read, not something the frontend hands
         // back from the original open.
         large_file_preview: total_size > LARGE_FILE_THRESHOLD,
-    })
+    }
+}
+
+/// Re-read a bounded prefix of `path` and report the evidence behind the
+/// encoding auto-detection would use, without decoding or returning any
+/// raw bytes. This is a read-only diagnostics command: it never affects
+/// `open_document`'s behavior. `extension_encoding` is the same advisory
+/// hint the frontend passes to `open_document` (see there).
+///
+/// Opens the file once and derives `total_size` from an fstat on the
+/// resulting handle (`file.metadata()`), not a second, independent
+/// path-based `std::fs::metadata` call before the open — the same
+/// single-open discipline `document_info_snapshot` (`docinfo.rs`, issue
+/// #254) generalizes to all three Document Info sections at once.
+#[tauri::command]
+fn explain_detection(
+    path: String,
+    extension_encoding: Option<String>,
+) -> Result<DetectionExplanation, String> {
+    let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let total_size = file
+        .metadata()
+        .map_err(|e| format!("Failed to read {path}: {e}"))?
+        .len();
+    let sample = read_explain_sample(&mut file, &path)?;
+    Ok(build_detection_explanation(
+        &sample,
+        total_size,
+        extension_encoding.as_deref(),
+    ))
 }
 
 /// Process-local counter mixed into temporary-file names (alongside a
@@ -716,6 +758,7 @@ pub fn run() {
             explain_detection,
             docinfo::document_metadata,
             docinfo::line_ending_distribution,
+            docinfo::document_info_snapshot,
             save_document,
             bytedrift::check_byte_drift,
             session::load_session,
