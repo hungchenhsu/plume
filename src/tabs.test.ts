@@ -38,6 +38,7 @@ function makeDoc(id: number, path: string | null = null): Doc {
     pendingSaveAs: null,
     speculativeEncoding: null,
     backupName: null,
+    detectionHint: null,
     fingerprint: null,
     byteDriftChecked: false,
     buffer: {} as EditorBuffer,

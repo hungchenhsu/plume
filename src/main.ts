@@ -475,6 +475,7 @@ function makeUntitled(): Doc {
     pendingSaveAs: null,
     speculativeEncoding: null,
     backupName: null,
+    detectionHint: null,
     fingerprint: null,
     byteDriftChecked: false,
     buffer: editor.newBuffer(""),
@@ -607,7 +608,11 @@ function isPristineUntitled(doc: Doc): boolean {
   return doc.path === null && !doc.dirty && isEmptyBuffer(doc.buffer);
 }
 
-function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
+function docFromOpened(
+  opened: OpenedDocument,
+  cursor = 0,
+  detectionHint: string | null = null,
+): Doc {
   void watchFile(opened.path).catch(() => {
     // Watching is best-effort; editing must keep working without it.
   });
@@ -650,6 +655,7 @@ function docFromOpened(opened: OpenedDocument, cursor = 0): Doc {
     pendingSaveAs: null,
     speculativeEncoding: null,
     backupName: null,
+    detectionHint,
     fingerprint: opened.fingerprint,
     byteDriftChecked: false,
     buffer: editor.newBuffer(opened.content, opened.truncated, cursor),
@@ -1697,10 +1703,14 @@ async function openPath(path: string, cursor = 0): Promise<void> {
     return;
   }
   try {
-    const opened = await openDocument(path, undefined, extensionHint(path));
+    // Captured once and stored on the Doc: the diagnostics surfaces must
+    // later explain the detection that ran with *this* hint, not whatever
+    // the preference table says by then (issue #264).
+    const hint = extensionHint(path);
+    const opened = await openDocument(path, undefined, hint);
     stashActive();
     const previous = tabs.active;
-    tabs.add(docFromOpened(opened, cursor));
+    tabs.add(docFromOpened(opened, cursor, hint ?? null));
     if (previous && isPristineUntitled(previous)) tabs.close(previous.id);
     showActive();
     persistSession();
@@ -2298,7 +2308,9 @@ function showEncodingMenu(anchor: HTMLElement): void {
             doc.path,
             doc.title,
             doc.encoding,
-            extensionHint(doc.path),
+            // The open-time hint snapshot, not a fresh recomputation
+            // (issue #264) — see Doc.detectionHint.
+            doc.detectionHint ?? undefined,
           );
         }
       },
@@ -3171,9 +3183,10 @@ function dispatchMenuCommand(id: string): void {
         withBom: doc.withBom,
         lineEnding: doc.lineEnding,
         dirty: doc.dirty,
-        // The same hint openDocument got (issue #255) — see
-        // showDocumentInfo's doc comment.
-        extensionEncoding: doc.path ? extensionHint(doc.path) : undefined,
+        // The open-time hint snapshot — the hint openDocument actually
+        // got (issue #255), not a fresh recomputation that a later
+        // preference edit can desynchronize (issue #264).
+        extensionEncoding: doc.detectionHint ?? undefined,
         textStats: doc.truncated ? null : textStatsOf(editor.snapshot()),
       });
       break;
@@ -3368,6 +3381,7 @@ async function restoreFromBackup(
     pendingSaveAs: null,
     speculativeEncoding: null,
     backupName: file.backup,
+    detectionHint: null,
     // Restored from the hot-exit backup blob, not from a fresh disk read —
     // there is no verified on-disk baseline for this tab's content this
     // session, so the next save must skip the staleness check (issue #113)
@@ -3392,7 +3406,12 @@ async function restoreSession(): Promise<void> {
       if (await restoreFromBackup(file, unreadableBackups)) continue;
       if (file.path) {
         const opened = await openDocument(file.path, file.encoding);
-        const doc = docFromOpened(opened, file.cursor ?? 0);
+        // The hint environment of *this* open action (issue #264): the
+        // restore decodes with the session's explicit encoding, so no
+        // detection ran, but diagnostics still hypothesize "what would
+        // auto-detect choose" — anchor that to restore time, matching
+        // openPath's capture-at-open semantics.
+        const doc = docFromOpened(opened, file.cursor ?? 0, extensionHint(file.path) ?? null);
         // docFromOpened only knows what open_document returned — the
         // user-lock is session-only state layered on afterward, same
         // reasoning as restoreFromBackup's literal above.
@@ -3463,6 +3482,7 @@ async function restoreSession(): Promise<void> {
       pendingSaveAs: null,
       speculativeEncoding: null,
       backupName: name,
+      detectionHint: null,
       // Orphaned backup with no session entry at all — path is always
       // null here, so this is the same "no on-disk baseline yet" case as
       // makeUntitled (issue #113).

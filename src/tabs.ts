@@ -134,6 +134,18 @@ export interface Doc {
   speculativeEncoding: SpeculativeEncoding | null;
   /** Hot-exit backup file name once unsaved content has been flushed. */
   backupName: string | null;
+  /** The per-extension encoding hint in effect when this document was
+   *  opened (main.ts's `extensionHint` at openPath/restoreSession time) —
+   *  the input the opening detection actually ran with. Detection
+   *  diagnostics (Why Encoding?, Document Info) must pass *this* to
+   *  `explainDetection`, never a freshly recomputed hint: the preference
+   *  table can change while the tab stays open, and re-running detection
+   *  with the new hint fabricates evidence — e.g. a spurious
+   *  manual-override note for a document whose encoding the old hint
+   *  chose automatically (issue #264). Null when no hint environment
+   *  applies: an untitled document, or one resurrected from a hot-exit
+   *  backup without a disk re-read. */
+  detectionHint: string | null;
   /** Opaque metadata snapshot of the on-disk file as of the last open,
    *  reload, or successful save (see src-tauri/src/fsguard.rs) — passed
    *  back unexamined as `save_document`'s `expectedFingerprint` so a
