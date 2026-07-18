@@ -707,11 +707,14 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
     // Next targets are the previous chunk's own nextOffset (Prev targets
     // are earlier applied window starts) — continuation points, read
     // exactly as given (#118): realigning could skip bytes mid-overlong-line.
+    // `doc.fingerprint` pins the file version those offsets came from
+    // (issue #251).
     const chunkData = await readDocumentChunk(
       doc.path,
       target,
       doc.encoding,
       "continuation",
+      doc.fingerprint ?? undefined,
     );
     if (
       !shouldApplyChunkResponse({
@@ -720,6 +723,13 @@ async function pageChunk(direction: 1 | -1): Promise<void> {
         isActiveTab: tabs.activeId === doc.id,
       })
     ) {
+      return;
+    }
+    if (chunkData.stale) {
+      // The file changed under the paging offsets (issue #251): route
+      // through the same flow a watcher event uses — a clean (always, for
+      // a read-only preview) doc reloads silently with a fresh window.
+      await handleExternalChange(doc.path);
       return;
     }
     if (direction === 1) {
@@ -791,6 +801,7 @@ async function autoAppendChunk(): Promise<void> {
       loadedAt,
       doc.encoding,
       "continuation",
+      doc.fingerprint ?? undefined,
     );
     // The user may have switched tabs while the chunk was loading, or a
     // newer request/reload/reopen may have superseded this one (#120).
@@ -801,6 +812,11 @@ async function autoAppendChunk(): Promise<void> {
         isActiveTab: tabs.activeId === doc.id,
       })
     ) {
+      if (chunkData.stale) {
+        // See pageChunk's stale branch (issue #251).
+        await handleExternalChange(doc.path);
+        return;
+      }
       editor.appendText(chunkData.content);
       doc.nextChunkOffset = chunkData.nextOffset;
       const trim = pushBack(doc.windowChunks, {
@@ -846,6 +862,7 @@ async function prependChunk(): Promise<void> {
       doc.path,
       windowStart,
       doc.encoding,
+      doc.fingerprint ?? undefined,
     );
     // The user may have switched tabs while the chunk was loading, or a
     // newer request/reload/reopen may have superseded this one (#120).
@@ -856,6 +873,11 @@ async function prependChunk(): Promise<void> {
         isActiveTab: tabs.activeId === doc.id,
       })
     ) {
+      if (chunkData.stale) {
+        // See pageChunk's stale branch (issue #251).
+        await handleExternalChange(doc.path);
+        return;
+      }
       editor.prependText(chunkData.content);
       doc.chunkOffset = chunkData.offset;
       const trim = pushFront(doc.windowChunks, {
@@ -906,7 +928,18 @@ async function prependChunk(): Promise<void> {
  */
 async function ensureLineIndex(doc: Doc, myGeneration: number): Promise<LineIndex | null> {
   if (!doc.path) return null;
-  if (doc.lineIndex && doc.lineIndex.indexedSize === doc.totalSize) {
+  // Reuse only an index that still describes this doc's file version:
+  // size alone misses a same-size overwrite, so the index's own
+  // fingerprint must also match the doc's (issue #251) — e.g. a reload
+  // that re-opened the file leaves doc.fingerprint fresh and any older
+  // index behind. The Rust core re-validates against the live file on
+  // every locate/read anyway; this check just skips IPC round trips that
+  // are already known to come back stale.
+  if (
+    doc.lineIndex &&
+    doc.lineIndex.indexedSize === doc.totalSize &&
+    fingerprintsEqual(doc.lineIndex.fingerprint, doc.fingerprint)
+  ) {
     return doc.lineIndex;
   }
   setIndexing(true);
@@ -977,10 +1010,29 @@ async function gotoLargeFileLine(
     if (!index || index.totalLines === 0) return;
     const target0 = clampLine(targetLine1 - 1, index.totalLines);
     const checkpoint = selectCheckpoint(index.checkpoints, target0);
-    const offset =
-      target0 === checkpoint.line
-        ? checkpoint.offset
-        : await locateLineOffset(doc.path, target0, checkpoint.offset, checkpoint.line);
+    // Both the checkpoint walk and the chunk read below carry the
+    // *index's* fingerprint — these offsets describe the file version the
+    // index scanned, not necessarily the one the doc was opened from —
+    // so a same-size overwrite the size checks can't see still comes
+    // back as stale instead of as the wrong line (issue #251).
+    let offset = checkpoint.offset;
+    if (target0 !== checkpoint.line) {
+      const located = await locateLineOffset(
+        doc.path,
+        target0,
+        checkpoint.offset,
+        checkpoint.line,
+        index.fingerprint ?? undefined,
+      );
+      if (located.stale) {
+        if (doc.chunkGeneration === myGeneration) {
+          doc.lineIndex = null;
+          await handleExternalChange(doc.path);
+        }
+        return;
+      }
+      offset = located.offset;
+    }
     // "lineStart": the offset rides on the line index, which can be
     // stale (see ensureLineIndex above) — the Rust core verifies it and
     // realigns to the next real line start if it isn't one (#118).
@@ -989,6 +1041,7 @@ async function gotoLargeFileLine(
       offset,
       doc.encoding,
       "lineStart",
+      index.fingerprint ?? undefined,
     );
     if (
       !shouldApplyChunkResponse({
@@ -997,6 +1050,11 @@ async function gotoLargeFileLine(
         isActiveTab: tabs.activeId === doc.id,
       })
     ) {
+      return;
+    }
+    if (chunkData.stale) {
+      doc.lineIndex = null;
+      await handleExternalChange(doc.path);
       return;
     }
     doc.chunkOffset = chunkData.offset;

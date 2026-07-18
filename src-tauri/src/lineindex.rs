@@ -52,6 +52,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use serde::Serialize;
 
+use crate::fsguard::Fingerprint;
 use crate::linebreak::{reject_utf16, scan_line_breaks};
 
 /// Streaming read granularity, matching `streamreplace.rs`'s rationale:
@@ -75,6 +76,13 @@ pub struct LineIndexReport {
     /// File size at the moment the index was built, so the frontend can
     /// detect a stale index (the file changed size since) and rebuild.
     pub indexed_size: u64,
+    /// Fingerprint of the exact file version the checkpoints describe
+    /// (issue #251) — the frontend passes it back as `locate_line_offset`
+    /// / `read_document_chunk`'s `expected`, so a same-size overwrite the
+    /// size check above can't see still gets caught before a stale
+    /// checkpoint is dereferenced. `None` only if the fingerprint could
+    /// not be captured; consumers then degrade to the size check alone.
+    pub fingerprint: Option<Fingerprint>,
 }
 
 /// Fill `buf` as full as possible from `file`, short-reading only at EOF.
@@ -102,10 +110,13 @@ pub fn build_line_index(path: String, encoding: String) -> Result<LineIndexRepor
     reject_utf16(&encoding, "Line index")?;
 
     let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    let indexed_size = file
+    let meta = file
         .metadata()
-        .map_err(|e| format!("Failed to read {path}: {e}"))?
-        .len();
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let indexed_size = meta.len();
+    // Tied to the open handle's own metadata, same as the scan below —
+    // never a re-stat of the path, which could describe a different file.
+    let fingerprint = Fingerprint::from_metadata(&meta).ok();
 
     let mut checkpoints = Vec::new();
     if indexed_size > 0 {
@@ -165,7 +176,21 @@ pub fn build_line_index(path: String, encoding: String) -> Result<LineIndexRepor
         checkpoints,
         total_lines,
         indexed_size,
+        fingerprint,
     })
+}
+
+/// A resolved line offset, or the discovery that the index it came from
+/// no longer describes the file (issue #251). Same structured-staleness
+/// shape as `chunk.rs`'s `DocumentChunk.stale` / `save_document`'s
+/// `SaveResult.stale`: the frontend branches on a field, never on an
+/// error string.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocatedOffset {
+    /// Meaningless (echoes `from_offset`) when `stale` is true.
+    pub offset: u64,
+    pub stale: bool,
 }
 
 /// Resolve the byte offset of `target_line`'s first byte by streaming from
@@ -177,28 +202,52 @@ pub fn build_line_index(path: String, encoding: String) -> Result<LineIndexRepor
 /// `target_line` clamps to the last line's start instead of erroring —
 /// asking to go to line 50,000,000 of a 10,000-line file is a normal user
 /// typo, not a failure worth interrupting them over.
+///
+/// `expected` is the fingerprint of the index snapshot `from_offset` came
+/// from (`LineIndexReport::fingerprint`); when given and no longer
+/// matching the file — including a same-size overwrite the frontend's
+/// size check cannot see — the walk is refused as stale instead of
+/// resolving line numbers against a byte topology that no longer exists.
 #[tauri::command]
 pub fn locate_line_offset(
     path: String,
     target_line: u64,
     from_offset: u64,
     from_line: u64,
-) -> Result<u64, String> {
+    expected: Option<Fingerprint>,
+) -> Result<LocatedOffset, String> {
     if target_line < from_line {
         return Err(format!(
             "target_line {target_line} precedes from_line {from_line}; \
              the caller must pick a checkpoint at or before the target"
         ));
     }
-    if target_line == from_line {
-        return Ok(from_offset);
-    }
 
     let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    let total_size = file
+    let meta = file
         .metadata()
-        .map_err(|e| format!("Failed to read {path}: {e}"))?
-        .len();
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let total_size = meta.len();
+    if let Some(expected) = &expected {
+        // Fail-closed, mirroring chunk.rs's `is_stale`: an unreadable
+        // mtime counts as a mismatch.
+        let matches = Fingerprint::from_metadata(&meta).is_ok_and(|actual| actual == *expected);
+        if !matches {
+            return Ok(LocatedOffset {
+                offset: from_offset,
+                stale: true,
+            });
+        }
+    }
+    if target_line == from_line {
+        // Verified above (when a fingerprint was given) even though no
+        // scan is needed — a direct checkpoint hit on a stale index must
+        // not slip through just because it required no walking.
+        return Ok(LocatedOffset {
+            offset: from_offset,
+            stale: false,
+        });
+    }
     file.seek(SeekFrom::Start(from_offset))
         .map_err(|e| format!("Failed to read {path}: {e}"))?;
 
@@ -233,7 +282,10 @@ pub fn locate_line_offset(
             }
         });
         if let Some(line_start) = found {
-            return Ok(line_start);
+            return Ok(LocatedOffset {
+                offset: line_start,
+                stale: false,
+            });
         }
         offset += n as u64;
         if n < buf.len() {
@@ -247,7 +299,10 @@ pub fn locate_line_offset(
     // change `last_line_start` or the clamp result below.
     //
     // EOF (or a target beyond the last line) without a match: clamp.
-    Ok(last_line_start)
+    Ok(LocatedOffset {
+        offset: last_line_start,
+        stale: false,
+    })
 }
 
 #[cfg(test)]
@@ -339,10 +394,17 @@ mod tests {
         let path_str = path.to_string_lossy().into_owned();
 
         // target_line == from_line: returns from_offset without scanning.
-        assert_eq!(locate_line_offset(path_str.clone(), 0, 0, 0).unwrap(), 0);
+        assert_eq!(
+            locate_line_offset(path_str.clone(), 0, 0, 0, None)
+                .unwrap()
+                .offset,
+            0
+        );
 
         // From the checkpoint at line 1024 (offset 1024*13), find line 1500.
-        let offset = locate_line_offset(path_str.clone(), 1500, 1024 * 13, 1024).unwrap();
+        let offset = locate_line_offset(path_str.clone(), 1500, 1024 * 13, 1024, None)
+            .unwrap()
+            .offset;
         assert_eq!(offset, 1500 * 13);
         std::fs::remove_file(&path).ok();
 
@@ -352,14 +414,16 @@ mod tests {
         let crlf_content = fixed_width_crlf_lines(3000);
         let crlf_path = write_temp("plume-lineindex-crlf.txt", &crlf_content);
         let crlf_offset =
-            locate_line_offset(crlf_path.to_string_lossy().into_owned(), 2500, 0, 0).unwrap();
+            locate_line_offset(crlf_path.to_string_lossy().into_owned(), 2500, 0, 0, None)
+                .unwrap()
+                .offset;
         assert_eq!(crlf_offset, 2500 * 14);
         std::fs::remove_file(&crlf_path).ok();
     }
 
     #[test]
     fn locate_line_offset_rejects_target_before_from() {
-        let result = locate_line_offset("/tmp/whatever.txt".into(), 5, 1300, 100);
+        let result = locate_line_offset("/tmp/whatever.txt".into(), 5, 1300, 100, None);
         assert!(result.is_err());
     }
 
@@ -369,7 +433,9 @@ mod tests {
         let path = write_temp("plume-lineindex-clamp.txt", &content);
         let path_str = path.to_string_lossy().into_owned();
 
-        let offset = locate_line_offset(path_str, 999_999, 0, 0).unwrap();
+        let offset = locate_line_offset(path_str, 999_999, 0, 0, None)
+            .unwrap()
+            .offset;
         assert_eq!(
             offset,
             9 * 13,
@@ -448,7 +514,9 @@ mod tests {
         let path = write_temp("plume-lineindex-cronly-locate.txt", &content);
         let path_str = path.to_string_lossy().into_owned();
 
-        let offset = locate_line_offset(path_str, 2500, 0, 0).unwrap();
+        let offset = locate_line_offset(path_str, 2500, 0, 0, None)
+            .unwrap()
+            .offset;
         assert_eq!(offset, 2500 * 13);
         std::fs::remove_file(&path).ok();
     }
@@ -485,9 +553,24 @@ mod tests {
         assert_eq!(report.total_lines, 4);
         assert_eq!(report.indexed_size, content.len() as u64);
 
-        assert_eq!(locate_line_offset(path_str.clone(), 1, 0, 0).unwrap(), 4);
-        assert_eq!(locate_line_offset(path_str.clone(), 2, 0, 0).unwrap(), 9);
-        assert_eq!(locate_line_offset(path_str.clone(), 3, 0, 0).unwrap(), 13);
+        assert_eq!(
+            locate_line_offset(path_str.clone(), 1, 0, 0, None)
+                .unwrap()
+                .offset,
+            4
+        );
+        assert_eq!(
+            locate_line_offset(path_str.clone(), 2, 0, 0, None)
+                .unwrap()
+                .offset,
+            9
+        );
+        assert_eq!(
+            locate_line_offset(path_str.clone(), 3, 0, 0, None)
+                .unwrap()
+                .offset,
+            13
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -545,9 +628,11 @@ mod tests {
         // Line 1 ("second") must start right after the split CRLF, at
         // CHUNK_BYTES + 1 — not CHUNK_BYTES (double-counted CR) or anything
         // else off by one.
-        let line1_offset = locate_line_offset(path_str.clone(), 1, 0, 0).unwrap();
+        let line1_offset = locate_line_offset(path_str.clone(), 1, 0, 0, None)
+            .unwrap()
+            .offset;
         assert_eq!(line1_offset, CHUNK_BYTES as u64 + 1);
-        let line2_offset = locate_line_offset(path_str, 2, 0, 0).unwrap();
+        let line2_offset = locate_line_offset(path_str, 2, 0, 0, None).unwrap().offset;
         assert_eq!(
             line2_offset,
             CHUNK_BYTES as u64 + 1 + "second\n".len() as u64
@@ -582,11 +667,76 @@ mod tests {
 
         // Line 1 ("Xsecond") starts immediately after the lone CR, i.e. at
         // the very first byte of the second chunk read.
-        let line1_offset = locate_line_offset(path_str.clone(), 1, 0, 0).unwrap();
+        let line1_offset = locate_line_offset(path_str.clone(), 1, 0, 0, None)
+            .unwrap()
+            .offset;
         assert_eq!(line1_offset, CHUNK_BYTES as u64);
-        let line2_offset = locate_line_offset(path_str, 2, 0, 0).unwrap();
+        let line2_offset = locate_line_offset(path_str, 2, 0, 0, None).unwrap().offset;
         assert_eq!(line2_offset, CHUNK_BYTES as u64 + "Xsecond\n".len() as u64);
 
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ---- issue #251: index fingerprint + locate version validation ----
+
+    #[test]
+    fn line_index_report_carries_a_fingerprint() {
+        let path = write_temp("plume-lineindex-fp.txt", &fixed_width_lines(10));
+        let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
+        assert!(
+            report.fingerprint.is_some(),
+            "a freshly built index must describe the file version it scanned"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn locate_is_stale_when_the_file_changed_since_the_index() {
+        let path = write_temp("plume-lineindex-stale.txt", &fixed_width_lines(2000));
+        let path_str = path.to_string_lossy().into_owned();
+        let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
+        let fp = report.fingerprint.expect("fingerprint must be captured");
+
+        // Grow the file after the index was built: len changes, so the
+        // mismatch is deterministic regardless of mtime resolution.
+        std::fs::write(&path, fixed_width_lines(2001)).unwrap();
+
+        let located = locate_line_offset(path_str, 1500, 1024 * 13, 1024, Some(fp)).unwrap();
+        assert!(
+            located.stale,
+            "a checkpoint from a superseded index must not be dereferenced"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn locate_with_matching_fingerprint_resolves_normally() {
+        let path = write_temp("plume-lineindex-fp-match.txt", &fixed_width_lines(2000));
+        let path_str = path.to_string_lossy().into_owned();
+        let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
+        let fp = report.fingerprint.expect("fingerprint must be captured");
+
+        let located = locate_line_offset(path_str, 1500, 1024 * 13, 1024, Some(fp)).unwrap();
+        assert!(!located.stale);
+        assert_eq!(located.offset, 1500 * 13);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A goto that lands exactly on a checkpoint line needs no scan at all
+    /// -- the fast path used to return before the file was even opened.
+    /// A stale index must be caught on this path too, not only when a
+    /// walk happens.
+    #[test]
+    fn locate_checkpoint_direct_hit_still_validates_the_fingerprint() {
+        let path = write_temp("plume-lineindex-stale-hit.txt", &fixed_width_lines(2000));
+        let path_str = path.to_string_lossy().into_owned();
+        let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
+        let fp = report.fingerprint.expect("fingerprint must be captured");
+
+        std::fs::write(&path, fixed_width_lines(2001)).unwrap();
+
+        let located = locate_line_offset(path_str, 1024, 1024 * 13, 1024, Some(fp)).unwrap();
+        assert!(located.stale);
         std::fs::remove_file(&path).ok();
     }
 }

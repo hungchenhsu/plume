@@ -472,6 +472,7 @@ fn audit_forward(ctx: &FixtureCtx) {
             at,
             "UTF-8".into(),
             OffsetKind::Continuation,
+            None,
         )
         .unwrap_or_else(|e| panic!("{msg}: read_document_chunk failed: {e}"));
         assert!(
@@ -520,7 +521,7 @@ fn audit_backward(ctx: &FixtureCtx) {
             "{} backward page {pages} ending at {end}",
             ctx.fixture.params_summary()
         );
-        let page = read_document_chunk_before(ctx.path.clone(), end, "UTF-8".into())
+        let page = read_document_chunk_before(ctx.path.clone(), end, "UTF-8".into(), None)
             .unwrap_or_else(|e| panic!("{msg}: read_document_chunk_before failed: {e}"));
         assert!(
             !page.malformed,
@@ -614,8 +615,9 @@ fn run_random_session(ctx: &FixtureCtx, rng: &mut XorShift64, num_ops: usize) ->
                 let from_line = checkpoint_idx as u64 * CHECKPOINT_INTERVAL;
                 let from_offset = ctx.checkpoints[checkpoint_idx];
                 let resolved =
-                    locate_line_offset(ctx.path.clone(), target_line, from_offset, from_line)
-                        .unwrap_or_else(|e| panic!("{msg}: locate_line_offset failed: {e}"));
+                    locate_line_offset(ctx.path.clone(), target_line, from_offset, from_line, None)
+                        .unwrap_or_else(|e| panic!("{msg}: locate_line_offset failed: {e}"))
+                        .offset;
                 let expected = ctx.line_starts[target_line as usize];
                 assert_eq!(
                     resolved, expected,
@@ -627,6 +629,7 @@ fn run_random_session(ctx: &FixtureCtx, rng: &mut XorShift64, num_ops: usize) ->
                     resolved,
                     "UTF-8".into(),
                     OffsetKind::LineStart,
+                    None,
                 )
                 .unwrap_or_else(|e| panic!("{msg}: read_document_chunk(goto) failed: {e}"));
                 assert!(!page.malformed, "{msg}: goto chunk reported malformed");
@@ -670,6 +673,7 @@ fn run_random_session(ctx: &FixtureCtx, rng: &mut XorShift64, num_ops: usize) ->
                     from,
                     "UTF-8".into(),
                     OffsetKind::Continuation,
+                    None,
                 )
                 .unwrap_or_else(|e| panic!("{msg}: read_document_chunk(next) failed: {e}"));
                 assert!(!page.malformed, "{msg}: next chunk reported malformed");
@@ -708,7 +712,7 @@ fn run_random_session(ctx: &FixtureCtx, rng: &mut XorShift64, num_ops: usize) ->
                     trace.push(OpResult::PrevSkippedAtStart);
                     continue;
                 }
-                let page = read_document_chunk_before(ctx.path.clone(), end, "UTF-8".into())
+                let page = read_document_chunk_before(ctx.path.clone(), end, "UTF-8".into(), None)
                     .unwrap_or_else(|e| {
                         panic!("{msg}: read_document_chunk_before(prev) failed: {e}")
                     });
@@ -808,6 +812,7 @@ fn run_stale_goto_fuzz(
             probe,
             "UTF-8".into(),
             OffsetKind::LineStart,
+            None,
         )
         .unwrap_or_else(|e| panic!("{msg}: read_document_chunk(stale) failed: {e}"));
         assert!(

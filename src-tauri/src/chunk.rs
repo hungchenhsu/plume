@@ -54,6 +54,7 @@
 //! command layer instead, the same choice already made for UTF-16.
 
 use crate::encoding;
+use crate::fsguard::Fingerprint;
 use crate::linebreak::{align_start, cut_tail_at_line_break, is_line_start};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
@@ -93,6 +94,46 @@ pub struct DocumentChunk {
     pub next_offset: Option<u64>,
     pub total_size: u64,
     pub malformed: bool,
+    /// True when the caller's `expected` fingerprint no longer matches the
+    /// file — the offsets the caller is paging with describe a previous
+    /// file version, so no content is returned (every other field is a
+    /// placeholder) and the caller must reload before paging on (issue
+    /// #251). Structured, not an `Err`: the same shape `save_document`'s
+    /// `SaveResult.stale` uses for its own fingerprint rejection, so the
+    /// frontend branches on a field instead of sniffing error strings.
+    pub stale: bool,
+}
+
+/// The placeholder `DocumentChunk` every stale detection returns: no
+/// content, no continuation. `total_size` is the file's *current* size,
+/// purely informational.
+fn stale_chunk(total_size: u64) -> DocumentChunk {
+    DocumentChunk {
+        content: String::new(),
+        offset: 0,
+        next_offset: None,
+        total_size,
+        malformed: false,
+        stale: true,
+    }
+}
+
+/// Fail-closed staleness test run against the just-opened handle's own
+/// metadata — the read that follows uses the same handle, so (on Unix,
+/// where identity pins the inode) content and verdict cannot diverge.
+/// With an `expected` fingerprint: stale unless the metadata still
+/// matches it exactly; a metadata/mtime read error also counts as stale
+/// (fail-closed, mirroring `Fingerprint::matches_path`). Without one
+/// (an old caller, or an `open_document` that couldn't fingerprint):
+/// only the offset range can be checked — a `requested_end` past the
+/// current EOF proves the caller's offsets describe a bigger, earlier
+/// version of the file (issue #251's shrink-during-paging case, which
+/// previously came back as a silent empty chunk).
+fn is_stale(meta: &std::fs::Metadata, expected: Option<&Fingerprint>, requested_end: u64) -> bool {
+    match expected {
+        Some(expected) => !Fingerprint::from_metadata(meta).is_ok_and(|actual| actual == *expected),
+        None => requested_end > meta.len(),
+    }
 }
 
 fn read_up_to(file: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -112,6 +153,7 @@ pub fn read_document_chunk(
     offset: u64,
     encoding: String,
     kind: OffsetKind,
+    expected: Option<Fingerprint>,
 ) -> Result<DocumentChunk, String> {
     let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
         .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
@@ -139,10 +181,13 @@ pub fn read_document_chunk(
     let is_legacy_multibyte = encoding::is_legacy_multibyte_label(&encoding);
 
     let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    let total_size = file
+    let meta = file
         .metadata()
-        .map_err(|e| format!("Failed to read {path}: {e}"))?
-        .len();
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let total_size = meta.len();
+    if is_stale(&meta, expected.as_ref(), offset) {
+        return Ok(stale_chunk(total_size));
+    }
 
     // Only a LineStart read peeks the byte before `offset`: together
     // with the chunk's own first byte it decides whether the claimed
@@ -251,6 +296,7 @@ pub fn read_document_chunk(
         next_offset,
         total_size,
         malformed: decoded.malformed,
+        stale: false,
     })
 }
 
@@ -263,6 +309,7 @@ pub fn read_document_chunk_before(
     path: String,
     end: u64,
     encoding: String,
+    expected: Option<Fingerprint>,
 ) -> Result<DocumentChunk, String> {
     let enc = encoding_rs::Encoding::for_label(encoding.as_bytes())
         .ok_or_else(|| format!("Unknown encoding label: {encoding}"))?;
@@ -281,10 +328,16 @@ pub fn read_document_chunk_before(
     }
 
     let mut file = std::fs::File::open(&path).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    let total_size = file
+    let meta = file
         .metadata()
-        .map_err(|e| format!("Failed to read {path}: {e}"))?
-        .len();
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let total_size = meta.len();
+    // `end` is this read's furthest byte, so it doubles as the range probe
+    // for the no-fingerprint fallback (a shrunken file would otherwise
+    // fail the `read_exact` below with a raw IO error).
+    if is_stale(&meta, expected.as_ref(), end) {
+        return Ok(stale_chunk(total_size));
+    }
     let start = end.saturating_sub(CHUNK_BYTES as u64);
 
     let mut prev_byte = None;
@@ -377,6 +430,7 @@ pub fn read_document_chunk_before(
         next_offset: Some(end),
         total_size,
         malformed: decoded.malformed,
+        stale: false,
     })
 }
 
@@ -408,6 +462,7 @@ mod tests {
                 at,
                 "UTF-8".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assembled.push_str(&chunk.content);
@@ -427,9 +482,11 @@ mod tests {
             0,
             "UTF-16LE".into(),
             OffsetKind::Continuation,
+            None,
         );
         assert!(result.is_err());
-        let result = read_document_chunk_before("/tmp/whatever.txt".into(), 100, "UTF-16BE".into());
+        let result =
+            read_document_chunk_before("/tmp/whatever.txt".into(), 100, "UTF-16BE".into(), None);
         assert!(result.is_err());
     }
 
@@ -457,6 +514,7 @@ mod tests {
             0,
             "ISO-2022-JP".into(),
             OffsetKind::Continuation,
+            None,
         );
         // `DocumentChunk` (the `Ok` payload) has no `Debug` impl, so
         // `expect_err`/`unwrap_err` (which require `T: Debug` to format the
@@ -471,7 +529,7 @@ mod tests {
              to find the nonexistent file -- got: {err}"
         );
         let result =
-            read_document_chunk_before("/tmp/whatever.txt".into(), 100, "ISO-2022-JP".into());
+            read_document_chunk_before("/tmp/whatever.txt".into(), 100, "ISO-2022-JP".into(), None);
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("ISO-2022-JP paging must be rejected"),
@@ -501,14 +559,22 @@ mod tests {
 
         let report = crate::lineindex::build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
         assert_eq!(report.total_lines, 4);
-        let offset = crate::lineindex::locate_line_offset(path_str.clone(), 1, 0, 0).unwrap();
+        let offset = crate::lineindex::locate_line_offset(path_str.clone(), 1, 0, 0, None)
+            .unwrap()
+            .offset;
         assert_eq!(
             offset, CHUNK_BYTES as u64,
             "line 1 starts after the lone CR"
         );
 
-        let chunk =
-            read_document_chunk(path_str, offset, "UTF-8".into(), OffsetKind::LineStart).unwrap();
+        let chunk = read_document_chunk(
+            path_str,
+            offset,
+            "UTF-8".into(),
+            OffsetKind::LineStart,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             chunk.offset, offset,
             "a locate()-produced line start must not be shifted by alignment"
@@ -531,7 +597,7 @@ mod tests {
 
         // Line starts: 0 ("AA"), 3 (the b-line), CHUNK_BYTES + 3 ("CCC").
         let end = (CHUNK_BYTES + 3) as u64;
-        let chunk = read_document_chunk_before(path_str, end, "UTF-8".into()).unwrap();
+        let chunk = read_document_chunk_before(path_str, end, "UTF-8".into(), None).unwrap();
         assert_eq!(chunk.offset, 3);
         assert_eq!(chunk.next_offset, Some(end));
         let expected = "b".repeat(CHUNK_BYTES - 1) + "\n";
@@ -563,6 +629,7 @@ mod tests {
                 at,
                 "UTF-8".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -608,6 +675,7 @@ mod tests {
                 at,
                 "UTF-8".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assembled.push_str(&chunk.content);
@@ -639,7 +707,8 @@ mod tests {
         let mut end = original.len() as u64;
         let mut pages = 0;
         loop {
-            let chunk = read_document_chunk_before(path_str.clone(), end, "UTF-8".into()).unwrap();
+            let chunk =
+                read_document_chunk_before(path_str.clone(), end, "UTF-8".into(), None).unwrap();
             assert_eq!(chunk.next_offset, Some(end));
             assembled_parts.push(chunk.content.clone());
             end = chunk.offset;
@@ -653,7 +722,7 @@ mod tests {
         assembled_parts.reverse();
         assert_eq!(assembled_parts.concat(), original);
 
-        let result = read_document_chunk_before(path_str, 0, "UTF-8".into());
+        let result = read_document_chunk_before(path_str, 0, "UTF-8".into(), None);
         assert!(result.is_err(), "end=0 has nothing before it");
         std::fs::remove_file(&path).ok();
     }
@@ -721,6 +790,7 @@ mod tests {
                 at,
                 "UTF-8".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assembled.push_str(&chunk.content);
@@ -754,7 +824,8 @@ mod tests {
         let mut end = original.len() as u64;
         let mut pages = 0;
         loop {
-            let chunk = read_document_chunk_before(path_str.clone(), end, "UTF-8".into()).unwrap();
+            let chunk =
+                read_document_chunk_before(path_str.clone(), end, "UTF-8".into(), None).unwrap();
             assert_eq!(chunk.next_offset, Some(end));
             assembled_parts.push(chunk.content.clone());
             end = chunk.offset;
@@ -799,7 +870,7 @@ mod tests {
         let path_str = path.to_string_lossy().into_owned();
 
         let end = (CHUNK_BYTES + 1001) as u64; // start of "tail\n"
-        let chunk = read_document_chunk_before(path_str, end, "UTF-8".into()).unwrap();
+        let chunk = read_document_chunk_before(path_str, end, "UTF-8".into(), None).unwrap();
         assert_ne!(
             chunk.offset, end,
             "backward paging made no progress: the whole window was discarded"
@@ -840,6 +911,7 @@ mod tests {
             0,
             "UTF-8".into(),
             OffsetKind::Continuation,
+            None,
         )
         .unwrap();
         assert_eq!(page0.content, "prefix line\n");
@@ -850,6 +922,7 @@ mod tests {
             page1_offset,
             "UTF-8".into(),
             OffsetKind::Continuation,
+            None,
         )
         .unwrap();
         assert!(
@@ -903,6 +976,7 @@ mod tests {
                 at,
                 "UTF-8".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assembled.push_str(&chunk.content);
@@ -1055,6 +1129,7 @@ mod tests {
                 at,
                 "Big5".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -1100,7 +1175,8 @@ mod tests {
         let mut end = bytes.len() as u64;
         let mut pages = 0;
         loop {
-            let chunk = read_document_chunk_before(path_str.clone(), end, "Big5".into()).unwrap();
+            let chunk =
+                read_document_chunk_before(path_str.clone(), end, "Big5".into(), None).unwrap();
             assert_eq!(
                 chunk.next_offset,
                 Some(end),
@@ -1156,6 +1232,7 @@ mod tests {
                 at,
                 "gb18030".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -1197,7 +1274,7 @@ mod tests {
         let mut pages = 0;
         loop {
             let chunk =
-                read_document_chunk_before(path_str.clone(), end, "gb18030".into()).unwrap();
+                read_document_chunk_before(path_str.clone(), end, "gb18030".into(), None).unwrap();
             assert_eq!(
                 chunk.next_offset,
                 Some(end),
@@ -1369,6 +1446,7 @@ mod tests {
                 at,
                 "Big5".into(),
                 OffsetKind::Continuation,
+                None,
             )
             .unwrap();
             assert!(
@@ -1419,7 +1497,7 @@ mod tests {
             "sanity: fixture must place the window start on 'a'"
         );
 
-        let page1 = read_document_chunk_before(path_str.clone(), end, "Big5".into()).unwrap();
+        let page1 = read_document_chunk_before(path_str.clone(), end, "Big5".into(), None).unwrap();
         assert_eq!(page1.next_offset, Some(end));
         assert!(!page1.malformed);
         assert!(!page1.content.contains('\u{FFFD}'));
@@ -1441,8 +1519,8 @@ mod tests {
 
         // Second page: reaches file start; the trimmed 'a' must reappear
         // as this page's very last byte/character, never dropped.
-        let page2 =
-            read_document_chunk_before(path_str.clone(), page1.offset, "Big5".into()).unwrap();
+        let page2 = read_document_chunk_before(path_str.clone(), page1.offset, "Big5".into(), None)
+            .unwrap();
         assert_eq!(page2.offset, 0);
         assert_eq!(page2.next_offset, Some(page1.offset));
         assert!(!page2.malformed);
@@ -1486,6 +1564,7 @@ mod tests {
             stale,
             "Big5".into(),
             OffsetKind::LineStart,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1534,6 +1613,7 @@ mod tests {
             stale,
             "UTF-8".into(),
             OffsetKind::LineStart,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1562,6 +1642,7 @@ mod tests {
             stale,
             "UTF-8".into(),
             OffsetKind::LineStart,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1597,6 +1678,7 @@ mod tests {
             stale,
             "UTF-8".into(),
             OffsetKind::LineStart,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1629,9 +1711,13 @@ mod tests {
         let path = std::env::temp_dir().join("plume-chunk-before-all-continuation.txt");
         std::fs::write(&path, b"\x80\x81\nrest of the file\n").unwrap();
 
-        let chunk =
-            read_document_chunk_before(path.to_string_lossy().into_owned(), 2, "UTF-8".into())
-                .unwrap();
+        let chunk = read_document_chunk_before(
+            path.to_string_lossy().into_owned(),
+            2,
+            "UTF-8".into(),
+            None,
+        )
+        .unwrap();
         assert!(
             !chunk.content.is_empty(),
             "an all-continuation-bytes window must fall back to the raw \
@@ -1641,6 +1727,132 @@ mod tests {
             chunk.offset, 0,
             "the window must keep covering its bytes (offset == end would \
              make backward paging spin in place)"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ---- issue #251: file-version validation on every chunk read ----
+
+    #[test]
+    fn stale_fingerprint_returns_stale_marker_not_content() {
+        let path = std::env::temp_dir().join("plume-chunk-stale-grown.txt");
+        std::fs::write(&path, "first version\nsecond line\n").unwrap();
+        let fp = Fingerprint::from_path(&path).unwrap();
+
+        // Grow the file: len changes, so the mismatch is deterministic on
+        // every platform regardless of mtime resolution.
+        std::fs::write(&path, "replaced with something longer\nmore\nlines\n").unwrap();
+
+        let chunk = read_document_chunk(
+            path.to_string_lossy().into_owned(),
+            0,
+            "UTF-8".into(),
+            OffsetKind::Continuation,
+            Some(fp),
+        )
+        .unwrap();
+        assert!(chunk.stale, "a mismatched fingerprint must read as stale");
+        assert!(
+            chunk.content.is_empty() && chunk.next_offset.is_none(),
+            "a stale marker must not carry content or a continuation"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn matching_fingerprint_reads_normally() {
+        let path = std::env::temp_dir().join("plume-chunk-stale-match.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let fp = Fingerprint::from_path(&path).unwrap();
+
+        let chunk = read_document_chunk(
+            path.to_string_lossy().into_owned(),
+            0,
+            "UTF-8".into(),
+            OffsetKind::Continuation,
+            Some(fp),
+        )
+        .unwrap();
+        assert!(!chunk.stale);
+        assert_eq!(chunk.content, "alpha\nbeta\n");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The shrink-during-paging fallback when no fingerprint was supplied
+    /// (issue #251's second repro path): an offset past the new EOF used
+    /// to come back as a silent empty success chunk the frontend applied
+    /// as "end of file".
+    #[test]
+    fn no_expected_with_offset_past_eof_is_stale() {
+        let path = std::env::temp_dir().join("plume-chunk-stale-shrunk.txt");
+        std::fs::write(&path, "short\n").unwrap();
+
+        let chunk = read_document_chunk(
+            path.to_string_lossy().into_owned(),
+            1_000_000,
+            "UTF-8".into(),
+            OffsetKind::Continuation,
+            None,
+        )
+        .unwrap();
+        assert!(
+            chunk.stale,
+            "a continuation offset past EOF proves the caller's offsets \
+             describe an earlier, larger file version"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn before_read_stale_on_fingerprint_mismatch() {
+        let path = std::env::temp_dir().join("plume-chunk-stale-before.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let fp = Fingerprint::from_path(&path).unwrap();
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+
+        let chunk = read_document_chunk_before(
+            path.to_string_lossy().into_owned(),
+            8,
+            "UTF-8".into(),
+            Some(fp),
+        )
+        .unwrap();
+        assert!(chunk.stale);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The same-size overwrite issue #251 centers on: byte length is
+    /// unchanged, so the frontend's `indexedSize === totalSize` check can
+    /// never see it — only the fingerprint can. Unix-only because it pins
+    /// the `(dev, ino)` identity component (an atomic-rename replacement
+    /// always lands on a fresh inode); on Windows the same scenario is
+    /// covered by mtime, which a test cannot control precisely enough to
+    /// assert deterministically.
+    #[cfg(unix)]
+    #[test]
+    fn same_size_replace_is_stale_via_inode_identity() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("plume-chunk-stale-samesize.txt");
+        std::fs::write(&path, "AAAA\nBBBB\n").unwrap();
+        let fp = Fingerprint::from_path(&path).unwrap();
+
+        // Same byte count, different content, new inode via atomic rename.
+        let tmp = dir.join("plume-chunk-stale-samesize.tmp");
+        std::fs::write(&tmp, "CCCC\nDDDD\n").unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+
+        let chunk = read_document_chunk(
+            path.to_string_lossy().into_owned(),
+            0,
+            "UTF-8".into(),
+            OffsetKind::Continuation,
+            Some(fp),
+        )
+        .unwrap();
+        assert!(
+            chunk.stale,
+            "a same-size atomic-rename replacement must be caught by the \
+             inode identity component"
         );
         std::fs::remove_file(&path).ok();
     }
