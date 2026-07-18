@@ -81,15 +81,16 @@ the good-first-issue surface.
 
 **Track E — encoding trust**
 
-- [ ] mojibake-pair investigation batch: run the dual gate (chardetng
+- [x] mojibake-pair investigation batch: ran the dual gate (chardetng
   reachability + reverse-hypothesis rejection) over the candidates
   (WINDOWS_1251, UTF_8), (EUC_KR, UTF_8), (EUC_JP, UTF_8),
   (WINDOWS_1250, UTF_8), and — last, cheapest-death-first per the
-  adversarial review — (KOI8_U, WINDOWS_1251); admit whatever passes,
-  with the mandatory fuzz_roundtrip.rs MojibakePools/match-arm sync
-  (known runtime-panic dead end, overlay §4), and record written
-  rejections in mojibake.rs docs for the rest; zero admissions is a
-  valid outcome — the rejection record is the deliverable;
+  adversarial review — (KOI8_U, WINDOWS_1251); all five passed both
+  gates and were admitted (unlike issue #182/v0.6 E2, this batch found
+  no rejections — see `REPAIR_PAIRS`'s doc comment in mojibake.rs for
+  each pair's written evaluation), with the mandatory
+  fuzz_roundtrip.rs MojibakePools/match-arm sync done and verified via
+  `cargo test fuzz` (known runtime-panic dead end, overlay §4);
   docs/encoding-detection.md updated in the same PR [danger]
 
 **Track C — comfort** (no-GUI shapes; manual acceptance deferred where noted)
