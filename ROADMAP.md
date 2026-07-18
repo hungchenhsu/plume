@@ -134,7 +134,7 @@ the good-first-issue surface.
 - [ ] keyboard-shortcut reference: one consolidated table
   (docs/features.md appendix or docs/shortcuts.md) sourced from
   menu.rs LABELS and the CM6 built-in keymap — never hand-recalled
-- [ ] CONTRIBUTING.md: links dev-setup.md, the Definition of Done, PR
+- [x] CONTRIBUTING.md: links dev-setup.md, the Definition of Done, PR
   conventions, and the commit-language policy for external
   contributors (zh-TW preferred, English accepted); positioning red
   lines apply
