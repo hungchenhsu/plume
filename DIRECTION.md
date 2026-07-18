@@ -8,7 +8,7 @@ session — human or agent, regardless of capability — should pick up the
 work. When this document and reality diverge, update this document in the
 same PR that changes course.
 
-Last full review: 2026-07-10.
+Last full review: 2026-07-18 (post-v0.6 doc-slimming pass).
 
 ---
 
@@ -42,7 +42,7 @@ faster for text files, or is it IDE creep?*
 **Branding note:** "Plume" is a development codename, not the product name
 (see Decision Gate D1). Do not use it in outward-facing material.
 
-## 2. Current state (2026-07-16)
+## 2. Current state (2026-07-18)
 
 - **v0.6 feature cycle complete** (2026-07-16→17, PRs #229–#249 range):
   planned and executed autonomously under the user's standing
@@ -77,71 +77,32 @@ faster for text files, or is it IDE creep?*
   v0.2.0-alpha.1 and v0.3.0-alpha.1 *draft* releases were deleted (notes
   backed up first); both git tags kept. #89 stays open as the
   good-first-issue surface.
-- **v0.5 feature cycle complete** (2026-07-15→16, PRs #156–#196 range):
-  planned and executed autonomously under the user's 2026-07-15
-  delegation (same model as v0.4), adversarially reviewed before start
-  (AGREE-WITH-CHANGES, all adjudicated). All five tracks delivered —
-  **debt & robustness** (the whole bug queue: #96 in three stages
-  including streamreplace byte-passthrough with an
-  ISO-2022-JP-shift-state P1 caught and killed in review, lazy
-  save-time byte-drift consent, batch drift flags; #124 save/reload
-  mutex; #128/#130 TOCTOU + scan-error twins; #134 preempt; #136 trim
-  gate; a chunk-paging property fuzz), **replace in files**
-  (line-level byte-preserving backend + panel UI + shared search
-  history), **encoding breadth** (11→27 picker choices with invariant
-  tests, grouped pickers, detection-boundary docs), **comfort
-  stretch** (reopen closed tab, tab context menu, goto line:column),
-  **outward** (README install/accuracy pass under the positioning red
-  lines). Every danger item passed adversarial review; issues
-  #96/#124/#128/#130/#134/#136 closed, follow-ups filed
-  (#165/#169/#175/#176/#178/#182). Tests at cycle end: 423 Rust + 763
-  vitest (cycle start: 333/572). Tagged **v0.5.0-alpha.1**.
-
-- **v0.2 feature cycle complete** (PRs #34–#50): full visual refresh on
-  design tokens, built-in themes, UI i18n (zh-TW first), all six Tier-1
-  encoding/editing items. Tagged **v0.2.0-alpha.1**.
-- **v0.3 feature cycle complete** (PRs #65–#90, all CI-green): all four
-  parallel tracks delivered — **encoding tools** (mojibake repair
-  wizard, batch encoding + line-ending conversion, side-by-side encoding
-  preview), **large files** (streaming find/replace, line-offset index +
-  bookmarks), **editing comfort** (code folding, line operations, indent
-  guides), **release & community** (issue templates + good-first-issues,
-  ja + zh-CN i18n). Preceded by a P1/P2 data-integrity sweep: five P1
-  fixes (two-phase lossy save, atomic_write symlink hardening,
-  session-index atomicity + orphan recovery, hot-exit backup-failure
-  handling, bounded large-file read) and three P2s. Tagged
-  **v0.3.0-alpha.1**. D1 (naming) explicitly deferred by the user; D2
-  blocked behind it.
-- **v0.4 feature cycle complete** (2026-07-14→15, PRs #110–#152):
-  planned and executed autonomously under an explicit user delegation
-  (user away; post-merge review pending), adversarially reviewed before
-  start. All four tracks delivered — **character-level trust**
-  (character inspector, invisible/bidi-character audit, width
-  conversion, Unicode normalization with representability guard,
-  lossy-save character preview, BOM-toggle gap verification), **large
-  files & performance** (#107 fix, streaming encoding conversion,
-  open-latency bench script — numbers pending user), **editing comfort**
-  (multi-cursor menu exposure, line shuffle ops, word/char count, tab
-  drag-reorder, per-tab read-only, indentation tools), **robustness**
-  (round-trip fuzz across all 10 encodings). Mid-cycle S1 interrupt: a
-  10-issue external review batch (#112–#121) — 3 P1 save-path
-  stale-overwrite bugs and 6 P2s — was fixed first (PRs #123–#137,
-  fsguard fingerprint module, revision-gated save completion, shared
-  line-break semantics). Also: repo visibility was found PUBLIC and
-  restored to private (D3 gates unmet; #121 open for the user), after
-  which GitHub Actions became billing-blocked — every PR since carries
-  local full-matrix verification evidence instead; re-run CI on main
-  once billing is fixed.
-- Tests at cycle end: 333 Rust + 572 vitest (cycle start: 182/245).
-  Tagged **v0.4.0-alpha.1**.
+- **Earlier cycles (v0.1 MVP through v0.5) all complete** — one line
+  each; full item-level records live in
+  [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md)
+  and CHANGELOG.md:
+  - v0.1 (2026-06): MVP + post-MVP set (large-file phases, find in
+    files, hot exit, printing); tags alpha.1→alpha.7.
+  - v0.2 (2026-07-10→11, PRs #34–#51): visual refresh on design
+    tokens, built-in themes, UI i18n, six Tier-1 items.
+  - v0.3 (2026-07-11→12, PRs #65–#90): encoding tools (mojibake
+    wizard, batch conversion, side-by-side preview), large-file
+    streaming replace + line index, comfort, community infra;
+    preceded by a five-P1 data-integrity sweep.
+  - v0.4 (2026-07-14→15, PRs #110–#152): character-level trust suite,
+    streaming conversion, comfort set, round-trip fuzz; mid-cycle
+    10-issue external review batch fixed first.
+  - v0.5 (2026-07-15→16, PRs #156–#228 incl. two review batches):
+    whole bug queue cleared, replace in files, 27-encoding breadth,
+    comfort stretch, README pass; tags alpha.1/.2.
 - **Repo is PUBLIC by explicit user decision (2026-07-15)**: the user
   confirmed the earlier visibility flip was deliberate (public repos get
   free Actions CI, and "it's about time"), overriding the original
   keep-private-until-named gate. Consequence: D3 is now *partially*
-  entered out of order — the remaining hygiene items (D1 naming,
-  `.claude/archive/` internal-material purge, outward-facing README
-  pass, macOS signing) are outstanding **post-publication** work items
-  rather than preconditions, tracked in §3/D3. The positioning red
+  entered out of order — the remaining hygiene items (D1 naming and
+  macOS signing; the archive purge and README pass are done) are
+  outstanding **post-publication** work items rather than
+  preconditions, tracked in §3/D3. The positioning red
   lines (§5-S13) apply with full force now that every file is
   outward-facing. Actions billing on the account remains unfixed but
   moot while public.
@@ -312,13 +273,10 @@ user decision recorded in this file.
 ### P3 — feature cycles (current phase; recurring)
 
 - **Entry:** a user-approved backlog (promoted from §6 into ROADMAP.md
-  as checkboxes). *(v0.2 cycle: approved 2026-07-10 by session
-  instruction, completed 2026-07-11. v0.3 cycle: four parallel tracks
-  approved 2026-07-11 — see ROADMAP.md §v0.3. v0.4 cycle: planned
-  2026-07-14 under an explicit user delegation of cycle planning and
-  merges — user reviews post-merge; see ROADMAP.md §v0.4. v0.5 cycle:
-  planned 2026-07-15 under the same delegation model, adversarially
-  reviewed before start; see ROADMAP.md §v0.5.)*
+  as checkboxes). *(Cycles v0.2 through v0.6 all entered this way —
+  v0.2/v0.3 by in-session approval, v0.4 onward under a standing user
+  delegation with post-merge review; full per-cycle records in
+  [docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md).)*
 - **Work:** normal feature PRs under the existing Definition of Done.
   One coherent item per PR; danger domains get the full treatment
   (§5-S1 discipline even without an incident).
@@ -378,11 +336,9 @@ quarterly; major updates get a dedicated PR with a full manual pass on
 prefer vendoring the minimal needed code over adding a new dependency
 (bundle size and startup time are features).
 
-**S7 — The `time`/cookie pin resolves.** `time` is pinned at 0.3.47
-because cookie 0.18 fails against 0.3.48 (E0119). Check monthly whether a
-fixed cookie release exists; when it does: remove the pin note from
-CLAUDE.md and the overlay, `cargo update`, full Rust verification suite,
-dedicated chore PR.
+**S7 — (retired 2026-07-10.)** The `time`/cookie pin this scenario
+tracked was resolved and removed; `time` floats normally. Number kept so
+S8+ references stay stable.
 
 **S8 — CodeMirror hits a wall** (performance, a needed capability, or
 maintenance risk). The editor surface is swappable by design —
@@ -474,9 +430,10 @@ required, not value.
 
 ### Graduated (done, kept for reference)
 
-Everything in ROADMAP.md's checked lists: MVP, large-file phases 1–2c,
-find-in-files with regex, hot exit, atomic saves, session/cursor/window
-persistence, printing, zoom, word wrap.
+Everything in the completed-cycle records
+([docs/archive/roadmap-completed-cycles.md](docs/archive/roadmap-completed-cycles.md)):
+MVP, large-file phases 1–2c, find-in-files with regex, hot exit, atomic
+saves, session/cursor/window persistence, printing, zoom, word wrap.
 
 ## 7. Engineering policies
 
@@ -502,8 +459,8 @@ discard, user state.
 7. Post-release: install from the published artifact once, cold, on the
    primary machine.
 
-**Dependency cadence.** Monthly chore PR: `cargo update` (respecting the
-`time` pin while it stands, §5-S7) + `npm update` patch-level; quarterly
+**Dependency cadence.** Monthly chore PR: `cargo update` + `npm update`
+patch-level; quarterly
 minor-level; majors per §5-S6. Any dependency *addition* still requires
 strong justification (CLAUDE.md hard constraint).
 
@@ -531,8 +488,8 @@ Decision tree for any future working session opening this repo:
    decisions are not.
 4. **Otherwise, is there an open `bug` issue?** Fix the top one under
    full DoD.
-5. **Otherwise, routine health:** dependency cadence due (§7)? Pin
-   resolved (§5-S7)? CI still green on a fresh clone?
+5. **Otherwise, routine health:** dependency cadence due (§7)? CI still
+   green on a fresh clone?
 6. **Otherwise: stop.** Present the open decision list (§3) to the user.
    Do not invent scope — that lesson is already paid for
    (2026-06-13: autonomous value was exhausted; everything after that

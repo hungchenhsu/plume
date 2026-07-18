@@ -91,10 +91,15 @@ edge cases. Consequences:
 
 ## Large files
 
-Phase 1 (implemented): files over 10 MB open as a read-only preview of the
-first 2 MB, cut at a line boundary; saving is disabled because writing the
-slice back would destroy the file. Phase 2 (future) is Rust-side chunked
-scrolling through the whole file — still not a custom editor engine.
+Implemented in phases, all shipped: files over 10 MB open as a read-only
+preview cut at a line boundary (saving disabled — writing the slice back
+would destroy the file); Rust-side chunk paging plus a bidirectional
+sliding window (bounded at 8 chunks ≈ 16 MB) moves through the whole
+file; a line-offset index backs go-to-line and bookmarks beyond the
+loaded window; and whole-file edits on huge files run as streaming Rust
+passes (find/replace, encoding conversion) with atomic temp-and-rename
+commits. Still not a custom editor engine — CodeMirror only ever sees
+the loaded window.
 
 ## Repository layout
 
