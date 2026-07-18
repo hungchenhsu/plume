@@ -7,6 +7,7 @@ import {
   type GuardIdentity,
 } from "./asyncguard";
 import { planNormalization, type NormalizeForm } from "./normalize";
+import { createBackupPipeline, type BackupPipeline } from "./backuppipeline";
 
 describe("captureIdentity", () => {
   it("copies id and revision as of the call", () => {
@@ -1636,5 +1637,348 @@ describe("issue #163 — streaming convert/replace completion callbacks race a t
 
       expect(reloadCalls).toEqual([doc]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// main.ts-shaped simulation for saveWithEncoding's own write-failure
+// rollback (issue #231, a cosmetic gap #221's own critic review flagged).
+// #221 forces a clean doc's dirty=true the instant Save with Encoding
+// speculatively applies its target encoding (main.ts:2427-2431 — the
+// mutation itself is a save-relevant change with no disk copy yet, exactly
+// like a content edit), and #212's own failure-path rollback already
+// restores doc.encoding/withBom when the save never actually reaches disk.
+// PRE-#231 it never restored the force-dirty transition it caused, though:
+// a doc whose buffer still matches disk byte-for-byte (nothing was ever
+// written, nothing else changed it) was left showing an unsaved-changes
+// marker forever, until the user's next unrelated edit or save happened to
+// clear it. Same technique as every other section in this file (main.ts has
+// no *.test.ts of its own): mirrors main.ts's saveWithEncoding menu action
+// closely enough to reproduce the gap, wired to the real
+// captureIdentity/validateIdentity (this module) for the revision+liveness
+// guard and the real createBackupPipeline (backuppipeline.ts) for the
+// backup-reconciliation half, rather than reimplementing either
+// independently.
+
+interface EncRollbackDocState {
+  id: number;
+  revision: number;
+  dirty: boolean;
+  encoding: string;
+  withBom: boolean;
+  speculativeEncoding: { encoding: string; withBom: boolean } | null;
+  backupName: string | null;
+}
+
+function makeEncRollbackDoc(overrides: Partial<EncRollbackDocState> = {}): EncRollbackDocState {
+  return {
+    id: 1,
+    revision: 0,
+    dirty: false,
+    encoding: "UTF-8",
+    withBom: false,
+    speculativeEncoding: null,
+    backupName: null,
+    ...overrides,
+  };
+}
+
+/** Mirrors main.ts's module-level `nextRevision` (a single app-wide
+ *  monotonic sequence, never reset) — scoped per test via a small counter
+ *  closure instead of a shared module-level let, so tests never leak a
+ *  sequence position into one another. */
+function makeRevisionCounter(start: number): () => number {
+  let next = start;
+  return () => next++;
+}
+
+/** Fake IO for createBackupPipeline: every op resolves on the microtask
+ *  queue (no real timers involved), so `waitUntil` below can deterministically
+ *  observe a flush landing without needing fake timers. */
+function setupBackups(): { backups: BackupPipeline; removedNames: string[] } {
+  const removedNames: string[] = [];
+  const backups = createBackupPipeline({
+    save: () => Promise.resolve(),
+    remove: (name) => {
+      removedNames.push(name);
+      return Promise.resolve();
+    },
+  });
+  return { backups, removedNames };
+}
+
+/**
+ * Mirrors main.ts's saveWithEncoding menu action (main.ts:2360-2483,
+ * post-#231): applies the target encoding speculatively, force-dirties a
+ * clean doc, schedules a backup, runs the save, and on a failed-but-
+ * still-current write rolls encoding/withBom back (#212) — plus, since
+ * #231, undoes the force-dirty transition and reconciles whatever the
+ * scheduled backup flush did, but only when the force actually fired
+ * (wasClean — an already-dirty doc's dirty/backup belong to real unsaved
+ * edits) AND nothing else touched the doc while the save's own IPC/dialog
+ * round trip was in flight: the same capture-before/validate-after shape
+ * every other section in this file uses, reusing
+ * captureIdentity/validateIdentity directly rather than a bespoke check.
+ */
+async function saveWithEncodingRollbackSim(
+  tabs: { docs: EncRollbackDocState[] },
+  doc: EncRollbackDocState,
+  target: { encoding: string; withBom: boolean },
+  deps: {
+    nextRevision: () => number;
+    backups: BackupPipeline;
+    backupFlush: { schedule: () => void };
+    saveFlow: () => Promise<boolean>;
+  },
+): Promise<void> {
+  const original = { encoding: doc.encoding, withBom: doc.withBom };
+  doc.encoding = target.encoding;
+  doc.withBom = target.withBom;
+  doc.speculativeEncoding = original;
+  doc.revision = deps.nextRevision();
+  // Captured right after the bump above (main.ts:2410) — the rollback below
+  // must only undo the force-dirty transition just below when nothing else
+  // (a real edit, another save/reload, a tab close) touched the doc in the
+  // meantime.
+  const forceDirtyGuard = captureIdentity(doc);
+  // Whether the force below actually fires: a doc that was already dirty
+  // has real unsaved edits (and possibly a backup genuinely covering them)
+  // this rollback has no business touching — the {id, revision} guard
+  // alone can't tell that case apart, since a non-stale write failure
+  // bumps nothing after this action's own bump.
+  const wasClean = !doc.dirty;
+  if (!doc.dirty) {
+    doc.dirty = true;
+  }
+  deps.backupFlush.schedule();
+  const written = await deps.saveFlow();
+  if (!written && doc.speculativeEncoding === original) {
+    doc.encoding = original.encoding;
+    doc.withBom = original.withBom;
+    if (
+      wasClean &&
+      validateIdentity(forceDirtyGuard, doc, tabs.docs.includes(doc)) === "apply"
+    ) {
+      doc.dirty = false;
+      // The backupFlush.schedule() call above may have already landed a
+      // hot-exit backup covering the now-reverted dirty transition (its
+      // debounce can fire before this failed save's own IPC round trip
+      // resolves), or may still be pending. Either way, backups.drop
+      // reconciles it: an already-committed backup is queued for deletion
+      // and backupName cleared synchronously; a still-pending flush is
+      // cancelled via the epoch bump before it ever writes.
+      deps.backups.drop(doc);
+    }
+  }
+  if (doc.speculativeEncoding === original) {
+    doc.speculativeEncoding = null;
+  }
+}
+
+describe("issue #231 — saveWithEncoding's own write-failure rollback also undoes the force-dirty transition it caused", () => {
+  it("a clean doc, non-stale write failure, no edits during the save: dirty and the already-flushed backup both roll back to clean, not just encoding/withBom", async () => {
+    const doc = makeEncRollbackDoc({ dirty: false, revision: 5 });
+    const tabs = { docs: [doc] };
+    const { backups, removedNames } = setupBackups();
+    const saveCall = deferred<boolean>();
+
+    const flowPromise = saveWithEncodingRollbackSim(
+      tabs,
+      doc,
+      { encoding: "Big5", withBom: true },
+      {
+        nextRevision: makeRevisionCounter(6),
+        backups,
+        // The debounced flush this action scheduled (main.ts:2435) can land
+        // before this failed save's own IPC round trip resolves — modeled
+        // here by firing it immediately rather than waiting out a real
+        // debounce window (backupflush.test.ts already covers the timer
+        // mechanics themselves).
+        backupFlush: { schedule: () => void backups.flush(doc, "same content as disk") },
+        saveFlow: () => saveCall.promise,
+      },
+    );
+
+    await waitUntil(() => doc.backupName !== null); // the scheduled flush has landed
+    const flushedName = doc.backupName;
+    saveCall.resolve(false); // non-stale write failure: permission denied, disk full, ...
+    await flowPromise;
+
+    expect(doc.encoding).toBe("UTF-8"); // #212's own rollback, unaffected
+    expect(doc.dirty).toBe(false);
+    expect(doc.backupName).toBeNull();
+    expect(removedNames).toEqual([flushedName]);
+  });
+
+  it("no backup was ever flushed before the failure resolves (still within the debounce window): the reconciling drop is a harmless no-op — no delete IPC fires", async () => {
+    const doc = makeEncRollbackDoc({ dirty: false, revision: 5 });
+    const tabs = { docs: [doc] };
+    const { backups, removedNames } = setupBackups();
+    const saveCall = deferred<boolean>();
+
+    const flowPromise = saveWithEncodingRollbackSim(
+      tabs,
+      doc,
+      { encoding: "Big5", withBom: true },
+      {
+        nextRevision: makeRevisionCounter(6),
+        backups,
+        backupFlush: { schedule: () => {} }, // debounce never fires before the save settles
+        saveFlow: () => saveCall.promise,
+      },
+    );
+
+    saveCall.resolve(false);
+    await flowPromise;
+
+    expect(doc.dirty).toBe(false);
+    expect(doc.backupName).toBeNull();
+    expect(removedNames).toEqual([]); // nothing was ever written, so nothing needed deleting
+  });
+
+  it("a doc that was ALREADY dirty before Save with Encoding (real unsaved edits, backup cover in place): a non-stale write failure leaves dirty, backupName, and the backup file all untouched — the force never happened, so there is nothing to roll back", async () => {
+    const doc = makeEncRollbackDoc({ dirty: true, revision: 5, backupName: "bk-real-edits.txt" });
+    const tabs = { docs: [doc] };
+    const { backups, removedNames } = setupBackups();
+    const saveCall = deferred<boolean>();
+
+    const flowPromise = saveWithEncodingRollbackSim(
+      tabs,
+      doc,
+      { encoding: "Big5", withBom: true },
+      {
+        nextRevision: makeRevisionCounter(6),
+        backups,
+        backupFlush: { schedule: () => {} },
+        saveFlow: () => saveCall.promise,
+      },
+    );
+
+    // Non-stale write failure with zero interference: revision never moves
+    // after this action's own bump, so the {id, revision} guard alone still
+    // says "apply" — only the wasClean gate stands between this doc's real
+    // unsaved edits and a spurious-clean wipe (dirty=false + backup
+    // deleted, i.e. silent data loss on the next close sweep — an order of
+    // magnitude worse than the spurious-dirty cosmetic bug #231 itself).
+    saveCall.resolve(false);
+    await flowPromise;
+
+    expect(doc.encoding).toBe("UTF-8"); // #212's own rollback still applies
+    expect(doc.dirty).toBe(true); // real unsaved edits — must survive
+    expect(doc.backupName).toBe("bk-real-edits.txt"); // still the only cover for those edits
+    expect(removedNames).toEqual([]); // the backup file itself was never deleted
+  });
+
+  it("a same-tab edit lands while the save's own IPC is in flight: encoding/withBom still roll back (#212, unaffected), but dirty and the backup — now genuinely covering that edit — are left untouched", async () => {
+    const doc = makeEncRollbackDoc({ dirty: false, revision: 5 });
+    const tabs = { docs: [doc] };
+    const { backups, removedNames } = setupBackups();
+    const revision = makeRevisionCounter(6);
+    const saveCall = deferred<boolean>();
+
+    const flowPromise = saveWithEncodingRollbackSim(
+      tabs,
+      doc,
+      { encoding: "Big5", withBom: true },
+      {
+        nextRevision: revision,
+        backups,
+        backupFlush: { schedule: () => {} },
+        saveFlow: () => saveCall.promise,
+      },
+    );
+
+    // A real keystroke lands while the save's IPC round trip is still in
+    // flight — mirrors the editor's onChange handler bumping doc.revision
+    // unconditionally (main.ts:384) and its own backup cover landing.
+    doc.revision = revision();
+    doc.backupName = "bk-edited.txt";
+
+    saveCall.resolve(false);
+    await flowPromise;
+
+    expect(doc.encoding).toBe("UTF-8");
+    expect(doc.dirty).toBe(true); // real unsaved content — must survive
+    expect(doc.backupName).toBe("bk-edited.txt"); // must survive — still the only cover for the edit
+    expect(removedNames).toEqual([]);
+  });
+
+  it("the tab closes while the save's own IPC is in flight: encoding still rolls back (#212, unguarded), but dirty and the backup are left untouched on the now-detached doc", async () => {
+    const doc = makeEncRollbackDoc({ dirty: false, revision: 5, backupName: "bk-1.txt" });
+    const tabs = { docs: [doc] };
+    const { backups, removedNames } = setupBackups();
+    const saveCall = deferred<boolean>();
+
+    const flowPromise = saveWithEncodingRollbackSim(
+      tabs,
+      doc,
+      { encoding: "Big5", withBom: true },
+      {
+        nextRevision: makeRevisionCounter(6),
+        backups,
+        backupFlush: { schedule: () => {} },
+        saveFlow: () => saveCall.promise,
+      },
+    );
+
+    tabs.docs.length = 0; // tab closed mid-flight — tabs.ts close()'s splice, simulated
+
+    saveCall.resolve(false);
+    await flowPromise;
+
+    expect(doc.encoding).toBe("UTF-8"); // #212's own rollback isn't liveness-gated — pre-existing, unchanged
+    expect(doc.dirty).toBe(true); // left exactly as the force-dirty transition set it
+    expect(doc.backupName).toBe("bk-1.txt"); // backups.drop never reached the detached doc
+    expect(removedNames).toEqual([]);
+  });
+
+  it("stays dormant for a stale failure resolved via reload: reload's own applyOpenedForReload already cleared speculativeEncoding and set its own dirty/backup state before saveFlow even resolves", async () => {
+    const doc = makeEncRollbackDoc({ dirty: false, revision: 5 });
+    const tabs = { docs: [doc] };
+    const { backups, removedNames } = setupBackups();
+    let dropCalls = 0;
+    const trackedBackups: BackupPipeline = {
+      ...backups,
+      drop: (d) => {
+        dropCalls += 1;
+        backups.drop(d);
+      },
+    };
+
+    const flowPromise = saveWithEncodingRollbackSim(
+      tabs,
+      doc,
+      { encoding: "Big5", withBom: true },
+      {
+        nextRevision: makeRevisionCounter(6),
+        backups: trackedBackups,
+        backupFlush: { schedule: () => {} },
+        // Mirrors the stale-confirm dialog's own "reload" choice: saveFlow's
+        // internal reloadFromDisk call applies before saveFlow itself
+        // resolves, exactly like applyOpenedForReload (dirty=false, backup
+        // dropped, a fresh revision, speculativeEncoding cleared) — see this
+        // file's own applyOpened helper above for the same shape.
+        saveFlow: async () => {
+          doc.encoding = "Shift_JIS"; // whatever encoding the reload actually decoded with
+          doc.dirty = false;
+          doc.revision = 999; // a fresh baseline, unrelated to this call's own guard
+          trackedBackups.drop(doc);
+          doc.speculativeEncoding = null;
+          return false;
+        },
+      },
+    );
+
+    await flowPromise;
+
+    // The outer `doc.speculativeEncoding === original` gate (#212, already
+    // shipped) — not anything issue #231 added — is what keeps this
+    // dormant: reload already replaced the marker, so neither the
+    // encoding/withBom restore NOR this fix's own dirty/backup logic ever
+    // runs.
+    expect(doc.encoding).toBe("Shift_JIS"); // NOT reverted to the pre-speculative "UTF-8"
+    expect(doc.dirty).toBe(false); // reload's own value, not this fix's
+    expect(dropCalls).toBe(1); // only reload's own call — no redundant second drop
+    expect(removedNames).toEqual([]);
   });
 });
