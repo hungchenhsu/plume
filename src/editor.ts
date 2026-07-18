@@ -33,6 +33,7 @@ import {
 } from "@codemirror/language";
 import {
   copyLineDown as cmCopyLineDown,
+  cursorMatchingBracket as cmCursorMatchingBracket,
   deleteLine as cmDeleteLine,
   moveLineDown as cmMoveLineDown,
   moveLineUp as cmMoveLineUp,
@@ -318,6 +319,21 @@ export interface EditorHandle {
    * above for the no-native-accelerator rationale.
    */
   selectAllOccurrences(): void;
+  /**
+   * Move the cursor to the bracket matching the one next to it (or select
+   * the span between them, per CM6's own `cursorMatchingBracket` — a plain
+   * cursor move, not a selection-extend, when there is no bracket to
+   * match). `@codemirror/commands`'s `cursorMatchingBracket`, already bound
+   * to Shift-Mod-\ (Shift-Cmd-\ on macOS) by `defaultKeymap` inside
+   * `basicSetup`; this wrapper exists only so the same action is also
+   * reachable from the Edit menu (see menu.rs's `goto_matching_bracket` —
+   * no native accelerator there, same double-fire rationale as
+   * `selectNextOccurrence` above). Selection-only, like
+   * `selectNextOccurrence`/`selectAllOccurrences`: it never touches buffer
+   * content, so main.ts's dispatch calls it directly rather than through
+   * `runLineOperation`'s read-only/truncated-preview guard.
+   */
+  goToMatchingBracket(): void;
   /**
    * Apply a pure text transform (see lineops.ts) to a line-bounded region
    * of the live buffer: the current selection expanded to the start of
@@ -1360,6 +1376,9 @@ export function createEditor(
     },
     selectAllOccurrences: () => {
       cmSelectSelectionMatches(view);
+    },
+    goToMatchingBracket: () => {
+      cmCursorMatchingBracket(view);
     },
     transformLines: (fn) => {
       const { state } = view;

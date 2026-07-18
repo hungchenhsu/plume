@@ -94,7 +94,7 @@ the good-first-issue surface.
 
 **Track C — comfort** (no-GUI shapes; manual acceptance deferred where noted)
 
-- [ ] go to matching bracket: menu + palette wiring for the built-in
+- [x] go to matching bracket: menu + palette wiring for the built-in
   cursorMatchingBracket command
 - [ ] encoding-picker alias search: typing an IANA/common alias
   (latin1, cp950, …) matches the canonical encoding in the picker;

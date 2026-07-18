@@ -115,6 +115,13 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "跳转到行…",
     ),
     (
+        "goto_matching_bracket",
+        "Go to Matching Bracket",
+        "跳至對應括號",
+        "対応する括弧に移動",
+        "跳转到匹配括号",
+    ),
+    (
         "toggle_bookmark",
         "Toggle Bookmark",
         "切換書籤",
@@ -597,6 +604,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(
             &MenuItemBuilder::with_id("goto_line", l("goto_line"))
                 .accelerator("CmdOrCtrl+L")
+                .build(app)?,
+        )
+        // No accelerator: @codemirror/commands' `defaultKeymap` (bundled
+        // into editor.ts's `basicSetup`) already binds Shift-Mod-\ to
+        // `cursorMatchingBracket` inside the editor. A native menu
+        // accelerator on the same keys would give the shortcut two
+        // owners — the same double-fire pitfall the Line Operations
+        // move/duplicate/delete items and select_next_occurrence/
+        // select_all_occurrences above avoid.
+        .item(
+            &MenuItemBuilder::with_id("goto_matching_bracket", l("goto_matching_bracket"))
                 .build(app)?,
         )
         .separator()
@@ -1388,6 +1406,20 @@ mod tests {
             "最近使ったファイルをクリア"
         );
         assert_eq!(label("clear_recent_files", "zh-CN"), "清除最近打开的文件");
+    }
+
+    // ROADMAP.md v0.7 Track C go to matching bracket: the Edit menu's new
+    // "goto_matching_bracket" item id, pinned across all four languages --
+    // same rationale as clear_recent_files's dedicated test above.
+    #[test]
+    fn label_returns_the_correct_goto_matching_bracket_text_for_every_language() {
+        assert_eq!(
+            label("goto_matching_bracket", "en"),
+            "Go to Matching Bracket"
+        );
+        assert_eq!(label("goto_matching_bracket", "zh-TW"), "跳至對應括號");
+        assert_eq!(label("goto_matching_bracket", "ja"), "対応する括弧に移動");
+        assert_eq!(label("goto_matching_bracket", "zh-CN"), "跳转到匹配括号");
     }
 
     #[test]

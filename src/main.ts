@@ -3132,6 +3132,14 @@ function dispatchMenuCommand(id: string): void {
     case "goto_line":
       showGoToLine((line, column) => handleGotoLine(line, column));
       break;
+    // Cursor movement only, like select_next_occurrence/
+    // select_all_occurrences above and goto_line just above — unguarded
+    // (no runLineOperation) for the same reason: it never touches buffer
+    // content, so it stays safe on a read-only or truncated large-file
+    // preview.
+    case "goto_matching_bracket":
+      editor.goToMatchingBracket();
+      break;
     case "toggle_bookmark":
       toggleBookmarkFlow();
       break;

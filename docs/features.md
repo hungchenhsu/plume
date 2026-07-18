@@ -313,15 +313,13 @@ the window's own close control is the usual way out.
 | Action | macOS | Windows/Linux |
 | --- | --- | --- |
 | Go to Line… | `⌘L` | `Ctrl+L` |
-| Go to Matching Bracket *(editor default; no menu item yet)* | `⇧⌘\` | `Ctrl+Shift+\` |
+| Go to Matching Bracket *(editor default)* | `⇧⌘\` | `Ctrl+Shift+\` |
 | Next Tab | `⌃Tab` | `Ctrl+Tab` |
 | Previous Tab | `⌃⇧Tab` | `Ctrl+Shift+Tab` |
 
 Tab cycling is bound to the literal Control key on every platform
 (`src/main.ts`), not the Cmd/Ctrl pair used everywhere else in this
-table — macOS reserves plain `⌘Tab` for switching applications. Go to
-Matching Bracket already works (CodeMirror's `cursorMatchingBracket`)
-but has no menu or Command Palette entry yet — tracked in ROADMAP.md.
+table — macOS reserves plain `⌘Tab` for switching applications.
 
 ### Line Operations
 
