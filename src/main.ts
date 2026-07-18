@@ -2408,6 +2408,29 @@ function showEncodingMenu(anchor: HTMLElement): void {
               // shows the new encoding, but disk still holds the old
               // bytes.
               doc.revision = nextRevision++;
+              // Captured right after the bump above (issue #231): the
+              // write-failure rollback below must only undo the force-dirty
+              // transition just below when nothing else — a real edit,
+              // another save/reload, or a tab close — touched the doc while
+              // this call's own saveFlow was in flight. Reuses the same
+              // capture-before/validate-after pair (asyncguard.ts's
+              // captureIdentity/validateIdentity) every other post-await
+              // mutation in this file already goes through, rather than a
+              // bespoke revision check.
+              const forceDirtyGuard = captureIdentity(doc);
+              // Whether the force just below actually fires (issue #231's
+              // own critic-review addition): a doc that was already dirty
+              // entering this action has real unsaved edits — and possibly
+              // a hot-exit backup genuinely covering them — that the
+              // failure rollback below has no business touching. The
+              // {id, revision} guard alone can't tell that case apart: a
+              // non-stale write failure bumps nothing after this action's
+              // own bump above, so validateIdentity would still say
+              // "apply" and a rollback gated on it alone would mark real
+              // unsaved content clean and delete its only backup —
+              // silent data loss, strictly worse than the cosmetic
+              // spurious-dirty this fix exists to remove.
+              const wasClean = !doc.dirty;
               // Also force dirty=true when the doc was fully clean (issue
               // #221, a residual gap the revision bump above doesn't
               // close): if dirty was already false, the bump alone never
@@ -2439,6 +2462,48 @@ function showEncodingMenu(anchor: HTMLElement): void {
                   if (!written && doc.speculativeEncoding === original) {
                     doc.encoding = original.encoding;
                     doc.withBom = original.withBom;
+                    // Issue #231: a write failure that never reached disk
+                    // (stale or not — a stale failure resolved via the
+                    // stale dialog's own "reload" choice already cleared
+                    // speculativeEncoding above via applyOpenedForReload,
+                    // so this never runs for that case) must also undo the
+                    // force-dirty transition above, not just
+                    // encoding/withBom, when it's still safe to — BOTH
+                    // gates below are load-bearing: wasClean means the
+                    // force above actually fired (an already-dirty doc's
+                    // dirty and backup belong to real unsaved edits this
+                    // rollback must never touch — see wasClean's own doc
+                    // comment); "apply" means the doc is still open and
+                    // its revision hasn't moved since forceDirtyGuard was
+                    // captured, i.e. no real edit (or other save/reload)
+                    // landed while this save's IPC round trip was in
+                    // flight. Either failing means dirty must stay —
+                    // genuinely edited content, or nothing left to fix.
+                    if (
+                      wasClean &&
+                      validateIdentity(forceDirtyGuard, doc, tabs.docs.includes(doc)) ===
+                        "apply"
+                    ) {
+                      doc.dirty = false;
+                      tabs.render();
+                      updateWindowTitle();
+                      // The backupFlush.schedule() call above may already
+                      // have landed a hot-exit backup covering the
+                      // now-reverted dirty transition (its debounce can
+                      // fire before this failed save's own IPC round trip
+                      // resolves), or may still be pending. Either way,
+                      // backups.drop reconciles it: an already-committed
+                      // backup is queued for deletion and backupName
+                      // cleared synchronously; a still-pending flush is
+                      // cancelled via the epoch bump before it ever writes.
+                      // Mirrors runSaveFlow's own successful-completion
+                      // pairing of clearDirty with dropBackup
+                      // (decideSaveCompletion's dropBackup branch, just
+                      // above in this file) — same clean transition,
+                      // reached from the rollback side instead of a
+                      // successful write.
+                      backups.drop(doc);
+                    }
                     updateStatusBar(doc);
                   }
                 })

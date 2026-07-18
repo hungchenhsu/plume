@@ -52,7 +52,7 @@ the good-first-issue surface.
 
 **Track R — debt & correctness** (ordered by execution)
 
-- [ ] #231: clean doc's Save with Encoding leaves a spurious dirty flag
+- [x] #231: clean doc's Save with Encoding leaves a spurious dirty flag
   after a non-stale write failure — the rollback branch restores
   encoding/withBom but not dirty; capture the revision at force time
   and restore dirty=false when the rollback condition holds and the
