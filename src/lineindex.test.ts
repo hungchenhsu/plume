@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampLine, selectCheckpoint } from "./lineindex";
+import { clampLine, indexMatchesBaseline, selectCheckpoint } from "./lineindex";
 
 describe("clampLine", () => {
   it("passes an in-range line through unchanged", () => {
@@ -59,5 +59,29 @@ describe("selectCheckpoint", () => {
 
   it("handles a single-checkpoint index", () => {
     expect(selectCheckpoint([0], 500)).toEqual({ line: 0, offset: 0 });
+  });
+});
+
+// Issue #267: a freshly built index must only be adopted when it describes
+// the same file version as the doc's own baseline — otherwise goto would
+// display the new file's bytes while buffer/encoding/fingerprint still
+// describe the old one, and continuation paging would immediately flag
+// stale against doc.fingerprint.
+describe("indexMatchesBaseline", () => {
+  const fpA = { len: 100, modified: { secs: 1, nanos: 0 }, identity: [1, 2] };
+  const fpB = { len: 200, modified: { secs: 2, nanos: 0 }, identity: [1, 3] };
+
+  it("matches when both fingerprints describe the same version", () => {
+    expect(indexMatchesBaseline(fpA, { ...fpA, identity: [1, 2] })).toBe(true);
+  });
+
+  it("rejects when the index was built from a different file version", () => {
+    expect(indexMatchesBaseline(fpB, fpA)).toBe(false);
+  });
+
+  it("degrades to matching when either side has no fingerprint — a reload loop must be impossible", () => {
+    expect(indexMatchesBaseline(null, fpA)).toBe(true);
+    expect(indexMatchesBaseline(fpA, null)).toBe(true);
+    expect(indexMatchesBaseline(undefined, undefined)).toBe(true);
   });
 });
