@@ -9,7 +9,9 @@ does, how to reach it, and where it stops working. See the
 [encoding-detection.md](encoding-detection.md) for the full story behind
 automatic detection. Below, `>` chains native File/Edit/View menu items;
 "status bar →" opens a popup from the window's bottom edge. Shortcuts are
-`Cmd/Ctrl`-prefixed; unlisted means there is none.
+`Cmd/Ctrl`-prefixed; unlisted means there is none. The
+[Keyboard shortcuts](#keyboard-shortcuts) section at the end collects
+every shortcut in one table.
 
 ## Encoding
 
@@ -248,3 +250,114 @@ Replace (`Cmd/Ctrl+F`), a fuzzy-searchable Command Palette
 (`Cmd/Ctrl+Shift+P`), and tab drag-to-reorder with a right-click tab
 menu. All live in the Edit and View menus, or search by name in the
 Command Palette.
+
+## Keyboard shortcuts
+
+A single reference table for every bound shortcut in the app, grouped to
+match the native File/Edit/View menus (`src-tauri/src/menu.rs`).
+`Cmd/Ctrl` elsewhere in this doc is shorthand for the pair spelled out
+here: macOS uses `⌘` Command (plus `⌃` Control, `⌥` Option, `⇧` Shift
+where noted); Windows/Linux uses `Ctrl` (plus `Alt`, `Shift`). Actions
+with no bound shortcut — reachable only through a menu or the Command
+Palette — are omitted, matching the "unlisted means there is none"
+convention above.
+
+A few rows come from CodeMirror 6's own default keymaps (bundled
+unmodified via `basicSetup` in `src/editor.ts`) instead of a native menu
+accelerator — the action still has a menu item, just no second,
+competing OS-level accelerator on the same key. These are marked
+*(editor default)* below.
+
+### File
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| New Tab | `⌘T` | `Ctrl+T` |
+| Open… | `⌘O` | `Ctrl+O` |
+| Open Recent… (quick open) | `⌘P` | `Ctrl+P` |
+| Save | `⌘S` | `Ctrl+S` |
+| Save As… | `⇧⌘S` | `Ctrl+Shift+S` |
+| Close Tab | `⌘W` | `Ctrl+W` |
+| Reopen Closed Tab | `⇧⌘T` | `Ctrl+Shift+T` |
+| Print… | `⌥⌘P` | `Ctrl+Alt+P` |
+| Preferences… | `⌘,` | `Ctrl+,` |
+| Quit | `⌘Q` | *(none)* |
+
+Preferences… lives in the **Plume** application menu on macOS and in the
+File menu everywhere else — same shortcut either way. Quit has no bound
+accelerator on Windows/Linux; File > Exit still works by menu click, and
+the window's own close control is the usual way out.
+
+### Edit
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Undo | `⌘Z` | `Ctrl+Z` |
+| Redo | `⇧⌘Z` | `Ctrl+Y` |
+| Cut | `⌘X` | `Ctrl+X` |
+| Copy | `⌘C` | `Ctrl+C` |
+| Paste | `⌘V` | `Ctrl+V` |
+| Select All | `⌘A` | `Ctrl+A` |
+
+### Search
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Find and Replace… | `⌘F` | `Ctrl+F` |
+| Find in Files… | `⇧⌘F` | `Ctrl+Shift+F` |
+| Select Next Occurrence *(editor default)* | `⌘D` | `Ctrl+D` |
+| Select All Occurrences *(editor default)* | `⇧⌘L` | `Ctrl+Shift+L` |
+
+### Navigation
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Go to Line… | `⌘L` | `Ctrl+L` |
+| Go to Matching Bracket *(editor default; no menu item yet)* | `⇧⌘\` | `Ctrl+Shift+\` |
+| Next Tab | `⌃Tab` | `Ctrl+Tab` |
+| Previous Tab | `⌃⇧Tab` | `Ctrl+Shift+Tab` |
+
+Tab cycling is bound to the literal Control key on every platform
+(`src/main.ts`), not the Cmd/Ctrl pair used everywhere else in this
+table — macOS reserves plain `⌘Tab` for switching applications. Go to
+Matching Bracket already works (CodeMirror's `cursorMatchingBracket`)
+but has no menu or Command Palette entry yet — tracked in ROADMAP.md.
+
+### Line Operations
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Move Line Up *(editor default)* | `⌥↑` | `Alt+Up` |
+| Move Line Down *(editor default)* | `⌥↓` | `Alt+Down` |
+| Duplicate Line *(editor default)* | `⌥⇧↓` | `Alt+Shift+Down` |
+| Delete Line *(editor default)* | `⇧⌘K` | `Ctrl+Shift+K` |
+
+Every other Line Operations command (sort, deduplicate, reverse, trim,
+tab/space conversion, case and width conversion, normalization) is
+menu/palette-only by design — see [Everyday editing](#everyday-editing)
+above.
+
+### View
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Command Palette… | `⇧⌘P` | `Ctrl+Shift+P` |
+| Word Wrap | `⌥Z` | `Alt+Z` |
+| Fold All *(editor default)* | `⌃⌥[` | `Ctrl+Alt+[` |
+| Unfold All *(editor default)* | `⌃⌥]` | `Ctrl+Alt+]` |
+| Zoom In | `⌘=` | `Ctrl+=` |
+| Zoom Out | `⌘-` | `Ctrl+-` |
+| Actual Size (reset zoom) | `⌘0` | `Ctrl+0` |
+
+### Window & App (macOS only)
+
+| Action | macOS | Windows/Linux |
+| --- | --- | --- |
+| Minimize | `⌘M` | *(n/a — no Window menu)* |
+| Toggle Full Screen | `⌃⌘F` | *(n/a — no Window menu)* |
+| Hide | `⌘H` | *(n/a — no Window menu)* |
+| Hide Others | `⌥⌘H` | *(n/a — no Window menu)* |
+
+The Window menu and the "Plume" application menu (which also carries
+these plus About/Services, neither of which has a shortcut) only exist
+on macOS — see the `#[cfg(target_os = "macos")]` guards in `menu.rs`.

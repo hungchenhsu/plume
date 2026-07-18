@@ -131,7 +131,7 @@ the good-first-issue surface.
 
 **Track H — outward**
 
-- [ ] keyboard-shortcut reference: one consolidated table
+- [x] keyboard-shortcut reference: one consolidated table
   (docs/features.md appendix or docs/shortcuts.md) sourced from
   menu.rs LABELS and the CM6 built-in keymap — never hand-recalled
 - [x] CONTRIBUTING.md: links dev-setup.md, the Definition of Done, PR
