@@ -64,10 +64,3 @@ A change is complete only when all of these pass locally:
   size and fast startup are features.
 - Decode errors are surfaced to the user, never silently rendered as if
   the text were fine.
-
-## Known pins
-
-- (Resolved 2026-07-10) `time` was previously pinned to 0.3.47 because
-  cookie 0.18 failed to compile against time 0.3.48 (E0119). 0.3.48 was
-  yanked and 0.3.49 fixed E0119 (time-rs/time#785); the pin was removed
-  and `time` now floats normally via `cargo update`.
