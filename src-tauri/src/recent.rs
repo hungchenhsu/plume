@@ -135,4 +135,72 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // --- Per-module corruption regression (ROADMAP.md v0.7 Track V) --------
+    //
+    // Same rationale as session.rs / prefs.rs's blocks of the same name:
+    // `load_recent_files` takes an `AppHandle<R>` this crate cannot mock
+    // (no `tauri::test` feature -- see `clear_then_reload_round_trip_is_empty`
+    // above), but its entire body is
+    // `crate::store::read_json(&app, FILE).unwrap_or_default()`, so
+    // `store::read_json_from_path::<Vec<String>>(&path).unwrap_or_default()`
+    // against a file named by the real `FILE` const is the deepest testable
+    // stand-in for `load_recent_files` itself.
+
+    fn corruption_fixture_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "plume-recent-corrupt-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Scenario 1: a valid recent.json truncated mid-write (issue #62's
+    /// failure mode, pinned here against the real `FILE` filename rather
+    /// than store.rs's throwaway `Sample`).
+    #[test]
+    fn truncated_recent_json_loads_as_empty() {
+        let dir = corruption_fixture_dir("truncated");
+        let path = dir.join(FILE);
+
+        let list = push_recent(push_recent(Vec::new(), "a.txt".into()), "b.txt".into());
+        crate::store::write_json_to_path(&path, &list).unwrap();
+        let full = std::fs::read(&path).unwrap();
+        let half = &full[..full.len() / 2];
+        std::fs::write(&path, half).unwrap();
+
+        let loaded: Vec<String> = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert!(loaded.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Scenario 2: syntactically valid JSON array, but of numbers rather
+    /// than the path strings `Vec<String>` expects.
+    #[test]
+    fn wrong_schema_recent_json_loads_as_empty() {
+        let dir = corruption_fixture_dir("wrong-schema");
+        let path = dir.join(FILE);
+        std::fs::write(&path, b"[1, 2, 3]").unwrap();
+
+        let loaded: Vec<String> = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert!(loaded.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Scenario 3: a zero-byte recent.json.
+    #[test]
+    fn empty_recent_json_loads_as_empty() {
+        let dir = corruption_fixture_dir("empty");
+        let path = dir.join(FILE);
+        std::fs::write(&path, b"").unwrap();
+
+        let loaded: Vec<String> = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert!(loaded.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

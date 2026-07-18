@@ -119,7 +119,7 @@ the good-first-issue surface.
 
 **Track V — robustness**
 
-- [ ] per-module corruption regression tests: session.rs, prefs.rs,
+- [x] per-module corruption regression tests: session.rs, prefs.rs,
   recent.rs each get their own truncated/invalid-JSON tests against
   their real file name and real struct (today they only inherit
   store.rs's generic guarantee)

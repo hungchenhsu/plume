@@ -276,4 +276,92 @@ mod tests {
         assert_eq!(f.cursor, 5);
         assert!(f.user_read_only);
     }
+
+    // --- Per-module corruption regression (ROADMAP.md v0.7 Track V) --------
+    //
+    // store.rs's own `corrupt_json_reads_as_none` proves the generic
+    // `read_json_from_path::<T>` contract with a throwaway `Sample` struct;
+    // it says nothing about *this* module's real `Session` shape or its
+    // real "session.json" filename -- session.rs's resilience so far only
+    // inherited store.rs's generic guarantee. `load_session` itself takes
+    // an `AppHandle<R>`, which this crate cannot construct in a unit test
+    // (no `tauri::test` feature enabled -- see recent.rs's
+    // `clear_then_reload_round_trip_is_empty` doc comment for the same
+    // constraint). But `load_session`'s entire body is
+    // `crate::store::read_json(&app, "session.json")`, itself just
+    // `config_path` + `read_json_from_path`, so exercising
+    // `store::read_json_from_path::<Session>` against a file literally
+    // named "session.json" covers everything `load_session` does except
+    // resolving the config directory itself -- the deepest layer testable
+    // without a mock AppHandle.
+
+    fn corruption_fixture_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "plume-session-corrupt-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Scenario 1: a valid session.json truncated mid-write (issue #62's
+    /// failure mode, pinned here against the real `Session` struct and
+    /// filename rather than store.rs's throwaway `Sample`).
+    #[test]
+    fn truncated_session_json_loads_as_none() {
+        let dir = corruption_fixture_dir("truncated");
+        let path = dir.join("session.json");
+
+        let session = Session {
+            files: vec![SessionFile {
+                path: Some("/tmp/a.txt".into()),
+                encoding: "UTF-8".into(),
+                cursor: 10,
+                backup: None,
+                title: "a.txt".into(),
+                with_bom: false,
+                line_ending: "LF".into(),
+                user_read_only: false,
+            }],
+            active: 0,
+        };
+        crate::store::write_json_to_path(&path, &session).unwrap();
+        let full = std::fs::read(&path).unwrap();
+        let half = &full[..full.len() / 2];
+        std::fs::write(&path, half).unwrap();
+
+        let result: Option<Session> = crate::store::read_json_from_path(&path);
+        assert!(result.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Scenario 2: syntactically valid JSON whose top level is an array,
+    /// not the `{files, active}` object `Session` expects.
+    #[test]
+    fn wrong_schema_session_json_loads_as_none() {
+        let dir = corruption_fixture_dir("wrong-schema");
+        let path = dir.join("session.json");
+        std::fs::write(&path, b"[1, 2, 3]").unwrap();
+
+        let result: Option<Session> = crate::store::read_json_from_path(&path);
+        assert!(result.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Scenario 3: a zero-byte session.json (e.g. a crash right after
+    /// creating/truncating the file but before any bytes landed).
+    #[test]
+    fn empty_session_json_loads_as_none() {
+        let dir = corruption_fixture_dir("empty");
+        let path = dir.join("session.json");
+        std::fs::write(&path, b"").unwrap();
+
+        let result: Option<Session> = crate::store::read_json_from_path(&path);
+        assert!(result.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
