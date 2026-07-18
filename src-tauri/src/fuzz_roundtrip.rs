@@ -84,8 +84,10 @@
 //! ## Mojibake wizard reversibility
 //!
 //! `mojibake::REPAIR_PAIRS` (made `pub(crate)` for this file to iterate
-//! without duplicating it) lists the wizard's ten supported
-//! `(intermediate, original)` mis-decode hypotheses. For each, this file
+//! without duplicating it) lists the wizard's fifteen supported
+//! `(intermediate, original)` mis-decode hypotheses (ten plus the five
+//! admitted by the ROADMAP v0.7 Track E investigation batch). For each,
+//! this file
 //! generates representable `original`-text, encodes it (the bytes a real
 //! file would have had), mis-decodes those bytes with `intermediate`
 //! (skipping -- not failing -- the rare random sample that doesn't decode
@@ -1256,6 +1258,20 @@ mod tests {
     /// comment further up this file), so KOI8-R rejecting a windows-1251
     /// pool member's re-encoded bytes is likewise a rare, gracefully
     /// skipped edge rather than the common case.
+    ///
+    /// ROADMAP v0.7 Track E batch (five more pairs, all admitted -- see
+    /// `mojibake::REPAIR_PAIRS`'s doc comment for each one's evaluation):
+    /// `(windows-1251, UTF-8)` and `(windows-1250, UTF-8)` are the same
+    /// shape as `(windows-1252, UTF-8)` (single-byte total-decoder
+    /// intermediate, no encode-filter constraint), so both draw from
+    /// `TextSource::Universal(&edge)` too. `(EUC-KR, UTF-8)` and
+    /// (EUC-JP, UTF-8)` are the same shape as the `(Big5|GBK|Shift_JIS,
+    /// UTF-8)` trio (multi-byte-CJK intermediate needing byte-aligned
+    /// text), so both draw from `latin1_supplement_lower_accented_pool`
+    /// too. `(KOI8-U, windows-1251)` is the same shape as `(KOI8-R,
+    /// windows-1251)` (single-byte intermediate, `windows-1251` as
+    /// `original`), so it draws from `windows1251_pool` too -- no new pool
+    /// fields were needed for this entire batch.
     fn run_mojibake_reversibility_fuzz(
         rng: &mut XorShift64,
         cases_per_pair: usize,
@@ -1279,6 +1295,16 @@ mod tests {
                     TextSource::Pool(&pools.latin1_supplement)
                 }
                 ("KOI8-R", "windows-1251") => TextSource::Pool(&pools.windows1251),
+                // ROADMAP v0.7 Track E batch -- see this function's doc
+                // comment for why each of these five reuses an existing
+                // pool/source rather than needing a new one.
+                ("windows-1251", "UTF-8") | ("windows-1250", "UTF-8") => {
+                    TextSource::Universal(&edge)
+                }
+                ("EUC-KR", "UTF-8") | ("EUC-JP", "UTF-8") => {
+                    TextSource::Pool(&pools.latin1_supplement)
+                }
+                ("KOI8-U", "windows-1251") => TextSource::Pool(&pools.windows1251),
                 (i, o) => panic!(
                     "unhandled mojibake::REPAIR_PAIRS entry ({i}, {o}) -- add a text generator"
                 ),

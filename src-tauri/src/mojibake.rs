@@ -24,8 +24,8 @@
 
 use chardetng::EncodingDetector;
 use encoding_rs::{
-    Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, KOI8_R, SHIFT_JIS, UTF_8, WINDOWS_1251,
-    WINDOWS_1252,
+    Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, KOI8_R, KOI8_U, SHIFT_JIS, UTF_8, WINDOWS_1250,
+    WINDOWS_1251, WINDOWS_1252,
 };
 use serde::Serialize;
 
@@ -126,9 +126,108 @@ use serde::Serialize;
 /// their own genuine mojibake
 /// (`windows1252_eucjp_pair_does_not_shadow_existing_cjk_pairs`).
 ///
+/// **ROADMAP v0.7 Track E mojibake-pair investigation batch** evaluated
+/// five more candidates with the same dual-gate process, cheapest-death-
+/// first per the planning review; all five passed and were admitted --
+/// this batch, unlike issue #182's and v0.6 E2's, found no rejections.
+///
+/// `(WINDOWS_1251, UTF_8)` -- Cyrillic UTF-8 mis-decoded as windows-1251,
+/// the same shape as the already-admitted `(WINDOWS_1252, UTF_8)`.
+/// windows-1251 is a "total" single-byte decoder like windows-1252
+/// (confirmed empirically: decoding every byte 0x00..=0xFF individually
+/// reports zero malformed sequences), so gate 1 reduces to chardetng
+/// recognizing UTF-8 on the recovered bytes -- reliable given
+/// `allow_utf8: true` -- confirmed by `repairs_utf8_misdecoded_as_
+/// windows1251`. Gate 2: the reverse, `(UTF_8, WINDOWS_1251)`, is rejected
+/// (`windows1251_utf8_reverse_hypothesis_is_rejected`); real Cyrillic text
+/// doesn't trigger it (`no_candidates_for_normal_cyrillic_excludes_
+/// windows1251_utf8_pair`); and it doesn't shadow the structurally similar
+/// windows-1250/windows-1252 single-byte pairs in either direction
+/// (`windows1251_utf8_pair_does_not_shadow_sibling_single_byte_pairs`) --
+/// Cyrillic and Western/Central-European Latin repertoires don't overlap,
+/// so gate (a) alone separates them.
+///
+/// `(EUC_KR, UTF_8)` and `(EUC_JP, UTF_8)` -- UTF-8 mis-decoded as a
+/// legacy CJK double-byte encoding, the same shape as the already-admitted
+/// `(BIG5, UTF_8)`/`(GBK, UTF_8)`/`(SHIFT_JIS, UTF_8)`. Both EUC-KR and
+/// EUC-JP are genuine, positively-detected chardetng candidates (not
+/// aliased away). Gate 1 needed the same care those three pairs already
+/// required: genuine 3-byte-UTF-8 Korean/Japanese text essentially never
+/// forms valid 2-byte EUC lead/trail pairs by chance (confirmed
+/// empirically: EUC-KR/EUC-JP decoding of native Korean/Japanese sentences
+/// reports `malformed`), so -- exactly like the Big5/GBK/Shift_JIS pairs
+/// before them -- the fixture that actually clears gates (a)+(b) is
+/// `LATIN1_SUPPLEMENT_TEXT` (2-byte-UTF-8-range accented Latin, already
+/// used for Big5/GBK/Shift_JIS; confirmed by direct byte-range probing
+/// that lead `0xC3`/trail `0xA1..=0xBF` -- the exact shape that fixture is
+/// built from -- is also valid EUC-JP and EUC-KR structure), not native
+/// Korean/Japanese prose. The real-world scenario these two pairs repair
+/// is therefore the same as their three CJK siblings': "a UTF-8 document
+/// with occasional Western-accented characters, opened by a tool
+/// defaulting to EUC-KR/EUC-JP", not "Korean/Japanese text misread".
+/// Confirmed by `repairs_utf8_misdecoded_as_euckr`/`_eucjp`. Gate 2: both
+/// reverses rejected (`euckr_utf8_reverse_hypothesis_is_rejected`,
+/// `eucjp_utf8_reverse_hypothesis_is_rejected`); real Korean/Japanese text
+/// doesn't trigger either (`no_candidates_for_normal_korean_excludes_
+/// euckr_utf8_pair`, `no_candidates_for_normal_japanese_excludes_eucjp_
+/// utf8_pair`); and neither shadows the other, the three existing
+/// `(*, UTF_8)` CJK pairs, or the existing `(WINDOWS_1252, EUC_KR)`/
+/// `(WINDOWS_1252, EUC_JP)` pairs that use EUC-KR/EUC-JP in the opposite
+/// role (`euckr_utf8_pair_does_not_shadow_other_cjk_pairs`, `eucjp_utf8_
+/// pair_does_not_shadow_other_cjk_pairs`).
+///
+/// `(WINDOWS_1250, UTF_8)` -- Central European UTF-8 mis-decoded as
+/// windows-1250, the fourth single-byte-Latin `(*, UTF_8)` pair. Gate 1
+/// reachability was double-checked directly against chardetng 0.1.17's
+/// source (not just its README): `WINDOWS_1250_INDEX = 1` in
+/// `src/data.rs`'s `SINGLE_BYTE_DATA` table, backed by `WINDOWS_1250_INIT`
+/// -- a real, distinct candidate, not aliased away the way GB18030->GBK or
+/// KOI8-R->KOI8-U are. windows-1250 is also a total single-byte decoder,
+/// so as with windows-1251 above, gate 1 in practice reduces to chardetng
+/// recognizing the recovered UTF-8 bytes -- confirmed by
+/// `repairs_utf8_misdecoded_as_windows1250`. Gate 2: reverse rejected
+/// (`windows1250_utf8_reverse_hypothesis_is_rejected`); real Central
+/// European text doesn't trigger it -- a genuinely new false-positive
+/// surface this batch had to cover, since no existing test used Central
+/// European script before (`no_candidates_for_normal_central_european_
+/// text`); and it doesn't shadow windows-1251/windows-1252 in either
+/// direction (`windows1250_utf8_pair_does_not_shadow_sibling_single_byte_
+/// pairs`).
+///
+/// `(KOI8_U, WINDOWS_1251)` -- genuine windows-1251 bytes (including
+/// Ukrainian-specific letters і/ї/є/ґ) mis-decoded as KOI8-U -- the
+/// Ukrainian-locale counterpart to issue #182's `(KOI8_R, WINDOWS_1251)`.
+/// Unlike KOI8-R, chardetng 0.1.17 has a real KOI8-U candidate
+/// (`KOI8_U_INDEX = 4` in `SINGLE_BYTE_DATA`), so this pair is not
+/// structurally blocked the way a `KOI8_R` `original` is -- confirmed by
+/// `repairs_windows1251_misdecoded_as_koi8u`. Gate 2 was the real question
+/// here (planning review flagged this as the pair most likely to repeat
+/// the `(WINDOWS_1251, ISO_8859_5)` mutual-ambiguity failure, since KOI8-U
+/// and windows-1251 are both real chardetng targets): empirically, the
+/// reverse, `(WINDOWS_1251, KOI8_U)`, is rejected on every fixture tried,
+/// including plain `RUSSIAN_TEXT` with no Ukrainian-specific letters at
+/// all, and the mechanism traces to a *structural* gate (a) rejection, not
+/// merely a statistical one -- KOI8-U inherits KOI8-R's legacy
+/// box-drawing characters at several byte positions windows-1251 uses for
+/// real letters (Ё/ё among them), and windows-1251 cannot re-encode a
+/// box-drawing character. Even the adversarial worst case that dodges
+/// every such byte (the bare repeated alphabet) still fails at gate (c):
+/// with no real word/bigram structure, chardetng doesn't recognize it as
+/// any specific Cyrillic encoding at all. Full detail in
+/// `koi8u_windows1251_reverse_hypothesis_is_rejected`'s doc comment; real
+/// Ukrainian text doesn't false-positive either
+/// (`no_candidates_for_normal_ukrainian_text`). One benign interaction
+/// with the existing KOI8-R pair, documented rather than hidden: for
+/// plain-Russian mojibake (no і/ї/є/ґ), both `(KOI8_R, WINDOWS_1251)` and
+/// this new pair can legitimately match the same input -- but both recover
+/// the identical, correct text (KOI8-R and KOI8-U share their core
+/// Cyrillic-letter layout), so this is a redundant-candidate UX footnote,
+/// not the wrong-repair hazard the ISO-8859-5 case was
+/// (`koi8u_windows1251_pair_does_not_shadow_existing_koi8r_pair`).
+///
 /// `pub(crate)` so `fuzz_roundtrip.rs`'s reversibility fuzz can iterate
 /// this exact list instead of maintaining a separately-drifting copy.
-pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 10] = [
+pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 15] = [
     (WINDOWS_1252, UTF_8),
     (WINDOWS_1252, BIG5),
     (WINDOWS_1252, GB18030),
@@ -143,6 +242,13 @@ pub(crate) const REPAIR_PAIRS: [(&Encoding, &Encoding); 10] = [
     // Issue #182: genuine windows-1251 bytes mis-decoded as KOI8-R --
     // see the doc comment above for why only this direction is listed.
     (KOI8_R, WINDOWS_1251),
+    // ROADMAP v0.7 Track E mojibake-pair investigation batch: see the
+    // doc comment above for each pair's two-gate evaluation.
+    (WINDOWS_1251, UTF_8),
+    (EUC_KR, UTF_8),
+    (EUC_JP, UTF_8),
+    (WINDOWS_1250, UTF_8),
+    (KOI8_U, WINDOWS_1251),
 ];
 
 /// `detect_mojibake` samples at most this many bytes of `content`.
@@ -478,6 +584,34 @@ mod tests {
     /// in for "a real windows-1252 document a user might have open", for
     /// the false-positive check below.
     const WESTERN_EUROPEAN_TEXT: &str = "Le café est déjà prêt, mais l'hôtel n'a pas encore reçu la réservation. Où puis-je trouver une pharmacie près d'ici ? C'est très important pour moi.";
+
+    /// v0.7 Track E evaluation fixture: realistic Russian prose for the
+    /// (windows-1251, UTF-8) pair, deliberately distinct from `RUSSIAN_TEXT`
+    /// above (that pangram is reserved for the KOI8-R/ISO-8859-5
+    /// evaluations) so this pair's evaluation is not just re-running that
+    /// fixture under a different label -- same weather/cafe/evening-walk,
+    /// three-topic shape as `EUC_JP_TEXT`.
+    const WINDOWS1251_UTF8_RUSSIAN_TEXT: &str = "Сегодня утром шёл сильный дождь, и улицы были почти пустыми. Мы зашли в маленькое кафе выпить горячего чая и почитать книгу. Вечером небо прояснилось, и мы решили прогуляться в парке перед ужином.";
+
+    /// v0.7 Track E evaluation fixture: realistic Polish prose for the
+    /// (windows-1250, UTF-8) pair -- Central European script was not
+    /// previously represented in this file at all (every existing
+    /// single-byte fixture above is either Western European or Cyrillic).
+    /// Kept under `PREVIEW_CHARS` (200) like every other fixture this file
+    /// asserts an exact `candidate.preview` match against, while still
+    /// exercising all nine of windows-1250's Polish-specific diacritics (ą
+    /// ć ę ł ń ó ś ź ż each appear at least once).
+    const WINDOWS1250_UTF8_POLISH_TEXT: &str = "Dzisiaj słońce świeci jasno, a księżyc będzie pięknie widoczny nad górami. Mój dziadek mówi, że źle się czuje, gdy pogoda się zmienia, więc wolę być ostrożny i mieć gorącą herbatę pod ręką.";
+
+    /// v0.7 Track E evaluation fixture: realistic Ukrainian prose for the
+    /// (KOI8-U, windows-1251) pair, deliberately using the four letters (і,
+    /// ї, є, ґ) that distinguish Ukrainian from Russian -- exactly the
+    /// letters KOI8-U adds over KOI8-R (see `koi8_r_can_never_be_confirmed_
+    /// as_original_by_chardetng`'s doc comment) and the content this new
+    /// pair specifically exists to cover that the already-admitted
+    /// (KOI8-R, windows-1251) pair structurally cannot (see
+    /// `koi8u_windows1251_pair_does_not_shadow_existing_koi8r_pair` below).
+    const KOI8U_WINDOWS1251_UKRAINIAN_TEXT: &str = "Україна – це моя батьківщина. У Києві є багато гарних парків. Я люблю пити чай і їсти смачну їжу. Мій дідусь вирощує квіти у своєму ґрунті.";
 
     #[test]
     fn repairs_big5_misdecoded_as_windows1252() {
@@ -997,5 +1131,591 @@ mod tests {
     #[test]
     fn char_boundary_prefix_handles_short_content() {
         assert_eq!(char_boundary_prefix("hi", SAMPLE_BYTES), "hi");
+    }
+
+    // ----------------------------------------------------------------
+    // v0.7 Track E mojibake-pair investigation batch. Each admitted pair
+    // below gets the same four-test shape ROADMAP v0.6 E2 established for
+    // (WINDOWS_1252, EUC_JP) (see that pair's tests above, ~line 566):
+    // reachability/correctness, a pair-scoped false-positive check, reverse-
+    // hypothesis rejection, and a non-shadowing check against the pairs
+    // most structurally likely to collide with it. See `REPAIR_PAIRS`'s doc
+    // comment for the written evaluation each pair went through.
+    // ----------------------------------------------------------------
+
+    // --- (WINDOWS_1251, UTF_8): Cyrillic UTF-8 mis-decoded as windows-1251 ---
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_windows1251() {
+        let original_text = WINDOWS1251_UTF8_RUSSIAN_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = WINDOWS_1251.decode_without_bom_handling(bytes);
+        assert!(!malformed, "windows-1251 decodes every byte value");
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "windows-1251" && c.original == "UTF-8")
+            .unwrap_or_else(|| {
+                panic!("expected a (windows-1251, UTF-8) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "windows-1251".to_string(), "UTF-8".to_string())
+                .unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    /// False-positive check scoped to this pair, same shape as
+    /// `no_candidates_for_normal_western_european_text`: reuses
+    /// `RUSSIAN_TEXT`, the file's canonical "normal Cyrillic" fixture
+    /// (already exercised generically by `no_candidates_for_normal_
+    /// cyrillic`), since windows-1251's native script is exactly what that
+    /// fixture represents.
+    #[test]
+    fn no_candidates_for_normal_cyrillic_excludes_windows1251_utf8_pair() {
+        let candidates = detect_mojibake(RUSSIAN_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1251" && c.original == "UTF-8"),
+            "correct Cyrillic UTF-8 text must not trigger a false-positive \
+             (windows-1251, UTF-8) repair candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn windows1251_utf8_reverse_hypothesis_is_rejected() {
+        let text = WINDOWS1251_UTF8_RUSSIAN_TEXT;
+        let (mojibake, malformed) = WINDOWS_1251.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, text);
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1251, UTF_8)
+            .expect("the forward (windows-1251, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct_text, text);
+
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, WINDOWS_1251),
+            None,
+            "the reversed (UTF-8, windows-1251) hypothesis must not also pass -- every \
+             Unicode string trivially UTF-8-encodes (gate (a) always passes), so this \
+             relies entirely on gate (b)/(c) rejecting windows-1251 as a match for the \
+             mojibake's own UTF-8 bytes"
+        );
+    }
+
+    /// Checks the pair most structurally likely to collide with this one:
+    /// windows-1250 and windows-1252 are both single-byte "total decoders"
+    /// like windows-1251 (any UTF-8 byte sequence decodes without
+    /// `malformed`), so the only thing that can possibly separate them is
+    /// gate (a) (does the *other* codepage's character repertoire also
+    /// contain whatever this mojibake decoded to?) followed by gate (c).
+    /// Cyrillic (windows-1251) and Western/Central European Latin
+    /// (windows-1252/1250) repertoires don't overlap, so gate (a) alone
+    /// should already separate them -- checked in both directions.
+    #[test]
+    fn windows1251_utf8_pair_does_not_shadow_sibling_single_byte_pairs() {
+        let (mojibake, _) =
+            WINDOWS_1251.decode_without_bom_handling(WINDOWS1251_UTF8_RUSSIAN_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1252, UTF_8),
+            None,
+            "genuine windows-1251 Cyrillic mojibake must not also match (windows-1252, UTF-8)"
+        );
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1250, UTF_8),
+            None,
+            "genuine windows-1251 Cyrillic mojibake must not also match (windows-1250, UTF-8)"
+        );
+
+        let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
+        assert_eq!(
+            try_repair(&m1252, WINDOWS_1251, UTF_8),
+            None,
+            "genuine windows-1252 Western-European mojibake must not also match \
+             (windows-1251, UTF-8)"
+        );
+    }
+
+    // --- (EUC_KR, UTF_8) / (EUC_JP, UTF_8): UTF-8 mis-decoded as a legacy
+    // CJK double-byte encoding. Both reuse `LATIN1_SUPPLEMENT_TEXT` for
+    // their positive fixture -- like the existing (Big5, UTF_8)/(GBK,
+    // UTF_8)/(SHIFT_JIS, UTF_8) pairs, genuine native-script (Korean/
+    // Japanese) UTF-8 text is 3-byte per character and essentially never
+    // lines up with a 2-byte legacy encoding's lead/trail byte structure by
+    // chance (confirmed empirically: EUC-KR/EUC-JP decode of the native
+    // Korean/Japanese sentences used in `no_candidates_for_normal_korean`/
+    // `no_candidates_for_normal_japanese` reports `malformed`), so -- same
+    // as Big5/GBK/Shift_JIS before them -- the real-world scenario these
+    // two pairs actually repair is "a UTF-8 document with occasional
+    // Western-accented characters, opened by a tool defaulting to
+    // EUC-KR/EUC-JP", not "Korean/Japanese text misread as EUC-KR/EUC-JP".
+    // ---
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_euckr() {
+        let original_text = LATIN1_SUPPLEMENT_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = EUC_KR.decode_without_bom_handling(bytes);
+        assert!(
+            !malformed,
+            "fixture is constructed so its UTF-8 bytes are valid EUC-KR lead/trail pairs"
+        );
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "EUC-KR" && c.original == "UTF-8")
+            .unwrap_or_else(|| panic!("expected a (EUC-KR, UTF-8) candidate, got {candidates:?}"));
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "EUC-KR".to_string(), "UTF-8".to_string()).unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_eucjp() {
+        let original_text = LATIN1_SUPPLEMENT_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = EUC_JP.decode_without_bom_handling(bytes);
+        assert!(
+            !malformed,
+            "fixture is constructed so its UTF-8 bytes are valid EUC-JP lead/trail pairs"
+        );
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "EUC-JP" && c.original == "UTF-8")
+            .unwrap_or_else(|| panic!("expected a (EUC-JP, UTF-8) candidate, got {candidates:?}"));
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "EUC-JP".to_string(), "UTF-8".to_string()).unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    /// False-positive check scoped to (EUC-KR, UTF-8): reuses the exact
+    /// sentence from `no_candidates_for_normal_korean` (already exercised
+    /// generically there), same shape as
+    /// `no_candidates_for_normal_western_european_text`.
+    #[test]
+    fn no_candidates_for_normal_korean_excludes_euckr_utf8_pair() {
+        let korean = "안녕하세요. 이것은 한국어 테스트 문장입니다. 데이터가 손상되면 안 됩니다.";
+        let candidates = detect_mojibake(korean.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "EUC-KR" && c.original == "UTF-8"),
+            "correct Korean text must not trigger a false-positive (EUC-KR, UTF-8) \
+             candidate: {candidates:?}"
+        );
+    }
+
+    /// False-positive check scoped to (EUC-JP, UTF-8): reuses the exact
+    /// sentences from `no_candidates_for_normal_japanese`.
+    #[test]
+    fn no_candidates_for_normal_japanese_excludes_eucjp_utf8_pair() {
+        for japanese in [
+            "日本語の文章です。これはテストであり句読点も含まれています。",
+            "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。",
+        ] {
+            let candidates = detect_mojibake(japanese.to_string());
+            assert!(
+                !candidates
+                    .iter()
+                    .any(|c| c.intermediate == "EUC-JP" && c.original == "UTF-8"),
+                "correct Japanese text must not trigger a false-positive (EUC-JP, UTF-8) \
+                 candidate: {candidates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn euckr_utf8_reverse_hypothesis_is_rejected() {
+        let text = LATIN1_SUPPLEMENT_TEXT;
+        let (mojibake, malformed) = EUC_KR.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        let (correct, _) = try_repair(&mojibake, EUC_KR, UTF_8)
+            .expect("the forward (EUC-KR, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct, text);
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, EUC_KR),
+            None,
+            "the reversed (UTF-8, EUC-KR) hypothesis must not also pass"
+        );
+    }
+
+    #[test]
+    fn eucjp_utf8_reverse_hypothesis_is_rejected() {
+        let text = LATIN1_SUPPLEMENT_TEXT;
+        let (mojibake, malformed) = EUC_JP.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        let (correct, _) = try_repair(&mojibake, EUC_JP, UTF_8)
+            .expect("the forward (EUC-JP, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct, text);
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, EUC_JP),
+            None,
+            "the reversed (UTF-8, EUC-JP) hypothesis must not also pass"
+        );
+    }
+
+    /// Shadowing directions checked for (EUC-KR, UTF-8): the same
+    /// `LATIN1_SUPPLEMENT_TEXT` bytes, mis-decoded via EUC-KR vs the three
+    /// existing (Big5|GBK|Shift_JIS, UTF-8) pairs and the sibling
+    /// (EUC-JP, UTF-8) pair, must each match only their own pair -- all
+    /// five legacy CJK codecs assign this byte pattern to different
+    /// characters from different (mostly disjoint) charsets, so gate (a)
+    /// should already separate them; and it doesn't collide with the
+    /// *existing* (windows-1252, EUC-KR) pair, which uses EUC-KR in the
+    /// opposite role (`original` instead of `intermediate`).
+    #[test]
+    fn euckr_utf8_pair_does_not_shadow_other_cjk_pairs() {
+        let (mojibake, _) = EUC_KR.decode_without_bom_handling(LATIN1_SUPPLEMENT_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        for (name, enc) in [
+            ("Big5", BIG5),
+            ("GBK", GBK),
+            ("Shift_JIS", SHIFT_JIS),
+            ("EUC-JP", EUC_JP),
+        ] {
+            assert_eq!(
+                try_repair(&mojibake, enc, UTF_8),
+                None,
+                "EUC-KR mojibake must not also match ({name}, UTF-8)"
+            );
+        }
+
+        // Existing (windows-1252, EUC-KR) pair uses EUC-KR as `original`,
+        // not `intermediate` -- confirm no cross-interaction in either
+        // direction.
+        let korean_text =
+            "안녕하세요. 이것은 한국어 테스트 문장입니다. 데이터가 손상되면 안 됩니다.";
+        let (euckr_real_bytes, _, _) = EUC_KR.encode(korean_text);
+        let (existing_euckr_mojibake, _) =
+            WINDOWS_1252.decode_without_bom_handling(&euckr_real_bytes);
+        assert_eq!(
+            try_repair(&existing_euckr_mojibake, EUC_KR, UTF_8),
+            None,
+            "existing (windows-1252, EUC-KR) mojibake must not also match (EUC-KR, UTF-8)"
+        );
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1252, EUC_KR),
+            None,
+            "new (EUC-KR, UTF-8) mojibake must not also match (windows-1252, EUC-KR)"
+        );
+    }
+
+    /// Mirror of `euckr_utf8_pair_does_not_shadow_other_cjk_pairs` for
+    /// (EUC-JP, UTF-8).
+    #[test]
+    fn eucjp_utf8_pair_does_not_shadow_other_cjk_pairs() {
+        let (mojibake, _) = EUC_JP.decode_without_bom_handling(LATIN1_SUPPLEMENT_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        for (name, enc) in [
+            ("Big5", BIG5),
+            ("GBK", GBK),
+            ("Shift_JIS", SHIFT_JIS),
+            ("EUC-KR", EUC_KR),
+        ] {
+            assert_eq!(
+                try_repair(&mojibake, enc, UTF_8),
+                None,
+                "EUC-JP mojibake must not also match ({name}, UTF-8)"
+            );
+        }
+
+        // Existing (windows-1252, EUC-JP) pair uses EUC-JP as `original`,
+        // not `intermediate` -- confirm no cross-interaction in either
+        // direction.
+        let (eucjp_real_bytes, _, _) = EUC_JP.encode(EUC_JP_TEXT);
+        let (existing_eucjp_mojibake, _) =
+            WINDOWS_1252.decode_without_bom_handling(&eucjp_real_bytes);
+        assert_eq!(
+            try_repair(&existing_eucjp_mojibake, EUC_JP, UTF_8),
+            None,
+            "existing (windows-1252, EUC-JP) mojibake must not also match (EUC-JP, UTF-8)"
+        );
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1252, EUC_JP),
+            None,
+            "new (EUC-JP, UTF-8) mojibake must not also match (windows-1252, EUC-JP)"
+        );
+    }
+
+    // --- (WINDOWS_1250, UTF_8): Central European UTF-8 mis-decoded as
+    // windows-1250. chardetng 0.1.17 carries a real, positively-detected
+    // windows-1250 candidate (`WINDOWS_1250_INDEX = 1` in its
+    // `src/data.rs`'s `SINGLE_BYTE_DATA` table, backed by `WINDOWS_1250_
+    // INIT` -- not aliased away like GB18030->GBK or KOI8-R->KOI8-U), and
+    // its README lists "windows-1250" plainly under "Detected", so this
+    // pair is not structurally dead on arrival the way a hypothetical
+    // KOI8-R-as-`original` pair would be. ---
+
+    #[test]
+    fn repairs_utf8_misdecoded_as_windows1250() {
+        let original_text = WINDOWS1250_UTF8_POLISH_TEXT;
+        let bytes = original_text.as_bytes();
+        let (mojibake, malformed) = WINDOWS_1250.decode_without_bom_handling(bytes);
+        assert!(!malformed, "windows-1250 decodes every byte value");
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "windows-1250" && c.original == "UTF-8")
+            .unwrap_or_else(|| {
+                panic!("expected a (windows-1250, UTF-8) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "windows-1250".to_string(), "UTF-8".to_string())
+                .unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    /// New false-positive risk surface: Central European script was not
+    /// previously represented in this file at all (unlike Korean/Japanese/
+    /// Cyrillic/Chinese, which already had generic coverage before this
+    /// batch). Same shape as `no_candidates_for_normal_western_european_
+    /// text`.
+    #[test]
+    fn no_candidates_for_normal_central_european_text() {
+        let candidates = detect_mojibake(WINDOWS1250_UTF8_POLISH_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "windows-1250" && c.original == "UTF-8"),
+            "correct Central-European windows-1250 text must not trigger a false-positive \
+             (windows-1250, UTF-8) repair candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn windows1250_utf8_reverse_hypothesis_is_rejected() {
+        let text = WINDOWS1250_UTF8_POLISH_TEXT;
+        let (mojibake, malformed) = WINDOWS_1250.decode_without_bom_handling(text.as_bytes());
+        assert!(!malformed);
+        let mojibake = mojibake.into_owned();
+        assert_ne!(mojibake, text);
+
+        let (correct_text, _) = try_repair(&mojibake, WINDOWS_1250, UTF_8)
+            .expect("the forward (windows-1250, UTF-8) hypothesis must pass every gate");
+        assert_eq!(correct_text, text);
+
+        assert_eq!(
+            try_repair(&mojibake, UTF_8, WINDOWS_1250),
+            None,
+            "the reversed (UTF-8, windows-1250) hypothesis must not also pass"
+        );
+    }
+
+    /// Same reasoning as `windows1251_utf8_pair_does_not_shadow_sibling_
+    /// single_byte_pairs`: windows-1250 (Central European Latin) vs
+    /// windows-1251 (Cyrillic) and windows-1252 (Western European Latin)
+    /// have different-enough repertoires that gate (a) should separate
+    /// them, checked in both directions for both siblings.
+    #[test]
+    fn windows1250_utf8_pair_does_not_shadow_sibling_single_byte_pairs() {
+        let (mojibake, _) =
+            WINDOWS_1250.decode_without_bom_handling(WINDOWS1250_UTF8_POLISH_TEXT.as_bytes());
+        let mojibake = mojibake.into_owned();
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1251, UTF_8),
+            None,
+            "genuine windows-1250 Polish mojibake must not also match (windows-1251, UTF-8)"
+        );
+        assert_eq!(
+            try_repair(&mojibake, WINDOWS_1252, UTF_8),
+            None,
+            "genuine windows-1250 Polish mojibake must not also match (windows-1252, UTF-8)"
+        );
+
+        let (m1252, _) = WINDOWS_1252.decode_without_bom_handling(WESTERN_EUROPEAN_TEXT.as_bytes());
+        assert_eq!(
+            try_repair(&m1252, WINDOWS_1250, UTF_8),
+            None,
+            "genuine windows-1252 Western-European mojibake must not also match \
+             (windows-1250, UTF-8)"
+        );
+    }
+
+    // --- (KOI8_U, WINDOWS_1251): genuine windows-1251 Cyrillic bytes
+    // (including Ukrainian-specific letters) mis-decoded as KOI8-U -- the
+    // Ukrainian-locale counterpart to the already-admitted (KOI8_R,
+    // WINDOWS_1251) pair (issue #182). Unlike KOI8-R, chardetng 0.1.17 has
+    // a real KOI8-U candidate (`KOI8_U_INDEX = 4` in `SINGLE_BYTE_DATA`),
+    // so this pair is not structurally blocked the way a `KOI8_R` `original`
+    // is. ---
+
+    #[test]
+    fn repairs_windows1251_misdecoded_as_koi8u() {
+        let original_text = KOI8U_WINDOWS1251_UKRAINIAN_TEXT;
+        let (bytes, _, unmappable) = WINDOWS_1251.encode(original_text);
+        assert!(!unmappable, "fixture must be fully windows-1251-encodable");
+        let (mojibake, malformed) = KOI8_U.decode_without_bom_handling(&bytes);
+        assert!(
+            !malformed,
+            "fixture bytes must also decode cleanly as KOI8-U"
+        );
+        let mojibake = mojibake.into_owned();
+        assert_ne!(
+            mojibake, original_text,
+            "fixture must actually look garbled"
+        );
+
+        let candidates = detect_mojibake(mojibake.clone());
+        let candidate = candidates
+            .iter()
+            .find(|c| c.intermediate == "KOI8-U" && c.original == "windows-1251")
+            .unwrap_or_else(|| {
+                panic!("expected a (KOI8-U, windows-1251) candidate, got {candidates:?}")
+            });
+        assert_eq!(candidate.preview, original_text);
+
+        let repaired =
+            apply_mojibake_repair(mojibake, "KOI8-U".to_string(), "windows-1251".to_string())
+                .unwrap();
+        assert_eq!(repaired, original_text);
+    }
+
+    /// New false-positive risk surface distinct from `no_candidates_for_
+    /// normal_cyrillic` (plain Russian, no і/ї/є/ґ): correct Ukrainian UTF-8
+    /// text, using the letters this pair specifically exists to serve, must
+    /// not trigger it either.
+    #[test]
+    fn no_candidates_for_normal_ukrainian_text() {
+        let candidates = detect_mojibake(KOI8U_WINDOWS1251_UKRAINIAN_TEXT.to_string());
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.intermediate == "KOI8-U" && c.original == "windows-1251"),
+            "correct Ukrainian text must not trigger a false-positive (KOI8-U, \
+             windows-1251) repair candidate: {candidates:?}"
+        );
+    }
+
+    /// Gate 2 (mutual-ambiguity check), robustly: unlike the ISO-8859-5
+    /// case (which passes every gate, including chardetng, in *both*
+    /// directions), the reverse hypothesis here, (windows-1251, KOI8-U),
+    /// fails structurally at gate (a) for every real fixture tried --
+    /// Ukrainian text with і/ї/є/ґ, and even plain ASCII-punctuation-only
+    /// `RUSSIAN_TEXT` with no Ukrainian-specific letters at all. Root
+    /// cause, traced directly: KOI8-U inherits KOI8-R's legacy box-drawing
+    /// characters (e.g. U+2566) at several byte positions windows-1251
+    /// uses for real Cyrillic letters (Ё/ё among them, at 0xA8/0xB8) --
+    /// genuine windows-1251 text almost always uses at least one such byte,
+    /// and windows-1251 cannot re-encode the resulting box-drawing
+    /// character, so gate (a) rejects before chardetng is ever consulted.
+    /// Even the adversarially-constructed worst case that avoids every such
+    /// byte (the bare repeated `А..я` alphabet, which *does* pass gates (a)
+    /// and (b)) still gets rejected at gate (c): with no real word/bigram
+    /// structure, chardetng doesn't recognize it as any specific Cyrillic
+    /// encoding at all (it guesses windows-1252, not KOI8-U) -- so this
+    /// pair has the same defense-in-depth shape as `windows1252_eucjp_
+    /// reverse_hypothesis_is_rejected`, just with the structural gate doing
+    /// most of the work instead of the statistical one.
+    #[test]
+    fn koi8u_windows1251_reverse_hypothesis_is_rejected() {
+        for text in [
+            KOI8U_WINDOWS1251_UKRAINIAN_TEXT,
+            RUSSIAN_TEXT,
+            "Щодня вранці я п'ю каву і читаю новини про події в Європі. \
+             Мій брат живе у Львові, де є багато старовинних будівель. \
+             Восени листя жовтіє, і стає прохолодніше.",
+        ] {
+            let (real_bytes, _, unmappable) = WINDOWS_1251.encode(text);
+            assert!(
+                !unmappable,
+                "fixture must be windows-1251-encodable: {text}"
+            );
+            let (mojibake, malformed) = KOI8_U.decode_without_bom_handling(&real_bytes);
+            assert!(!malformed, "fixture must KOI8-U-decode cleanly: {text}");
+            let mojibake = mojibake.into_owned();
+
+            let (correct_text, _) = try_repair(&mojibake, KOI8_U, WINDOWS_1251)
+                .expect("the forward (KOI8-U, windows-1251) hypothesis must pass every gate");
+            assert_eq!(correct_text, text);
+
+            assert_eq!(
+                try_repair(&mojibake, WINDOWS_1251, KOI8_U),
+                None,
+                "the reversed (windows-1251, KOI8-U) hypothesis must not also pass \
+                 for: {text}"
+            );
+        }
+    }
+
+    /// Documents a known, benign interaction with the pre-existing
+    /// (KOI8-R, windows-1251) pair rather than hiding it: for
+    /// Ukrainian-flavored content (using і/ї/є/ґ), the old KOI8-R pair
+    /// cannot match at all -- KOI8-R lacks those letters entirely, so
+    /// decoding their windows-1251 bytes via KOI8-R lands on KOI8-R's own
+    /// legacy box-drawing characters, which windows-1251 can't re-encode
+    /// (gate (a) fails), exactly the mechanism `koi8u_windows1251_reverse_
+    /// hypothesis_is_rejected` documents in the other direction. But for
+    /// plain-Russian content with no Ukrainian-specific letters (e.g.
+    /// `RUSSIAN_TEXT`), KOI8-R and KOI8-U share enough of their layout that
+    /// *both* pairs legitimately match the same mojibake -- unlike the
+    /// ISO-8859-5 mutual-ambiguity case, this is not a hazard: both
+    /// hypotheses recover the exact same, correct text, so a user offered
+    /// both candidates loses nothing by picking either.
+    #[test]
+    fn koi8u_windows1251_pair_does_not_shadow_existing_koi8r_pair() {
+        let (real_bytes, _, unmappable) = WINDOWS_1251.encode(KOI8U_WINDOWS1251_UKRAINIAN_TEXT);
+        assert!(!unmappable);
+        let (ukr_mojibake, malformed) = KOI8_U.decode_without_bom_handling(&real_bytes);
+        assert!(!malformed);
+        let ukr_mojibake = ukr_mojibake.into_owned();
+        assert_eq!(
+            try_repair(&ukr_mojibake, KOI8_R, WINDOWS_1251),
+            None,
+            "genuine Ukrainian-flavored KOI8-U mojibake must not be wrongly matched by the \
+             existing (KOI8-R, windows-1251) pair -- KOI8-R has no candidate letters for \
+             і/ї/є/ґ at all"
+        );
+
+        let (real_bytes, _, unmappable) = WINDOWS_1251.encode(RUSSIAN_TEXT);
+        assert!(!unmappable);
+        let (ru_mojibake, malformed) = KOI8_R.decode_without_bom_handling(&real_bytes);
+        assert!(!malformed);
+        let ru_mojibake = ru_mojibake.into_owned();
+        let koi8u_reading = try_repair(&ru_mojibake, KOI8_U, WINDOWS_1251);
+        assert_eq!(
+            koi8u_reading.map(|(t, _)| t),
+            Some(RUSSIAN_TEXT.to_string()),
+            "for plain-Russian content the new (KOI8-U, windows-1251) pair, if it also \
+             matches genuine (KOI8-R, windows-1251) mojibake, must recover the SAME \
+             correct text as the existing pair -- a benign duplicate candidate, not a \
+             wrong-repair hazard"
+        );
     }
 }

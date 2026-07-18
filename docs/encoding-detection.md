@@ -136,6 +136,28 @@ deliberately *not* in `MANUAL_ONLY_ENCODINGS`. Only a BOM-less UTF-16 file
 falls back to needing a per-extension default or a manual reopen, same as
 any other undetectable case.
 
+## Relationship to the mojibake repair wizard
+
+The "Detected" list above is also the load-bearing fact behind
+`src-tauri/src/mojibake.rs`'s `REPAIR_PAIRS`: every mojibake-repair
+hypothesis `(intermediate, original)` in that table requires chardetng to
+be able to positively confirm `original` on the recovered bytes (that
+module's `try_repair`, gate (c)). An encoding this document lists as
+never-detected-at-all or always-mislabeled-as-something-else (the four
+"Manual-only" entries just above, principally `KOI8-R`, which chardetng
+always reports as `KOI8-U`) can therefore never appear as `original` in
+`REPAIR_PAIRS` — not a low-probability case, a structural impossibility,
+regardless of the input. For the ROADMAP v0.7 Track E batch, the
+encoding this constraint actually bites on is each pair's `original` —
+`UTF-8` for four of the five pairs and `windows-1251` for the fifth —
+both solidly in the "Detected" set, confirmed directly against chardetng
+0.1.17's `src/data.rs`/`src/lib.rs` (not just this document). The other
+batch encodings (`EUC-KR`, `EUC-JP`, `windows-1250`, `KOI8-U`) appear
+only as `intermediate`, where gate (c) does not apply (an intermediate
+only needs to be *encodable*, gate (a)); that they also happen to be
+detectable is incidental. See `REPAIR_PAIRS`'s own doc comment for the
+full per-pair writeup.
+
 ## Practical guidance
 
 If a file is known (or suspected) to be one of the four manual-only
