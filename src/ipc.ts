@@ -26,6 +26,12 @@ export interface DocumentChunk {
   nextOffset: number | null;
   totalSize: number;
   malformed: boolean;
+  /** True when the `expected` fingerprint the read was given no longer
+   *  matches the file on disk (issue #251) — the offsets this request was
+   *  paging with describe a previous file version. Every other field is a
+   *  placeholder; the caller must reload (the same structured-staleness
+   *  contract as `SaveResult.stale`, never an error-string sniff). */
+  stale: boolean;
 }
 
 /**
@@ -39,17 +45,25 @@ export interface DocumentChunk {
  */
 export type ChunkOffsetKind = "lineStart" | "continuation";
 
+/** `expected` for every large-file read below is the fingerprint of the
+ *  file version the caller's offsets describe — `doc.fingerprint` for
+ *  paging continuations, `LineIndex.fingerprint` for index-derived jumps
+ *  (issue #251). Opaque to the frontend, exactly like
+ *  `OpenedDocument.fingerprint`; when omitted the Rust core can only
+ *  range-check the offset against the current file size. */
 export function readDocumentChunk(
   path: string,
   offset: number,
   encoding: string,
   kind: ChunkOffsetKind,
+  expected?: unknown,
 ): Promise<DocumentChunk> {
   return invoke<DocumentChunk>("read_document_chunk", {
     path,
     offset,
     encoding,
     kind,
+    expected,
   });
 }
 
@@ -58,11 +72,13 @@ export function readDocumentChunkBefore(
   path: string,
   end: number,
   encoding: string,
+  expected?: unknown,
 ): Promise<DocumentChunk> {
   return invoke<DocumentChunk>("read_document_chunk_before", {
     path,
     end,
     encoding,
+    expected,
   });
 }
 
@@ -73,6 +89,21 @@ export interface LineIndex {
   /** File size when the index was built; compare against `doc.totalSize`
    *  to detect a stale index (see src-tauri/src/lineindex.rs). */
   indexedSize: number;
+  /** Fingerprint of the exact file version the checkpoints describe —
+   *  passed back as `locateLineOffset`/`readDocumentChunk`'s `expected`
+   *  so a same-size overwrite the size check can't see is still caught
+   *  (issue #251). Opaque, like `OpenedDocument.fingerprint`; null/absent
+   *  when the Rust core couldn't capture one. */
+  fingerprint: unknown;
+}
+
+/** `locateLineOffset`'s resolution, or the discovery that the index the
+ *  walk started from no longer describes the file (issue #251) — same
+ *  structured-staleness shape as `DocumentChunk.stale`. */
+export interface LocatedOffset {
+  /** Meaningless when `stale` is true. */
+  offset: number;
+  stale: boolean;
 }
 
 /**
@@ -98,12 +129,14 @@ export function locateLineOffset(
   targetLine: number,
   fromOffset: number,
   fromLine: number,
-): Promise<number> {
-  return invoke<number>("locate_line_offset", {
+  expected?: unknown,
+): Promise<LocatedOffset> {
+  return invoke<LocatedOffset>("locate_line_offset", {
     path,
     targetLine,
     fromOffset,
     fromLine,
+    expected,
   });
 }
 
