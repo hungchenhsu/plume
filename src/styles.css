@@ -448,8 +448,12 @@ select:focus-visible {
 /* Command Palette (Mod+Shift+P; ROADMAP.md v0.6 C1) — same overlay/panel/
    input/list shape as .quickopen-* above (own class namespace per this
    codebase's convention: each dialog module owns its own prefix even when
-   visually near-identical, e.g. .goto-*/.fif-* below), just single-line
-   items instead of quickopen's name+dir pair. */
+   visually near-identical, e.g. the .goto- and .fif- families below),
+   just single-line items instead of quickopen's name+dir pair.
+   NB a literal star-slash inside this comment would terminate it early —
+   that typo shipped once and left the file un-parseable downstream of
+   here (issue #250, caught as esbuild css-syntax-error build warnings) —
+   so class prefixes in prose stay spelled without their wildcard. */
 .palette-overlay {
   position: fixed;
   inset: 0;
