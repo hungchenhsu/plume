@@ -131,7 +131,7 @@ mod tests {
     use super::*;
 
     fn write_temp(dir_name: &str, file_name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(dir_name);
+        let dir = std::env::temp_dir().join(format!("{dir_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(file_name);

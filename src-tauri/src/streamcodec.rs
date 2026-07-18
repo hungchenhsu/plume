@@ -126,7 +126,8 @@ mod tests {
     }
 
     fn fixture_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("plume-streamcodec-{name}"));
+        let dir =
+            std::env::temp_dir().join(format!("plume-streamcodec-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
