@@ -302,6 +302,14 @@ function fetchOrError<T>(promise: Promise<T>): Promise<DocInfoFetch<T>> {
  * dialog module's own decoupling from the live CM6 instance — and should
  * already be `null` for a truncated large-file window (mirrors main.ts's
  * `computeAndShowTextStats`).
+ *
+ * `extensionEncoding` is the same per-extension hint `openDocument` got
+ * for this path (main.ts's `extensionHint`), forwarded to
+ * `explainDetection` so the dialog explains the detection that actually
+ * ran — omitting it re-runs detection with different inputs and can show
+ * a different verdict/provenance than the one that chose the document's
+ * encoding (issue #255; ipc.ts's `explainDetection` doc comment and
+ * detectcard.ts's Why Encoding? card follow the same contract).
  */
 export function showDocumentInfo(doc: {
   path: string | null;
@@ -309,6 +317,7 @@ export function showDocumentInfo(doc: {
   encoding: string;
   withBom: boolean;
   lineEnding: string;
+  extensionEncoding?: string;
   textStats: { stats: TextStats; selected: boolean } | null;
 }): void {
   if (document.querySelector(".docinfo-dialog")) return;
@@ -341,7 +350,7 @@ export function showDocumentInfo(doc: {
   const detectionFetch: Promise<DocInfoFetch<DetectionExplanation>> =
     doc.path === null
       ? Promise.resolve({ status: "skipped", reason: "untitled" })
-      : fetchOrError(explainDetection(doc.path));
+      : fetchOrError(explainDetection(doc.path, doc.extensionEncoding));
   const lineEndingFetch: Promise<DocInfoFetch<LineEndingDistribution>> =
     doc.path === null
       ? Promise.resolve({ status: "skipped", reason: "untitled" })
