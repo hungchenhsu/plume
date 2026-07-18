@@ -44,6 +44,13 @@ faster for text files, or is it IDE creep?*
 
 ## 2. Current state (2026-07-18)
 
+- **v0.7 feature cycle planned and in progress** (2026-07-18, standing
+  delegation, user away until 2026-07-22): consistency snapshots
+  (#254), write serialization (prefs/session op queues), a
+  mojibake-pair investigation batch, no-GUI comfort items with manual
+  acceptance deferred, robustness tests, CONTRIBUTING + shortcut docs.
+  Full item list in ROADMAP.md §v0.7; adversarially reviewed before
+  start (AGREE-WITH-CHANGES, all adopted).
 - **v0.6 feature cycle complete** (2026-07-16→17, PRs #229–#249 range):
   planned and executed autonomously under the user's standing
   delegation (same model as v0.4/v0.5), adversarially reviewed before

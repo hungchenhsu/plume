@@ -26,6 +26,127 @@ archived v0.3 record and in DIRECTION §2/§3.
 - [ ] D2 signing + auto-update — blocked on D1 and user-held keys
   (runbook in the maintainer's local private storage)
 
+## v0.7 — consistency, serialization & daily-driver closure (planned 2026-07-18, delegated)
+
+Scope planned autonomously under the user's standing delegation (user
+away until 2026-07-22; same model as v0.4–v0.6: plan the cycle, merge on
+green CI, post-merge review). Planning was preceded by a four-agent
+current-state audit, so nothing below re-plans something that already
+exists (Enter auto-indent, move/duplicate line, status-bar text stats,
+tab context-menu copy-path/reveal were all confirmed present and
+excluded), and the plan passed an adversarial review before work started
+(AGREE-WITH-CHANGES; every requested change adopted — see per-item
+notes). One structural constraint shapes the cycle: **no GUI can be
+launched** (user away, desktop possibly locked, standing caution), so
+editor-UX items are built as pure-logic cores with thin CodeMirror
+bindings, vitest-covered, and dual-WebView manual acceptance is
+explicitly deferred to the user's return; only two such items (the trim
+and in-selection ones) are admitted, per the review's cap. Theme: close
+the remaining consistency gaps (snapshot reads, write serialization),
+deepen the mojibake table by investigation, and finish the
+daily-driver comfort backlog that needs no GUI. Items marked
+**[danger]** follow judgment overlay §1: failing-test-first, round-trip
+tests where encoding behavior changes, adversarial review before
+commit; danger items are never worked in parallel. #89 stays open as
+the good-first-issue surface.
+
+**Track R — debt & correctness** (ordered by execution)
+
+- [ ] #231: clean doc's Save with Encoding leaves a spurious dirty flag
+  after a non-stale write failure — the rollback branch restores
+  encoding/withBom but not dirty; capture the revision at force time
+  and restore dirty=false when the rollback condition holds and the
+  revision is unchanged; also reconcile the backup flush already
+  scheduled for the rolled-back state (adversarial-review addition)
+  [danger]
+- [ ] #254 (remaining half): one consistent-snapshot backend command
+  for Document Info — a single Rust command opens the file once and
+  derives all three sections (file metadata, detection evidence,
+  line-ending distribution) from that one read, replacing the three
+  parallel IPC calls in docinfo.ts; the response keeps per-section
+  Result fields so the dialog's existing per-section error degradation
+  survives (adversarial-review addition); explain_detection itself
+  stays, detectcard.ts uses it independently [danger]
+- [ ] #236: per-process fixture_dir isolation for the five listed test
+  files (batch.rs, fsguard.rs, replaceinfiles.rs, search.rs,
+  streamcodec.rs), applying the #237 pattern; sweep the other
+  fixed-temp-name test files in the same PR where the same mechanical
+  change applies
+- [ ] prefs + session write serialization: every savePreferences call
+  site (preferences.ts, 7 sites) and persistSession path (main.ts, 8
+  sites) goes through an op queue — per-file queue, snapshot captured
+  at enqueue time (both adversarial-review additions) — closing the
+  same late-write-overwrites-newer race #270 closed for recent files
+  [danger]
+
+**Track E — encoding trust**
+
+- [ ] mojibake-pair investigation batch: run the dual gate (chardetng
+  reachability + reverse-hypothesis rejection) over the candidates
+  (WINDOWS_1251, UTF_8), (EUC_KR, UTF_8), (EUC_JP, UTF_8),
+  (WINDOWS_1250, UTF_8), and — last, cheapest-death-first per the
+  adversarial review — (KOI8_U, WINDOWS_1251); admit whatever passes,
+  with the mandatory fuzz_roundtrip.rs MojibakePools/match-arm sync
+  (known runtime-panic dead end, overlay §4), and record written
+  rejections in mojibake.rs docs for the rest; zero admissions is a
+  valid outcome — the rejection record is the deliverable;
+  docs/encoding-detection.md updated in the same PR [danger]
+
+**Track C — comfort** (no-GUI shapes; manual acceptance deferred where noted)
+
+- [ ] go to matching bracket: menu + palette wiring for the built-in
+  cursorMatchingBracket command
+- [ ] encoding-picker alias search: typing an IANA/common alias
+  (latin1, cp950, …) matches the canonical encoding in the picker;
+  investigate the picker's existing filter mechanism first — if
+  aliases already match, close with findings
+- [ ] trim trailing whitespace on save: opt-in preference (default
+  off); the trim is applied as an editor edit before the normal save
+  flow so buffer and disk stay identical — the spec must keep the
+  caret stable and fold the trim into the save so one undo step
+  reverts the user's last edit, not the trim (adversarial-review
+  addition); round-trip tests; large-file mode is untouched (read-only
+  preview cannot save); dual-WebView manual acceptance deferred
+  [danger]
+- [ ] find/replace in selection: replace / replace-all scoped to the
+  current selection — built as a pure, vitest-covered core
+  ((docText, ranges, query) → edits, including post-replace
+  range-shift bookkeeping) with a thin CodeMirror binding, per the
+  adversarial review; dual-WebView manual acceptance deferred [danger]
+- [ ] insert date/time (stretch — first to cut if the cycle runs
+  long): Edit-menu + palette command inserting a localized timestamp
+  at the caret
+
+**Track V — robustness**
+
+- [ ] per-module corruption regression tests: session.rs, prefs.rs,
+  recent.rs each get their own truncated/invalid-JSON tests against
+  their real file name and real struct (today they only inherit
+  store.rs's generic guarantee)
+- [ ] external delete/rename visibility: verify what the watcher
+  actually surfaces today for on-disk delete and rename (notify
+  Remove / Modify(Name) events), document the gap analysis; any fix
+  this cycle is limited to vitest-testable logic — findings-only is a
+  valid close (adversarial-review scoping)
+
+**Track H — outward**
+
+- [ ] keyboard-shortcut reference: one consolidated table
+  (docs/features.md appendix or docs/shortcuts.md) sourced from
+  menu.rs LABELS and the CM6 built-in keymap — never hand-recalled
+- [ ] CONTRIBUTING.md: links dev-setup.md, the Definition of Done, PR
+  conventions, and the commit-language policy for external
+  contributors (zh-TW preferred, English accepted); positioning red
+  lines apply
+
+**Close-out**
+
+- [ ] routine cargo-lockfile refresh (18 compatible updates pending at
+  planning time) as a small chore PR
+- [ ] cycle close-out: CHANGELOG.md, version bump across
+  tauri.conf.json / package.json / Cargo.toml, tag v0.7.0-alpha.1
+  (pre-release authority), handoff memory update
+
 ## Completed cycles
 
 Summary index only — every item's full design rationale, edge cases,
