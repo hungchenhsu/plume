@@ -94,6 +94,7 @@ export interface Messages {
    *  or silently-missing section (CLAUDE.md's decode-error-surfacing
    *  discipline, generalized to every fact this dialog shows). */
   "docinfo.loadError": (message: string) => string;
+  "docinfo.dirtyNote": string;
 
   "charinspect.title": (codepoint: string) => string;
   "charinspect.labelChar": string;
@@ -539,6 +540,10 @@ const en: Messages = {
   "docinfo.lineEndingUtf16Note": "Line-ending distribution isn't available for UTF-16 files.",
   "docinfo.labelTextStats": "Word/Character/Line Count",
   "docinfo.loadError": (message) => `Couldn't load this information: ${message}`,
+  "docinfo.dirtyNote":
+    "This document has unsaved changes: the text statistics below reflect " +
+    "the current buffer, while the file, encoding and line-ending facts " +
+    "describe the last saved version on disk.",
 
   "charinspect.title": (codepoint) => `Character ${codepoint}`,
   "charinspect.labelChar": "Character",
@@ -932,6 +937,8 @@ const zhTW: Messages = {
   "docinfo.lineEndingUtf16Note": "UTF-16 檔案不支援行尾分布統計。",
   "docinfo.labelTextStats": "詞／字元／行數",
   "docinfo.loadError": (message) => `無法載入此資訊：${message}`,
+  "docinfo.dirtyNote":
+    "本文件有未儲存的變更：下方文字統計反映目前緩衝區內容，檔案、編碼與行尾資訊則為磁碟上最後儲存的版本。",
 
   "charinspect.title": (codepoint) => `字元 ${codepoint}`,
   "charinspect.labelChar": "字元",
@@ -1289,6 +1296,8 @@ const ja: Messages = {
   "docinfo.lineEndingUtf16Note": "UTF-16 ファイルでは改行コードの分布を取得できません。",
   "docinfo.labelTextStats": "単語数／文字数／行数",
   "docinfo.loadError": (message) => `この情報を読み込めませんでした: ${message}`,
+  "docinfo.dirtyNote":
+    "このドキュメントには未保存の変更があります。テキスト統計は現在のバッファーを反映し、ファイル・エンコーディング・改行コードの情報はディスク上の最終保存版のものです。",
 
   "charinspect.title": (codepoint) => `文字 ${codepoint}`,
   "charinspect.labelChar": "文字",
@@ -1671,6 +1680,8 @@ const zhCN: Messages = {
   "docinfo.lineEndingUtf16Note": "UTF-16 文件不支持换行符分布统计。",
   "docinfo.labelTextStats": "词／字符／行数",
   "docinfo.loadError": (message) => `无法加载此信息：${message}`,
+  "docinfo.dirtyNote":
+    "本文档有未保存的更改：下方文本统计反映当前缓冲区内容，文件、编码与换行符信息则为磁盘上最后保存的版本。",
 
   "charinspect.title": (codepoint) => `字符 ${codepoint}`,
   "charinspect.labelChar": "字符",
