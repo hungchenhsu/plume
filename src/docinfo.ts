@@ -100,6 +100,14 @@ export function buildDocumentInfoDialogContent(input: {
   encoding: string;
   withBom: boolean;
   lineEnding: string;
+  /** True when the buffer holds unsaved edits. The dialog mixes two fact
+   *  sources — text stats from the live buffer, everything disk-backed
+   *  (size/mtime, detection evidence, line-ending distribution) from a
+   *  fresh re-read of the file — which agree for a clean document but
+   *  describe different content for a dirty one; the framing note this
+   *  flag adds keeps the rows from reading as mutually corroborating
+   *  when they aren't (issue #254). */
+  dirty: boolean;
   metadata: DocInfoFetch<DocumentMetadata>;
   detection: DocInfoFetch<DetectionExplanation>;
   lineEndingDist: DocInfoFetch<LineEndingDistribution>;
@@ -111,6 +119,12 @@ export function buildDocumentInfoDialogContent(input: {
 }): DocumentInfoDialogContent {
   const fileRows: DocumentInfoRow[] = [];
   const fileNotes: string[] = [];
+  // First section, first note, so the disk-vs-buffer split is framed
+  // before any disk-backed row is read. Untitled tabs skip it: they have
+  // no disk-backed rows for the buffer to disagree with.
+  if (input.dirty && input.path !== null) {
+    fileNotes.push(t("docinfo.dirtyNote"));
+  }
   if (input.path === null) {
     fileRows.push({
       label: t("docinfo.labelPath"),
@@ -317,6 +331,9 @@ export function showDocumentInfo(doc: {
   encoding: string;
   withBom: boolean;
   lineEnding: string;
+  /** Unsaved-edits flag, threaded through to the dialog's disk-vs-buffer
+   *  framing note (issue #254) — see buildDocumentInfoDialogContent. */
+  dirty: boolean;
   extensionEncoding?: string;
   textStats: { stats: TextStats; selected: boolean } | null;
 }): void {
@@ -367,6 +384,7 @@ export function showDocumentInfo(doc: {
         encoding: doc.encoding,
         withBom: doc.withBom,
         lineEnding: doc.lineEnding,
+        dirty: doc.dirty,
         metadata,
         detection,
         lineEndingDist,

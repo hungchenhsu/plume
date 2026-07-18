@@ -53,6 +53,7 @@ function baseInput() {
     encoding: "UTF-8",
     withBom: false,
     lineEnding: "LF",
+    dirty: false,
     metadata: okMetadata,
     detection: okDetection,
     lineEndingDist: exactLineEnding,
@@ -286,6 +287,7 @@ describe("showDocumentInfo — explainDetection hint contract (issue #255)", () 
       encoding: "UTF-8",
       withBom: false,
       lineEnding: "LF",
+      dirty: false,
       extensionEncoding,
       textStats: null,
     });
@@ -311,5 +313,45 @@ describe("showDocumentInfo — explainDetection hint contract (issue #255)", () 
   it("passes no hint when the caller has none for this extension", () => {
     openInfo(undefined);
     expect(explainDetection).toHaveBeenCalledWith("/home/user/notes.txt", undefined);
+  });
+});
+
+// Issue #254 (framing facet): the dialog mixes live-buffer text stats with
+// disk re-read facts. For a dirty document those describe different
+// content, so a framing note must say which rows come from where; for a
+// clean document (sources agree) and an untitled tab (no disk rows at
+// all) the note must stay absent.
+describe("buildDocumentInfoDialogContent — dirty disk-vs-buffer framing (issue #254)", () => {
+  it("prefixes the file section with the framing note when the document is dirty", () => {
+    const model = buildDocumentInfoDialogContent({ ...baseInput(), dirty: true });
+    expect(model.fileSection.notes[0]).toContain("unsaved changes");
+  });
+
+  it("control group: no note for a clean document", () => {
+    const model = buildDocumentInfoDialogContent(baseInput());
+    expect(model.fileSection.notes).toEqual([]);
+  });
+
+  it("no note for a dirty untitled tab — there are no disk rows to disagree with", () => {
+    const model = buildDocumentInfoDialogContent({
+      ...baseInput(),
+      dirty: true,
+      path: null,
+      title: "Untitled-1",
+      metadata: { status: "skipped", reason: "untitled" },
+      detection: { status: "skipped", reason: "untitled" },
+      lineEndingDist: { status: "skipped", reason: "untitled" },
+    });
+    expect(model.fileSection.notes).toEqual([]);
+  });
+
+  it("keeps the note first even when a metadata load error adds its own note", () => {
+    const model = buildDocumentInfoDialogContent({
+      ...baseInput(),
+      dirty: true,
+      metadata: { status: "error", message: "gone" },
+    });
+    expect(model.fileSection.notes[0]).toContain("unsaved changes");
+    expect(model.fileSection.notes[1]).toContain("gone");
   });
 });
