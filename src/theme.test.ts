@@ -88,12 +88,16 @@ describe("setTheme", () => {
     expect(document.documentElement.dataset.theme).toBeUndefined();
   });
 
-  it("persists the change and syncs the native menu's checkmarks", () => {
+  it("persists the change and syncs the native menu's checkmarks", async () => {
     setTheme("dusk");
+    // savePreferences now goes through prefsOps (v0.7 Track R), which
+    // defers the actual IPC call by a microtask even when the queue is
+    // empty — syncThemeMenu is unaffected, still called synchronously.
+    expect(syncThemeMenu).toHaveBeenCalledWith("dusk");
+    await Promise.resolve();
     expect(savePreferences).toHaveBeenCalledWith(
       expect.objectContaining({ theme: "dusk" }),
     );
-    expect(syncThemeMenu).toHaveBeenCalledWith("dusk");
   });
 });
 

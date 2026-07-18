@@ -33,7 +33,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 // vi.mock calls above are hoisted above this static import by vitest, so
 // ./ipc and @tauri-apps/plugin-dialog are already mocked by the time
 // preferences.ts is evaluated (same pattern as theme.test.ts).
-import { initPreferences, showPreferencesDialog } from "./preferences";
+import {
+  adjustFontSize,
+  initPreferences,
+  showPreferencesDialog,
+  toggleWordWrap,
+} from "./preferences";
 
 const fakeEditor = {
   setLineWrapping: vi.fn(),
@@ -146,5 +151,111 @@ describe("showPreferencesDialog Save button", () => {
     // keep the dialog open.
     expect(document.querySelector(".prefs-overlay")).toBeNull();
     expect(messageDialog).not.toHaveBeenCalled();
+  });
+});
+
+// v0.7 Track R: every savePreferences call site (the ambient toggles below
+// and the dialog Save button above) is serialized through preferences.ts's
+// prefsOps queue instead of firing IPC calls directly. Regression coverage
+// for the same race PR #270 closed for recent files — see prefsOps's own
+// doc comment in preferences.ts.
+describe("prefsOps write serialization", () => {
+  // A slow first write must not be overwritten on disk by a fast second
+  // write: without a queue, both `savePreferences` calls fire concurrently
+  // and whichever IPC response resolves first "wins" — here the second
+  // (fresher) write would resolve fast while the first (staler) write is
+  // still in flight, so an unserialized implementation lets the stale
+  // write land last.
+  it("a slow first write does not get overwritten by a fast second write", async () => {
+    let resolveFirst!: () => void;
+    savePreferences.mockImplementation(() => {
+      if (savePreferences.mock.calls.length === 1) {
+        return new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    adjustFontSize(1); // enqueues write #1 (slow), fontSize 13 -> 14
+    toggleWordWrap(); // enqueues write #2 (fast), wordWrap true -> false
+
+    // Let any (incorrectly) eager second call happen.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(savePreferences).toHaveBeenCalledTimes(1);
+
+    resolveFirst();
+    await flush();
+
+    expect(savePreferences).toHaveBeenCalledTimes(2);
+    // Landed in enqueue order, so the final on-disk value (the second
+    // call) carries both changes — never the first call's now-stale
+    // snapshot, regardless of which IPC response actually settled first.
+    expect(savePreferences.mock.calls[1][0]).toMatchObject({
+      fontSize: 14,
+      wordWrap: false,
+    });
+  });
+
+  // Isolates the snapshot-freeze requirement from ordering: `current` is a
+  // single mutable object the toggles below update in place, so a queued
+  // write that re-reads `current` only when the queue gets to it (instead
+  // of cloning it at persistPreferences()'s own call time) would let
+  // write #1 pick up write #2's change too, since both toggles run
+  // synchronously before either queued write actually executes.
+  it("freezes each write's snapshot at its own call time, not when the queue runs it", async () => {
+    savePreferences.mockResolvedValue(undefined);
+
+    adjustFontSize(1); // must capture fontSize=14, wordWrap=true right now
+    toggleWordWrap(); // mutates the same `current` before write #1 has run
+
+    await flush();
+
+    expect(savePreferences).toHaveBeenCalledTimes(2);
+    expect(savePreferences.mock.calls[0][0]).toMatchObject({
+      fontSize: 14,
+      wordWrap: true,
+    });
+    expect(savePreferences.mock.calls[1][0]).toMatchObject({
+      fontSize: 14,
+      wordWrap: false,
+    });
+  });
+
+  it("the dialog Save button and an ambient toggle share the same queue", async () => {
+    let resolveFirst!: () => void;
+    savePreferences.mockImplementation(() => {
+      if (savePreferences.mock.calls.length === 1) {
+        return new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    adjustFontSize(1); // enqueues write #1 (slow)
+
+    showPreferencesDialog();
+    document.querySelector<HTMLButtonElement>(".prefs-save")!.click();
+
+    // The dialog's write must wait behind the ambient toggle's — it hasn't
+    // even reached savePreferences yet.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(savePreferences).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".prefs-overlay")).not.toBeNull();
+
+    resolveFirst();
+    // Two full flush cycles: write #1 (ambient) must settle and hand off
+    // the queue before write #2 (dialog) even starts, then the dialog's
+    // own async click handler needs to resume past its `await` to close —
+    // more hops than a single isolated write's flush() elsewhere in this
+    // file needs.
+    await flush();
+    await flush();
+
+    expect(savePreferences).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(".prefs-overlay")).toBeNull();
   });
 });

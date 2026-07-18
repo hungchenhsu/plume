@@ -16,6 +16,7 @@ import {
   syncThemeMenu,
   type Preferences,
 } from "./ipc";
+import { createOpQueue } from "./opqueue";
 
 const FALLBACK_FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
@@ -131,6 +132,31 @@ function applyAll(): void {
   editorRef?.setLocale(locale);
 }
 
+/** Serializes every on-disk preferences write (v0.7 Track R, following PR
+ *  #270's recentOps pattern in main.ts): savePreferences's IPC calls can
+ *  resolve out of order, so an in-flight write from an earlier toggle
+ *  finishing after a later one's would overwrite preferences.json with a
+ *  stale snapshot. One queue for the whole module — the ambient toggles
+ *  below and the Preferences dialog's Save button all go through it, so
+ *  none of them can race any other. */
+const prefsOps = createOpQueue();
+
+/** Snapshot `current` and enqueue its persistence, serialized through
+ *  prefsOps; returns the write's own promise. `current` is a single
+ *  mutable object the mutators below update in place, so it's cloned
+ *  *here* — synchronously, before enqueueing — rather than read again
+ *  once the queue gets to this op: by then a later mutator may already
+ *  have changed it further, and this write must persist what was current
+ *  when *this* call happened, not whatever current has drifted into
+ *  (mirrors sessionpersist.ts's collect-at-call-time requirement). Shared
+ *  by every mutator and the dialog's Save handler so all writes share one
+ *  queue; callers that must surface a failure (the dialog) await and
+ *  catch it, the ambient toggles fire-and-forget it. */
+function persistPreferences(): Promise<void> {
+  const snapshot = structuredClone(current);
+  return prefsOps.enqueue(() => savePreferences(snapshot));
+}
+
 const FONT_SIZE_MIN = 9;
 const FONT_SIZE_MAX = 32;
 const FONT_SIZE_DEFAULT = 13;
@@ -142,7 +168,7 @@ export function adjustFontSize(delta: number): void {
       ? FONT_SIZE_DEFAULT
       : Math.min(Math.max(current.fontSize + delta, FONT_SIZE_MIN), FONT_SIZE_MAX);
   applyFont();
-  void savePreferences(current).catch(() => {
+  void persistPreferences().catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
 }
@@ -151,7 +177,7 @@ export function adjustFontSize(delta: number): void {
 export function toggleWordWrap(): void {
   current.wordWrap = !current.wordWrap;
   editorRef?.setLineWrapping(current.wordWrap);
-  void savePreferences(current).catch(() => {
+  void persistPreferences().catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
 }
@@ -161,7 +187,7 @@ export function toggleWordWrap(): void {
 export function toggleShowInvisibles(): void {
   current.showInvisibles = !current.showInvisibles;
   editorRef?.setShowInvisibles(current.showInvisibles);
-  void savePreferences(current).catch(() => {
+  void persistPreferences().catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
 }
@@ -171,7 +197,7 @@ export function toggleShowInvisibles(): void {
 export function toggleIndentGuides(): void {
   current.indentGuides = !current.indentGuides;
   editorRef?.setIndentGuides(current.indentGuides);
-  void savePreferences(current).catch(() => {
+  void persistPreferences().catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
 }
@@ -183,7 +209,7 @@ export function toggleIndentGuides(): void {
 export function toggleSuspiciousChars(): void {
   current.suspiciousChars = !current.suspiciousChars;
   editorRef?.setSuspiciousChars(current.suspiciousChars);
-  void savePreferences(current).catch(() => {
+  void persistPreferences().catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
 }
@@ -194,7 +220,7 @@ export function toggleSuspiciousChars(): void {
 export function setTheme(theme: string): void {
   current.theme = theme;
   applyTheme();
-  void savePreferences(current).catch(() => {
+  void persistPreferences().catch(() => {
     // Best-effort persistence; the in-memory setting still applies.
   });
   void syncThemeMenu(theme).catch(() => {
@@ -436,13 +462,15 @@ export function showPreferencesDialog(): void {
       // Best-effort menu sync; the applied theme is still correct.
     });
     try {
-      await savePreferences(current);
+      await persistPreferences();
     } catch (error) {
-      // Unlike the ambient toggles' fire-and-forget savePreferences calls,
-      // closing here would tell the user their changes are saved when
-      // they are not — keep the dialog open so they can see the failure
-      // and retry Save, or Cancel/Escape out (v0.6 V2 IPC-error-surfacing
-      // audit #4).
+      // Unlike the ambient toggles' fire-and-forget persistPreferences
+      // calls, closing here would tell the user their changes are saved
+      // when they are not — keep the dialog open so they can see the
+      // failure and retry Save, or Cancel/Escape out (v0.6 V2
+      // IPC-error-surfacing audit #4). Still through prefsOps like every
+      // other write (v0.7 Track R), so this can't race an ambient toggle
+      // either.
       await messageDialog(String(error), {
         title: t("dialog.preferencesSaveFailedTitle"),
         kind: "error",

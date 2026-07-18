@@ -119,6 +119,7 @@ import { showQuickOpen } from "./quickopen";
 import { showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
+import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
 import {
@@ -563,8 +564,23 @@ function collectSession(): SessionData {
   return { files, active: Math.max(active, 0) };
 }
 
+/** Serializes every on-disk session write (v0.7 Track R, following PR
+ *  #270's recentOps pattern): saveSession's IPC calls can resolve out of
+ *  order, so an in-flight write from an earlier mutation finishing after a
+ *  later one's would overwrite session.json with a stale snapshot.
+ *  collectSession stays here (it reads tabs/editor, both main.ts-local);
+ *  only the queue + capture-at-call-time mechanics live in
+ *  sessionpersist.ts, pulled out so that contract gets real vitest
+ *  coverage — main.ts itself isn't unit-testable (backupflush.ts's header
+ *  has the same reasoning). See preferences.ts's prefsOps for the sibling
+ *  case. */
+const sessionPersist = createSessionPersister({
+  collect: collectSession,
+  save: saveSession,
+});
+
 function persistSession(): void {
-  void saveSession(collectSession()).catch(() => {
+  void sessionPersist.persist().catch(() => {
     // Session persistence is best-effort; never interrupt editing over it.
   });
 }
@@ -3362,14 +3378,19 @@ void getCurrentWindow().onCloseRequested(async (event) => {
       // the session referencing it: the next launch may resurrect an
       // older version of these docs as dirty tabs. Losing only the very
       // last edits the user just gave up on — instead of deleting the
-      // older backup too — errs on the keep-more side.
-      await saveSession(collectSession()).catch(() => {});
+      // older backup too — errs on the keep-more side. Through
+      // sessionPersist, not a bare call: this must wait for whatever a
+      // just-landed backup flush (see persistSession above) already
+      // queued, or this final write could race it (v0.7 Track R).
+      await sessionPersist.persist().catch(() => {});
       // destroy() closes without re-emitting a close request.
       void getCurrentWindow().destroy();
     }
     return;
   }
-  await saveSession(collectSession()).catch(() => {});
+  // Same reasoning as the discard branch above: through sessionPersist so
+  // this final write is ordered after anything already queued.
+  await sessionPersist.persist().catch(() => {});
 });
 
 document

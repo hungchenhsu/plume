@@ -72,7 +72,7 @@ the good-first-issue surface.
   streamcodec.rs), applying the #237 pattern; sweep the other
   fixed-temp-name test files in the same PR where the same mechanical
   change applies
-- [ ] prefs + session write serialization: every savePreferences call
+- [x] prefs + session write serialization: every savePreferences call
   site (preferences.ts, 7 sites) and persistSession path (main.ts, 8
   sites) goes through an op queue — per-file queue, snapshot captured
   at enqueue time (both adversarial-review additions) — closing the
