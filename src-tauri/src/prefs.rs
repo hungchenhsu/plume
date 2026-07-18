@@ -484,4 +484,93 @@ mod tests {
         );
         assert_eq!(extension_encoding_for(&[], Path::new("/tmp/a.txt")), None);
     }
+
+    // --- Per-module corruption regression (ROADMAP.md v0.7 Track V) --------
+    //
+    // Same rationale as session.rs's block of the same name: `current`
+    // takes an `AppHandle<R>` this crate cannot mock (no `tauri::test`
+    // feature -- see recent.rs's `clear_then_reload_round_trip_is_empty`
+    // doc comment), but its entire body is
+    // `crate::store::read_json(app, "preferences.json").unwrap_or_default()`,
+    // so `store::read_json_from_path::<Preferences>(&path).unwrap_or_default()`
+    // against a file literally named "preferences.json" is the deepest
+    // testable stand-in for `current` itself.
+
+    fn corruption_fixture_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("plume-prefs-corrupt-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A handful of concrete fields, not a whole-struct comparison
+    /// (`Preferences` has no `PartialEq`/`Debug` derive) -- enough to prove
+    /// the fallback is really `Preferences::default()` and not some
+    /// partially-parsed leftover.
+    fn assert_is_default(prefs: &Preferences) {
+        let default = Preferences::default();
+        assert_eq!(prefs.font_size, default.font_size);
+        assert_eq!(prefs.theme, default.theme);
+        assert_eq!(prefs.default_encoding, default.default_encoding);
+        assert_eq!(prefs.indent_guides, default.indent_guides);
+        assert_eq!(prefs.suspicious_chars, default.suspicious_chars);
+        assert_eq!(prefs.indent_width, default.indent_width);
+        assert!(prefs.extension_encodings.is_empty());
+    }
+
+    /// Scenario 1: a valid preferences.json truncated mid-write (issue
+    /// #62's failure mode, pinned here against the real `Preferences`
+    /// struct and filename rather than store.rs's throwaway `Sample`).
+    #[test]
+    fn truncated_preferences_json_loads_as_default() {
+        let dir = corruption_fixture_dir("truncated");
+        let path = dir.join("preferences.json");
+
+        let prefs = Preferences {
+            font_size: 99,
+            theme: "dark".into(),
+            indent_width: 8,
+            ..Preferences::default()
+        };
+        crate::store::write_json_to_path(&path, &prefs).unwrap();
+        let full = std::fs::read(&path).unwrap();
+        let half = &full[..full.len() / 2];
+        std::fs::write(&path, half).unwrap();
+
+        let loaded: Preferences = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert_is_default(&loaded);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Scenario 2: syntactically valid JSON, but `fontSize` is a string
+    /// where `Preferences` expects a `u32` -- `#[serde(default)]` only
+    /// fills in *absent* keys, so a present-but-mistyped key still fails
+    /// the whole-document parse rather than silently defaulting just that
+    /// field.
+    #[test]
+    fn wrong_schema_preferences_json_loads_as_default() {
+        let dir = corruption_fixture_dir("wrong-schema");
+        let path = dir.join("preferences.json");
+        std::fs::write(&path, br#"{"fontSize": "sixteen"}"#).unwrap();
+
+        let loaded: Preferences = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert_is_default(&loaded);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Scenario 3: a zero-byte preferences.json.
+    #[test]
+    fn empty_preferences_json_loads_as_default() {
+        let dir = corruption_fixture_dir("empty");
+        let path = dir.join("preferences.json");
+        std::fs::write(&path, b"").unwrap();
+
+        let loaded: Preferences = crate::store::read_json_from_path(&path).unwrap_or_default();
+        assert_is_default(&loaded);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
