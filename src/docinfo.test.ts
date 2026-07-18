@@ -325,6 +325,12 @@ describe("buildDocumentInfoDialogContent — dirty disk-vs-buffer framing (issue
   it("prefixes the file section with the framing note when the document is dirty", () => {
     const model = buildDocumentInfoDialogContent({ ...baseInput(), dirty: true });
     expect(model.fileSection.notes[0]).toContain("unsaved changes");
+    // Issue #265: the note must put the encoding/line-ending *settings* on
+    // the in-memory side of the split — setLineEnding / Save with Encoding
+    // mutate doc state before any disk write, so those summary rows are
+    // current state, not last-saved facts.
+    expect(model.fileSection.notes[0]).toContain("current unsaved state");
+    expect(model.fileSection.notes[0]).toContain("last saved version on disk");
   });
 
   it("control group: no note for a clean document", () => {

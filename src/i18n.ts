@@ -541,9 +541,10 @@ const en: Messages = {
   "docinfo.labelTextStats": "Word/Character/Line Count",
   "docinfo.loadError": (message) => `Couldn't load this information: ${message}`,
   "docinfo.dirtyNote":
-    "This document has unsaved changes: the text statistics below reflect " +
-    "the current buffer, while the file, encoding and line-ending facts " +
-    "describe the last saved version on disk.",
+    "This document has unsaved changes: the text statistics and the " +
+    "encoding and line-ending settings shown reflect its current unsaved " +
+    "state, while the size, modified time, detection evidence and " +
+    "line-ending distribution come from the last saved version on disk.",
 
   "charinspect.title": (codepoint) => `Character ${codepoint}`,
   "charinspect.labelChar": "Character",
@@ -938,7 +939,7 @@ const zhTW: Messages = {
   "docinfo.labelTextStats": "詞／字元／行數",
   "docinfo.loadError": (message) => `無法載入此資訊：${message}`,
   "docinfo.dirtyNote":
-    "本文件有未儲存的變更：下方文字統計反映目前緩衝區內容，檔案、編碼與行尾資訊則為磁碟上最後儲存的版本。",
+    "本文件有未儲存的變更：文字統計與顯示的編碼、行尾設定反映目前未儲存的狀態；大小、修改時間、偵測證據與行尾分布則來自磁碟上最後儲存的版本。",
 
   "charinspect.title": (codepoint) => `字元 ${codepoint}`,
   "charinspect.labelChar": "字元",
@@ -1297,7 +1298,7 @@ const ja: Messages = {
   "docinfo.labelTextStats": "単語数／文字数／行数",
   "docinfo.loadError": (message) => `この情報を読み込めませんでした: ${message}`,
   "docinfo.dirtyNote":
-    "このドキュメントには未保存の変更があります。テキスト統計は現在のバッファーを反映し、ファイル・エンコーディング・改行コードの情報はディスク上の最終保存版のものです。",
+    "このドキュメントには未保存の変更があります。テキスト統計と表示中のエンコーディング・改行コード設定は現在の未保存状態を反映し、サイズ・更新日時・検出根拠・改行コード分布はディスク上の最終保存版に基づきます。",
 
   "charinspect.title": (codepoint) => `文字 ${codepoint}`,
   "charinspect.labelChar": "文字",
@@ -1681,7 +1682,7 @@ const zhCN: Messages = {
   "docinfo.labelTextStats": "词／字符／行数",
   "docinfo.loadError": (message) => `无法加载此信息：${message}`,
   "docinfo.dirtyNote":
-    "本文档有未保存的更改：下方文本统计反映当前缓冲区内容，文件、编码与换行符信息则为磁盘上最后保存的版本。",
+    "本文档有未保存的更改：文本统计与显示的编码、换行符设置反映当前未保存状态；大小、修改时间、检测证据与换行符分布则来自磁盘上最后保存的版本。",
 
   "charinspect.title": (codepoint) => `字符 ${codepoint}`,
   "charinspect.labelChar": "字符",
