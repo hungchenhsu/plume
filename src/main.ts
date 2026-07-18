@@ -3546,7 +3546,18 @@ void (async () => {
   refreshSuspiciousChars();
   refreshNormalizationStatus();
   refreshIndentInfo();
-  recentFiles = await loadRecentFiles().catch(() => [] as string[]);
+  // Through recentOps, not a bare call: the open-files and drag-drop
+  // listeners are registered above and can run openPath → rememberRecent
+  // (or a menu Clear) while this initial read is still in flight —
+  // un-queued, a slow load response would assign last and overwrite the
+  // newer mutation's cache with the pre-mutation list (issue #266).
+  // Inside the queue the disk accesses serialize, so whichever order the
+  // operations enqueue in, each assignment reflects all writes before it.
+  // (No syncClearRecentState here: menu.rs's build derives the initial
+  // menu state from disk itself — see syncClearRecentState's doc comment.)
+  recentFiles = await recentOps
+    .enqueue(() => loadRecentFiles())
+    .catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused. A
   // failure here means an OS "Open With"/CLI invocation asked Plume to
