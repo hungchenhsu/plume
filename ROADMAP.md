@@ -26,140 +26,6 @@ archived v0.3 record and in DIRECTION §2/§3.
 - [ ] D2 signing + auto-update — blocked on D1 and user-held keys
   (runbook in the maintainer's local private storage)
 
-## v0.7 — consistency, serialization & daily-driver closure (planned 2026-07-18, delegated)
-
-Scope planned autonomously under the user's standing delegation (user
-away until 2026-07-22; same model as v0.4–v0.6: plan the cycle, merge on
-green CI, post-merge review). Planning was preceded by a four-agent
-current-state audit, so nothing below re-plans something that already
-exists (Enter auto-indent, move/duplicate line, status-bar text stats,
-tab context-menu copy-path/reveal were all confirmed present and
-excluded), and the plan passed an adversarial review before work started
-(AGREE-WITH-CHANGES; every requested change adopted — see per-item
-notes). One structural constraint shapes the cycle: **no GUI can be
-launched** (user away, desktop possibly locked, standing caution), so
-editor-UX items are built as pure-logic cores with thin CodeMirror
-bindings, vitest-covered, and dual-WebView manual acceptance is
-explicitly deferred to the user's return; only two such items (the trim
-and in-selection ones) are admitted, per the review's cap. Theme: close
-the remaining consistency gaps (snapshot reads, write serialization),
-deepen the mojibake table by investigation, and finish the
-daily-driver comfort backlog that needs no GUI. Items marked
-**[danger]** follow judgment overlay §1: failing-test-first, round-trip
-tests where encoding behavior changes, adversarial review before
-commit; danger items are never worked in parallel. #89 stays open as
-the good-first-issue surface.
-
-**Track R — debt & correctness** (ordered by execution)
-
-- [x] #231: clean doc's Save with Encoding leaves a spurious dirty flag
-  after a non-stale write failure — the rollback branch restores
-  encoding/withBom but not dirty; capture the revision at force time
-  and restore dirty=false when the rollback condition holds and the
-  revision is unchanged; also reconcile the backup flush already
-  scheduled for the rolled-back state (adversarial-review addition)
-  [danger]
-- [x] #254 (remaining half): one consistent-snapshot backend command
-  for Document Info — a single Rust command opens the file once and
-  derives all three sections (file metadata, detection evidence,
-  line-ending distribution) from that one read, replacing the three
-  parallel IPC calls in docinfo.ts; the response keeps per-section
-  Result fields so the dialog's existing per-section error degradation
-  survives (adversarial-review addition); explain_detection itself
-  stays, detectcard.ts uses it independently [danger]
-- [x] #236: per-process fixture_dir isolation for the five listed test
-  files (batch.rs, fsguard.rs, replaceinfiles.rs, search.rs,
-  streamcodec.rs), applying the #237 pattern; sweep the other
-  fixed-temp-name test files in the same PR where the same mechanical
-  change applies
-- [x] prefs + session write serialization: every savePreferences call
-  site (preferences.ts, 7 sites) and persistSession path (main.ts, 8
-  sites) goes through an op queue — per-file queue, snapshot captured
-  at enqueue time (both adversarial-review additions) — closing the
-  same late-write-overwrites-newer race #270 closed for recent files
-  [danger]
-
-**Track E — encoding trust**
-
-- [x] mojibake-pair investigation batch: ran the dual gate (chardetng
-  reachability + reverse-hypothesis rejection) over the candidates
-  (WINDOWS_1251, UTF_8), (EUC_KR, UTF_8), (EUC_JP, UTF_8),
-  (WINDOWS_1250, UTF_8), and — last, cheapest-death-first per the
-  adversarial review — (KOI8_U, WINDOWS_1251); all five passed both
-  gates and were admitted (unlike issue #182/v0.6 E2, this batch found
-  no rejections — see `REPAIR_PAIRS`'s doc comment in mojibake.rs for
-  each pair's written evaluation), with the mandatory
-  fuzz_roundtrip.rs MojibakePools/match-arm sync done and verified via
-  `cargo test fuzz` (known runtime-panic dead end, overlay §4);
-  docs/encoding-detection.md updated in the same PR [danger]
-
-**Track C — comfort** (no-GUI shapes; manual acceptance deferred where noted)
-
-- [x] go to matching bracket: menu + palette wiring for the built-in
-  cursorMatchingBracket command
-- [x] encoding-picker alias search: typing an IANA/common alias
-  (latin1, cp950, …) matches the canonical encoding in the picker;
-  investigate the picker's existing filter mechanism first — if
-  aliases already match, close with findings
-- [x] trim trailing whitespace on save: opt-in preference (default
-  off); the trim is applied as an editor edit before the normal save
-  flow so buffer and disk stay identical — the spec must keep the
-  caret stable and fold the trim into the save so one undo step
-  reverts the user's last edit, not the trim (adversarial-review
-  addition); round-trip tests; large-file mode is untouched (read-only
-  preview cannot save); dual-WebView manual acceptance deferred
-  [danger]. Undo trade-off (merge vs. isolate) documented in
-  editor.ts's `trimTrailingWhitespaceOf`, not restated here.
-- [x] find/replace in selection: replace / replace-all scoped to the
-  current selection — built as a pure, vitest-covered core
-  ((docText, ranges, query) → edits, including post-replace
-  range-shift bookkeeping) with a thin CodeMirror binding, per the
-  adversarial review; dual-WebView manual acceptance deferred [danger]
-- [x] insert date/time (stretch — first to cut if the cycle runs
-  long): Edit-menu + palette command inserting a localized timestamp
-  at the caret
-
-**Track V — robustness**
-
-- [x] per-module corruption regression tests: session.rs, prefs.rs,
-  recent.rs each get their own truncated/invalid-JSON tests against
-  their real file name and real struct (today they only inherit
-  store.rs's generic guarantee)
-- [x] external delete/rename visibility: gap analysis found a confirmed
-  on-disk deletion had zero UI signal for a clean doc (fetchAndApplyReload's
-  bare catch silently swallowed it) and a misleading "Reload?" prompt for a
-  dirty one (Reload was a silent no-op). Fixed within the vitest-testable
-  scope: `doc.missingOnDisk`, set once a reload's openDocument failure is
-  confirmed (not just guessed) via a documentMetadata re-check
-  (missingondisk.ts), cleared by any subsequent successful open/reload/save;
-  surfaced via a status-bar hint and a dedicated "file deleted" dialog
-  (single acknowledgement button, not a reload offer). Known reactive-only
-  limits (adversarial-review notes, accepted): a dirty doc whose user
-  keeps cancelling the change prompt never triggers the failed reload
-  that sets the badge, and a metadata re-check rejection is treated as
-  missing even when the true cause is e.g. a permission loss —
-  both mislead the label only, never the buffer, and self-heal on the
-  next successful reload/save. Rename tracking is a separate,
-  still-open concern (issue #280); zero Rust changes.
-
-**Track H — outward**
-
-- [x] keyboard-shortcut reference: one consolidated table
-  (docs/features.md appendix or docs/shortcuts.md) sourced from
-  menu.rs LABELS and the CM6 built-in keymap — never hand-recalled
-- [x] CONTRIBUTING.md: links dev-setup.md, the Definition of Done, PR
-  conventions, and the commit-language policy for external
-  contributors (zh-TW preferred, English accepted); positioning red
-  lines apply
-
-**Close-out**
-
-- [ ] routine cargo-lockfile refresh (18 compatible updates pending at
-  planning time) as a small chore PR
-- [ ] cycle close-out: CHANGELOG.md, version bump across
-  tauri.conf.json / package.json / Cargo.toml, tag v0.7.0-alpha.1
-  (pre-release authority), handoff memory update
-
 ## Completed cycles
 
 Summary index only — every item's full design rationale, edge cases,
@@ -203,6 +69,18 @@ Item counts below are shipped `[x]` items per cycle.
   with a grouped picker; reopen-closed tab, tab context menu, go-to
   line:column; README install section. Six issues closed, six
   follow-ups filed, tests 333/572 → 423/763.
+- **v0.7 — consistency, serialization & daily-driver closure** (16
+  items across five tracks + close-out, planned 2026-07-18, delegated,
+  tag `v0.7.0-alpha.1`): inherited issues closed (#231 spurious dirty,
+  #254 one-open Document Info snapshot, #236 fixture isolation);
+  prefs/session write serialization; five new mojibake pairs (10→15)
+  via the dual-gate investigation batch; replace in selection,
+  trim-on-save, encoding-picker alias search, insert date/time,
+  matching-bracket menu entry; external-delete visibility; per-module
+  corruption tests; shortcut reference + CONTRIBUTING rewrite. PRs
+  #273–#297, tests 987/532 → 1117/576 (vitest/cargo). Built under a
+  no-GUI constraint: dual-WebView manual acceptance for the two
+  editor-UX items is deferred to the user's return.
 - **v0.6 — bug queue + trust visibility** (19 items across five tracks,
   planned 2026-07-16, delegated, tag `v0.6.0-alpha.1`): inherited bug
   queue closed (#201/#203/#217/#221/#223/#225/#227); Document Info
@@ -212,7 +90,7 @@ Item counts below are shipped `[x]` items per cycle.
   docs/features.md. 20 PRs (#229–#249 range), ended at 522 cargo test /
   955 vitest.
 
-111 shipped items total across the six cycles above; 2 remain open
+127 shipped items total across the seven cycles above; 2 remain open
 (D1/D2, tracked under "Open items" above, not counted here).
 
 ## Explicit non-goals

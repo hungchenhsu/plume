@@ -44,13 +44,30 @@ faster for text files, or is it IDE creep?*
 
 ## 2. Current state (2026-07-18)
 
-- **v0.7 feature cycle planned and in progress** (2026-07-18, standing
-  delegation, user away until 2026-07-22): consistency snapshots
-  (#254), write serialization (prefs/session op queues), a
-  mojibake-pair investigation batch, no-GUI comfort items with manual
-  acceptance deferred, robustness tests, CONTRIBUTING + shortcut docs.
-  Full item list in ROADMAP.md §v0.7; adversarially reviewed before
-  start (AGREE-WITH-CHANGES, all adopted).
+- **v0.7 feature cycle complete** (2026-07-18→19, PRs #273–#297, tag
+  `v0.7.0-alpha.1`): planned and executed autonomously under the
+  standing delegation, adversarially reviewed before start
+  (AGREE-WITH-CHANGES, all adopted) and per danger item before commit.
+  All five tracks delivered — debt & correctness (#231 with a
+  first-pass REJECT catching a would-be data-loss regression, #254
+  one-open snapshot, #236, prefs/session write serialization),
+  encoding trust (five mojibake pairs admitted 10→15, every candidate
+  surviving an independently-reconstructed adversarial harness),
+  comfort (replace in selection, trim-on-save, encoding-alias search
+  with a deliberate five-way "ansi", insert date/time, matching-bracket
+  menu), robustness (per-module corruption tests; external-delete
+  visibility with a missing-on-disk hint), outward (source-verified
+  shortcut table; CONTRIBUTING rewrite). Tests 987 vitest / 532 cargo
+  → 1117 / 576. Built entirely under a no-GUI constraint —
+  **dual-WebView manual acceptance for trim-on-save and
+  replace-in-selection is deferred to the user's return**, and the
+  trim-on-save undo semantics carry a documented, review-sanctioned
+  deviation awaiting user sign-off (see the PR #288 body). New issues:
+  #276 (stale-cancel cosmetic edge), #278 (fold-shortcut comment
+  drift), #280 (rename fork-not-follow), #292 (in-selection replace
+  skips normalization-only matches). Mid-cycle incident: a ~75-minute
+  GitHub Actions event outage plus a conflicting-PR-shows-no-checks
+  trap, both diagnosed and recorded in the judgment overlay.
 - **v0.6 feature cycle complete** (2026-07-16→17, PRs #229–#249 range):
   planned and executed autonomously under the user's standing
   delegation (same model as v0.4/v0.5), adversarially reviewed before

@@ -6,6 +6,70 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 Plume is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
+## [v0.7.0-alpha.1] - 2026-07-19
+
+### Added
+
+- Replace in Selection and Replace All in Selection (Edit menu +
+  command palette): scoped replace driven by the find panel's current
+  query — matches are confined to the selection, multi-range selections
+  are handled independently, and regexp group replacement follows the
+  find panel's own semantics. One known, deliberately safe divergence:
+  matches that only exist under Unicode normalization are skipped
+  rather than replaced (#292).
+- Trim trailing whitespace on save: an opt-in preference (default off).
+  The trim is applied to the live buffer right before the write, so the
+  buffer and the file on disk never diverge; undoing after a save
+  reverts the trim as its own step.
+- Encoding-picker search with alias support in all three encoding menus
+  (reopen / save-with / convert-to): typing an informal or historical
+  name — latin1, cp950, gb2312, ucs-2, and 70+ more, each verified
+  against the encoding standard's own label registry — finds the right
+  encoding. Typing "ansi" deliberately lists all five regional
+  system-code-page candidates (windows-1252, Big5, Shift_JIS, GBK,
+  EUC-KR) instead of guessing one.
+- Insert Date/Time (Edit menu): inserts a localized timestamp at the
+  caret.
+- Go to Matching Bracket now has a menu entry and palette command (the
+  keyboard shortcut always existed).
+- Five new mojibake-repair hypotheses (repair table 10 → 15 pairs):
+  UTF-8 misread as windows-1251, EUC-KR, EUC-JP, or windows-1250, and
+  windows-1251 misread as KOI8-U — each admitted only after the same
+  reachability + reverse-hypothesis gates as the existing pairs, with
+  45,000 fuzz round-trip checks.
+- A file deleted on disk while open is now visible: a status-bar
+  "missing on disk" hint replaces the previous silence for unmodified
+  tabs, and the change prompt for modified tabs says plainly that the
+  file was removed (saving recreates it) instead of offering a reload
+  that would do nothing.
+- Keyboard-shortcut reference: docs/features.md now ends with a
+  consolidated, source-verified table of every shortcut on both
+  platforms.
+
+### Fixed
+
+- A clean document's Save with Encoding no longer leaves a stray
+  "unsaved changes" marker when the write fails for a reason other than
+  external modification; real unsaved edits and their hot-exit backup
+  are never touched by that cleanup (#231).
+- Document Info now reads all three sections (metadata, detection
+  evidence, line-ending distribution) from a single file open, so an
+  external modification mid-dialog can no longer produce a
+  self-contradictory snapshot (#254).
+- Preferences and session writes are serialized per file: rapid
+  consecutive changes can no longer land out of order and resurrect a
+  stale snapshot (the same class of race fixed for recent files in
+  v0.6).
+- Switching the UI language at runtime now relabels the Go to Matching
+  Bracket menu item like every other entry (#289).
+
+### Internal
+
+- Per-process temp-directory isolation for all remaining test fixtures;
+  dedicated corruption-regression tests for the session, preferences,
+  and recent-files stores; CONTRIBUTING.md rewritten to match the
+  project's actual conventions; routine cargo-lockfile refresh.
+
 ## [v0.6.0-alpha.1] - 2026-07-17
 
 ### Added
