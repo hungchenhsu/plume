@@ -198,6 +198,7 @@ export interface Messages {
   "preferences.theme": string;
   "preferences.language": string;
   "preferences.encodingForNewFiles": string;
+  "preferences.trimTrailingWhitespaceOnSave": string;
   "preferences.extHeading": string;
   "preferences.extHint": string;
   "preferences.extPlaceholder": string;
@@ -628,6 +629,7 @@ const en: Messages = {
   "preferences.theme": "Theme",
   "preferences.language": "Language",
   "preferences.encodingForNewFiles": "Encoding for new files",
+  "preferences.trimTrailingWhitespaceOnSave": "Trim trailing whitespace on save",
   "preferences.extHeading": "Per-extension encodings",
   "preferences.extHint":
     "Files with these extensions open with the given encoding; a BOM, " +
@@ -1022,6 +1024,7 @@ const zhTW: Messages = {
   "preferences.theme": "主題",
   "preferences.language": "語言",
   "preferences.encodingForNewFiles": "新檔案的編碼",
+  "preferences.trimTrailingWhitespaceOnSave": "儲存時移除行尾空白",
   "preferences.extHeading": "副檔名編碼對應",
   "preferences.extHint":
     "符合這些副檔名的檔案會以指定編碼開啟；BOM、有效的 UTF-8 文字，" +
@@ -1384,6 +1387,7 @@ const ja: Messages = {
   "preferences.theme": "テーマ",
   "preferences.language": "言語",
   "preferences.encodingForNewFiles": "新規ファイルのエンコーディング",
+  "preferences.trimTrailingWhitespaceOnSave": "保存時に行末の空白を削除",
   "preferences.extHeading": "拡張子ごとのエンコーディング",
   "preferences.extHint":
     "これらの拡張子のファイルは指定したエンコーディングで開かれます。ただし BOM、" +
@@ -1771,6 +1775,7 @@ const zhCN: Messages = {
   "preferences.theme": "主题",
   "preferences.language": "语言",
   "preferences.encodingForNewFiles": "新建文件的编码",
+  "preferences.trimTrailingWhitespaceOnSave": "保存时删除行尾空白",
   "preferences.extHeading": "按扩展名设置编码",
   "preferences.extHint":
     "符合这些扩展名的文件会以指定编码打开；若检测到 BOM、有效的 UTF-8 文本，" +

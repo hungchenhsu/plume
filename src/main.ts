@@ -124,6 +124,7 @@ import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
+import { shouldTrimTrailingWhitespaceOnSave } from "./trimonsave";
 import {
   adjustFontSize,
   initPreferences,
@@ -1838,6 +1839,28 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     if (path === null) return false;
   }
   try {
+    // ROADMAP.md v0.7 Track C "trim trailing whitespace on save"
+    // (adversarial-review addition) [danger]: applied as a real editor edit
+    // — never just to the outgoing `content` string below — so the buffer
+    // that ends up on disk and the live buffer can never diverge; see
+    // editor.ts's `trimTrailingWhitespaceOf` for the full design (precise
+    // per-line spans for caret stability, `isolateHistory` for the undo
+    // trade-off) and trimonsave.ts's `shouldTrimTrailingWhitespaceOnSave`
+    // for this gate's own full branch-table rationale, including why it's
+    // scoped to the active doc only. Only reachable from here — never hot-
+    // exit's backup flush (saveBackup, a different IPC command entirely),
+    // never a watcher/stale-confirm reload, never a truncated large-file
+    // preview (blockedByReadOnly already rejected the save before
+    // runSaveFlow could ever run) — so those paths are untouched by
+    // construction, not by an extra guard here.
+    if (
+      shouldTrimTrailingWhitespaceOnSave({
+        preferenceOn: preferences().trimTrailingWhitespaceOnSave,
+        isActiveDoc: doc.id === tabs.activeId,
+      })
+    ) {
+      editor.trimTrailingWhitespaceForSave();
+    }
     // doc may not be the active tab here: a saveFlow call that had to
     // defer behind another in-flight save/reload for this same doc (issue
     // #124) only actually runs once drainLock drains it later, by which
@@ -1920,8 +1943,11 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
         samplesTruncated: false,
       };
       const proceed = await showLossySaveConfirm(doc.encoding, report);
-      // Cancelled: the doc stays exactly as it was before Save was
-      // invoked — dirty, on its old path, no watcher/session changes.
+      // Cancelled: no disk write happened — the doc stays dirty, on its
+      // old path, with no watcher/session changes. One deliberate
+      // exception: if trim-on-save fired at the top of this flow, that
+      // edit stays in the buffer (it is a real, undoable edit, not part
+      // of the aborted write) — "as before Save" except already trimmed.
       if (!proceed) return false;
       result = await saveDocument({
         ...saveParams,

@@ -219,6 +219,16 @@ export function reverseLines(text: string): string {
 }
 
 /**
+ * Trailing space/tab run at a line's end. Shared by `trimTrailingWhitespace`
+ * (whole-string `String.replace`) and `trailingWhitespaceSpans` below
+ * (position-tracking variant for editor.ts's save-time trim, ROADMAP.md v0.7
+ * Track C) so the two can never disagree about what counts as trailing
+ * whitespace to strip. Deliberately excludes `\r` — see
+ * `trimTrailingWhitespace`'s own doc comment for why.
+ */
+const TRAILING_WHITESPACE = /[ \t]+$/;
+
+/**
  * Strip trailing spaces and tabs from every line. Deliberately does not
  * strip `\r`: the editor buffer is always LF-normalized (CLAUDE.md "Hard
  * constraints"), so a line here should never actually end in `\r`, but if
@@ -229,8 +239,49 @@ export function reverseLines(text: string): string {
 export function trimTrailingWhitespace(text: string): string {
   if (text === "") return "";
   const { lines, trailingNewline } = splitLines(text);
-  const trimmed = lines.map((line) => line.replace(/[ \t]+$/, ""));
+  const trimmed = lines.map((line) => line.replace(TRAILING_WHITESPACE, ""));
   return linesToText(trimmed, trailingNewline);
+}
+
+/**
+ * Character-offset `[from, to)` spans of every line's trailing space/tab run
+ * in `text` — the position-tracking counterpart of `trimTrailingWhitespace`
+ * above (same `TRAILING_WHITESPACE` rule, so the two can never disagree
+ * about what to strip), built for editor.ts's save-time trim (ROADMAP.md
+ * v0.7 Track C, "trim trailing whitespace on save").
+ *
+ * A CM6 transaction needs precise per-line `{from, to}` deletions rather
+ * than a single whole-document replace (the way `EditorHandle.replaceContent`
+ * works) for the feature's own caret-stability requirement: CM6's default
+ * selection mapping leaves any position on an untouched line exactly where
+ * it was, and collapses a position that *was* inside a deleted span onto
+ * that span's `from` — which, since nothing is inserted back in a trimmed
+ * span's place, is exactly the line's new end. A whole-document replace has
+ * no such per-position correspondence between the old and new text, so
+ * every cursor would instead land on one edge of the document (see
+ * editor.ts's `trimTrailingWhitespaceOf` for where this is actually
+ * dispatched, and its doc comment for the history/undo side of the same
+ * design).
+ *
+ * A clean line contributes no span at all, not a zero-length one, so an
+ * already-trimmed document returns `[]` — the empty-array "nothing to
+ * trim" signal callers check before ever building a transaction. Offsets
+ * are plain character (UTF-16 code unit) counts into `text` itself, the
+ * same unit `lineSpanForSelection` above uses.
+ */
+export function trailingWhitespaceSpans(text: string): { from: number; to: number }[] {
+  if (text === "") return [];
+  const spans: { from: number; to: number }[] = [];
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const match = line.match(TRAILING_WHITESPACE);
+    if (match) {
+      const from = offset + match.index!;
+      spans.push({ from, to: from + match[0].length });
+    }
+    offset += line.length + 1; // +1 for the "\n" this line was split on
+  }
+  return spans;
 }
 
 /**

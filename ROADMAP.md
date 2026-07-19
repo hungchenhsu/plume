@@ -101,14 +101,15 @@ the good-first-issue surface.
   (latin1, cp950, …) matches the canonical encoding in the picker;
   investigate the picker's existing filter mechanism first — if
   aliases already match, close with findings
-- [ ] trim trailing whitespace on save: opt-in preference (default
+- [x] trim trailing whitespace on save: opt-in preference (default
   off); the trim is applied as an editor edit before the normal save
   flow so buffer and disk stay identical — the spec must keep the
   caret stable and fold the trim into the save so one undo step
   reverts the user's last edit, not the trim (adversarial-review
   addition); round-trip tests; large-file mode is untouched (read-only
   preview cannot save); dual-WebView manual acceptance deferred
-  [danger]
+  [danger]. Undo trade-off (merge vs. isolate) documented in
+  editor.ts's `trimTrailingWhitespaceOf`, not restated here.
 - [ ] find/replace in selection: replace / replace-all scoped to the
   current selection — built as a pure, vitest-covered core
   ((docText, ranges, query) → edits, including post-replace

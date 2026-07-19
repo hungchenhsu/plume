@@ -53,6 +53,16 @@ pub struct Preferences {
     /// encoding decodes the sample without malformed sequences — see
     /// `encoding::detect_with_extension`.
     pub extension_encodings: Vec<(String, String)>,
+    /// Opt-in: strip trailing spaces/tabs from every line as part of the
+    /// normal save flow (ROADMAP.md v0.7 Track C, "trim trailing whitespace
+    /// on save"). Default `false`, like `show_invisibles` — unlike
+    /// `indent_guides`/`suspicious_chars`, this rewrites file content, not
+    /// just a display setting. Read only by the frontend (`src/main.ts`'s
+    /// `runSaveFlow`, gated through `src/trimonsave.ts`'s
+    /// `shouldTrimTrailingWhitespaceOnSave`); the Rust core never inspects
+    /// this field itself, the same way it never inspects `word_wrap` or
+    /// `theme`.
+    pub trim_trailing_whitespace_on_save: bool,
 }
 
 impl Default for Preferences {
@@ -81,6 +91,10 @@ impl Default for Preferences {
             // see the field's own doc comment above.
             indent_width: 4,
             extension_encodings: Vec::new(),
+            // Opt-in, like show_invisibles: rewrites file content, so it
+            // must not surprise a user who never asked for it — see the
+            // field's own doc comment above.
+            trim_trailing_whitespace_on_save: false,
         }
     }
 }
@@ -158,6 +172,10 @@ mod tests {
             "suspicious character audit default on"
         );
         assert_eq!(prefs.indent_width, 4, "default fallback indent width");
+        assert!(
+            !prefs.trim_trailing_whitespace_on_save,
+            "trim-on-save is opt-in, default off"
+        );
     }
 
     #[test]
@@ -185,6 +203,7 @@ mod tests {
             suspicious_chars: false,
             indent_width: 8,
             extension_encodings: vec![("txt".into(), "Big5".into())],
+            trim_trailing_whitespace_on_save: true,
         };
         let json = serde_json::to_vec(&prefs).unwrap();
         let back: Preferences = serde_json::from_slice(&json).unwrap();
@@ -200,6 +219,29 @@ mod tests {
         assert_eq!(
             back.extension_encodings,
             vec![("txt".to_string(), "Big5".to_string())]
+        );
+        assert!(back.trim_trailing_whitespace_on_save);
+    }
+
+    /// Pins the exact JSON key name (`trimTrailingWhitespaceOnSave`, the
+    /// `#[serde(rename_all = "camelCase")]` conversion of
+    /// `trim_trailing_whitespace_on_save`) against the frontend's own
+    /// `Preferences` interface (`src/ipc.ts`) — unlike the plain
+    /// round-trip above (which reads back through this same struct and so
+    /// can't by itself catch a key-name mismatch against the frontend),
+    /// this inspects the serialized JSON directly, the same technique
+    /// `extension_encodings_serialize_as_array_of_pairs` below uses for
+    /// its own field.
+    #[test]
+    fn trim_trailing_whitespace_on_save_serializes_with_camel_case_key() {
+        let prefs = Preferences {
+            trim_trailing_whitespace_on_save: true,
+            ..Preferences::default()
+        };
+        let json = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(
+            json["trimTrailingWhitespaceOnSave"],
+            serde_json::json!(true)
         );
     }
 
@@ -329,6 +371,47 @@ mod tests {
         assert!(prefs.show_invisibles);
         assert!(!prefs.indent_guides);
         assert!(!prefs.suspicious_chars);
+    }
+
+    /// `trim_trailing_whitespace_on_save` was added after `extension_encodings`
+    /// (ROADMAP.md v0.7 Track C, "trim trailing whitespace on save"); an old
+    /// `preferences.json` written before it existed has no such key. Like
+    /// `show_invisibles`, this defaults to `false` (opt-in — it rewrites
+    /// file content, not just a display setting) — `serde(default)` falls
+    /// back to the whole struct's `Default::default()` for any missing
+    /// field, so this only holds because `Preferences::default()` sets
+    /// `trim_trailing_whitespace_on_save: false`.
+    #[test]
+    fn old_preferences_json_without_trim_trailing_whitespace_on_save_loads_with_default_false() {
+        let json = r#"{
+            "fontFamily": "SF Mono",
+            "fontSize": 15,
+            "theme": "dark",
+            "language": "zh-TW",
+            "defaultEncoding": "Big5",
+            "defaultBom": false,
+            "wordWrap": false,
+            "showInvisibles": true,
+            "indentGuides": false,
+            "suspiciousChars": false,
+            "indentWidth": 8,
+            "extensionEncodings": [["txt", "Big5"]]
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert!(
+            !prefs.trim_trailing_whitespace_on_save,
+            "missing key must default to false"
+        );
+        assert_eq!(prefs.font_family, "SF Mono");
+        assert_eq!(prefs.language, "zh-TW");
+        assert!(prefs.show_invisibles);
+        assert!(!prefs.indent_guides);
+        assert!(!prefs.suspicious_chars);
+        assert_eq!(prefs.indent_width, 8);
+        assert_eq!(
+            prefs.extension_encodings,
+            vec![("txt".to_string(), "Big5".to_string())]
+        );
     }
 
     /// `indent_width` round-trips through JSON for a few representative
@@ -517,6 +600,10 @@ mod tests {
         assert_eq!(prefs.suspicious_chars, default.suspicious_chars);
         assert_eq!(prefs.indent_width, default.indent_width);
         assert!(prefs.extension_encodings.is_empty());
+        assert_eq!(
+            prefs.trim_trailing_whitespace_on_save,
+            default.trim_trailing_whitespace_on_save
+        );
     }
 
     /// Scenario 1: a valid preferences.json truncated mid-write (issue

@@ -35,6 +35,7 @@ import {
   copyLineDown as cmCopyLineDown,
   cursorMatchingBracket as cmCursorMatchingBracket,
   deleteLine as cmDeleteLine,
+  isolateHistory,
   moveLineDown as cmMoveLineDown,
   moveLineUp as cmMoveLineUp,
 } from "@codemirror/commands";
@@ -48,6 +49,7 @@ import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
 import { detectIndentation, type IndentInfo } from "./indentdetect";
 import type { Locale } from "./i18n";
+import { trailingWhitespaceSpans } from "./lineops";
 import {
   findHistory,
   pushFindTerm,
@@ -378,6 +380,22 @@ export interface EditorHandle {
    * `transformSelection` above.
    */
   joinLines(fn: (text: string) => string): void;
+  /**
+   * Trim trailing whitespace from the *entire* live buffer, regardless of
+   * selection — unlike `transformLines(trimTrailingWhitespace)` (the manual
+   * Edit > Line Operations command this shares its rule with, lineops.ts's
+   * `trimTrailingWhitespace`), save-time trim always applies to the whole
+   * document. main.ts's runSaveFlow calls this right before capturing
+   * `content()` for a save when the `trimTrailingWhitespaceOnSave`
+   * preference is on and the saving doc is this handle's own live buffer,
+   * so the buffer that ends up on disk and the live buffer never diverge.
+   * A thin `view.dispatch` wrapper around `trimTrailingWhitespaceOf`'s same
+   * change list — see that function's doc comment for the full design
+   * (precise per-line spans for caret stability, `isolateHistory` for the
+   * undo trade-off). No-op-dispatches-nothing when the buffer is already
+   * clean, same contract as `transformLines`/`transformSelection` above.
+   */
+  trimTrailingWhitespaceForSave(): void;
 }
 
 export function isEmptyBuffer(buffer: EditorBuffer): boolean {
@@ -434,6 +452,92 @@ export function contentOf(buffer: EditorBuffer): string {
 /** Line count of a detached buffer (1-based line numbers go up to this). */
 export function lineCountOf(buffer: EditorBuffer): number {
   return buffer.doc.lines;
+}
+
+/** Shared by `trimTrailingWhitespaceOf` and `createEditor`'s
+ *  `trimTrailingWhitespaceForSave` so the two can never compute a different
+ *  change list for what must be the identical edit. `null` (not `[]`)
+ *  signals "nothing to trim" so both callers can skip building a
+ *  transaction entirely — same no-op-dispatches-nothing contract as
+ *  `transformLines`/`transformSelection`. Materializes the whole document
+ *  as a string (`lineops.ts`'s `trailingWhitespaceSpans` works over plain
+ *  text, not `Text`'s chunked API) — no worse than every save already
+ *  doing exactly that via `content()`/`contentOf`. */
+function computeTrimChanges(state: EditorState): { from: number; to: number }[] | null {
+  const spans = trailingWhitespaceSpans(state.doc.toString());
+  return spans.length === 0 ? null : spans;
+}
+
+/**
+ * Pure counterpart of `EditorHandle.trimTrailingWhitespaceForSave`: apply
+ * the same trailing-whitespace trim to a detached `EditorBuffer` and return
+ * the result, or `buffer` itself (same reference) when there is nothing to
+ * trim. This is what makes the feature unit-testable without a live view/
+ * DOM (see editor.test.ts), following this file's existing `*Of`-without-
+ * a-view convention (`textStatsOf`/`isNonNfcOf`/`detectIndentationOf` etc.)
+ * — `EditorState.update()` runs the exact same transaction pipeline
+ * `view.dispatch()` does, just without a view to paint, so testing this
+ * function's resulting `.doc`/`.selection`/history is equivalent to
+ * dispatching the same spec live.
+ *
+ * Two design choices, both ROADMAP.md v0.7 Track C ("trim trailing
+ * whitespace on save", adversarial-review addition) and both verified
+ * against node_modules/@codemirror/commands/dist/index.js rather than
+ * assumed:
+ *
+ * 1. Precise per-line `{from, to}` deletions (`computeTrimChanges`, one per
+ *    line with a trailing space/tab run), never a single whole-document
+ *    replace the way `replaceContent` works. CM6's own change-mapping
+ *    (`ChangeDesc.mapPos`, default `assoc: -1`) then keeps the caret stable
+ *    for free: a position on an untouched line keeps its exact place
+ *    (only shifted by whatever was deleted strictly before it), and a
+ *    position that was inside a trimmed run collapses onto that span's
+ *    `from` — which is exactly the line's new end, since the span's
+ *    replacement is empty. A whole-document replace has no such
+ *    correspondence between old and new positions and would instead send
+ *    every cursor to one edge of the document.
+ * 2. `isolateHistory.of("full")` on the transaction, not
+ *    `Transaction.addToHistory.of(false)`. The latter is wrong: a
+ *    transaction with `addToHistory === false` still changes the document
+ *    but `historyField`'s own `update()` never records it as an event at
+ *    all (see the source: `if (tr.annotation(Transaction.addToHistory) ===
+ *    false) return ...` — the state's `done` branch is left untouched) —
+ *    Undo would skip straight over the trim, and since it's a genuine
+ *    content change, there would be no way to get the pre-trim buffer back
+ *    via Undo at all.
+ *
+ *    `isolateHistory` is CM6's own documented annotation for "don't merge
+ *    this transaction with a neighboring one" (it calls the history
+ *    field's internal `state.isolate()`, which drops `prevTime` — one of
+ *    several AND-ed conditions `HistoryState.addChanges` requires before
+ *    folding a new event into the previous one; there is no public API for
+ *    this beyond the annotation). "full" (both sides) makes the trim
+ *    *always* its own undo step, deterministically: the alternative —
+ *    letting it merge into the preceding edit via CM6's default
+ *    heuristics — was investigated and rejected, because that merge is
+ *    gated on conditions this call site cannot reliably control: the two
+ *    changes' ranges must be "adjacent" (`isAdjacent`, a structural
+ *    overlap check — a trim on line 40 will not merge with an edit on line
+ *    3), the elapsed time since the last edit must be under
+ *    `newGroupDelay` (500ms by default, and not raisable past whatever
+ *    `basicSetup`'s own `history()` call already set — the facet combines
+ *    multiple configs' `newGroupDelay` with `Math.min`), and the preceding
+ *    event must have no selection-only history entries after it yet (any
+ *    cursor move between the user's last edit and hitting Save appends
+ *    one). Real usage trips at least one of these constantly — pause
+ *    before saving, or click/scroll first — so relying on them would make
+ *    Undo's behavior depend on timing and mouse activity nobody could
+ *    predict. Isolating instead makes it precise and explainable: one Undo
+ *    right after a save always removes exactly the trim (trailing
+ *    whitespace comes back, the user's real edits are untouched, and the
+ *    tab correctly turns dirty again — disk holds the trimmed bytes but the
+ *    buffer no longer matches); the next Undo removes the last real edit,
+ *    same as if trim had never run.
+ */
+export function trimTrailingWhitespaceOf(buffer: EditorBuffer): EditorBuffer {
+  const changes = computeTrimChanges(buffer);
+  if (!changes) return buffer;
+  return buffer.update({ changes, annotations: isolateHistory.of("full") }).state;
 }
 
 /** Result of `textStatsOf`: the counted stats, plus whether they reflect a
@@ -1414,6 +1518,11 @@ export function createEditor(
       const insert = fn(original);
       if (insert === original) return;
       view.dispatch({ changes: { from, to, insert } });
+    },
+    trimTrailingWhitespaceForSave: () => {
+      const changes = computeTrimChanges(view.state);
+      if (!changes) return;
+      view.dispatch({ changes, annotations: isolateHistory.of("full") });
     },
   };
 }
