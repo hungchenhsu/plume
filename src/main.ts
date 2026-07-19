@@ -3204,7 +3204,12 @@ window.addEventListener("keydown", (event) => {
  * consistency with `stream_replace`/`document_info`'s style. ROADMAP.md
  * v0.6 C4's clear_recent_files, added after this audit, joins the
  * state-independent group above — like open_recent, it never touches the
- * active doc at all.
+ * active doc at all. ROADMAP.md v0.7 Track C's replace_in_selection/
+ * replace_all_in_selection, added after this audit, join the
+ * `runLineOperation`-guarded group above — unlike the surrounding
+ * selection-only commands (select_next_occurrence/goto_matching_bracket),
+ * they do mutate buffer content via a raw `view.dispatch`, same guard
+ * rationale as the line-operation cases.
  */
 function dispatchMenuCommand(id: string): void {
   switch (id) {
@@ -3293,6 +3298,20 @@ function dispatchMenuCommand(id: string): void {
     // preview.
     case "goto_matching_bracket":
       editor.goToMatchingBracket();
+      break;
+    // ROADMAP.md v0.7 Track C [danger]: unlike select_next_occurrence/
+    // goto_matching_bracket above, these DO mutate buffer content (they
+    // dispatch replacement edits, not just move the selection), so — same
+    // reasoning as the Line Operations group below — they go through
+    // runLineOperation for the no-doc + read-only/truncated-large-file
+    // guard. The actual matching, `$`-group substitution, and offset
+    // bookkeeping are editor.ts's thin `replaceInSelection`/
+    // `replaceAllInSelection`, backed by the pure core replacescope.ts.
+    case "replace_in_selection":
+      runLineOperation(() => editor.replaceInSelection());
+      break;
+    case "replace_all_in_selection":
+      runLineOperation(() => editor.replaceAllInSelection());
       break;
     case "toggle_bookmark":
       toggleBookmarkFlow();

@@ -110,7 +110,7 @@ the good-first-issue surface.
   preview cannot save); dual-WebView manual acceptance deferred
   [danger]. Undo trade-off (merge vs. isolate) documented in
   editor.ts's `trimTrailingWhitespaceOf`, not restated here.
-- [ ] find/replace in selection: replace / replace-all scoped to the
+- [x] find/replace in selection: replace / replace-all scoped to the
   current selection — built as a pure, vitest-covered core
   ((docText, ranges, query) → edits, including post-replace
   range-shift bookkeeping) with a thin CodeMirror binding, per the
