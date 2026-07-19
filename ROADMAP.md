@@ -109,7 +109,7 @@ the good-first-issue surface.
   addition); round-trip tests; large-file mode is untouched (read-only
   preview cannot save); dual-WebView manual acceptance deferred
   [danger]
-- [ ] find/replace in selection: replace / replace-all scoped to the
+- [x] find/replace in selection: replace / replace-all scoped to the
   current selection — built as a pure, vitest-covered core
   ((docText, ranges, query) → edits, including post-replace
   range-shift bookkeeping) with a thin CodeMirror binding, per the

@@ -5,6 +5,7 @@ import { basicSetup, EditorView } from "codemirror";
 import {
   Compartment,
   countColumn,
+  EditorSelection,
   EditorState,
   Prec,
   RangeSetBuilder,
@@ -40,6 +41,7 @@ import {
 } from "@codemirror/commands";
 import { languages } from "@codemirror/language-data";
 import {
+  getSearchQuery,
   openSearchPanel,
   selectNextOccurrence as cmSelectNextOccurrence,
   selectSelectionMatches as cmSelectSelectionMatches,
@@ -48,6 +50,13 @@ import { editorTheme } from "./editor-theme";
 import { nearEnd, nearStart } from "./chunkpolicy";
 import { detectIndentation, type IndentInfo } from "./indentdetect";
 import type { Locale } from "./i18n";
+import {
+  replaceAllInSelection as coreReplaceAllInSelection,
+  replaceInSelection as coreReplaceInSelection,
+  type ReplaceRange,
+  type ReplaceScopeQuery,
+  type ReplaceScopeResult,
+} from "./replacescope";
 import {
   findHistory,
   pushFindTerm,
@@ -146,6 +155,28 @@ export interface EditorHandle {
   focus(): void;
   /** Open the find/replace panel (regex, case and word toggles built in). */
   openSearch(): void;
+  /**
+   * Replace just the first match of the current search query (whatever
+   * `@codemirror/search`'s panel currently holds, read via
+   * `getSearchQuery`) found within the live buffer's selection — ROADMAP.md
+   * v0.7 Track C "Replace in Selection" [danger]. `@codemirror/search` has
+   * no concept of scoping Replace/Replace All to a selection; the actual
+   * matching, `$`-group substitution, and post-replace offset bookkeeping
+   * live in the pure core module replacescope.ts (100% vitest-covered,
+   * including consistency checks against CM6's own whole-document
+   * `replaceAll`/`replaceNext`) — this method is only the thin plumbing:
+   * read the live query and selection, call the core, dispatch its result.
+   * A no-op (dispatches nothing) when the query is invalid
+   * (`SearchQuery.valid`, e.g. an empty search term or, in regexp mode, an
+   * unparseable pattern) or when no range contains a match — see
+   * `dispatchScopedReplace`.
+   */
+  replaceInSelection(): void;
+  /** Replace every match of the current search query found within the live
+   *  buffer's selection — ROADMAP.md v0.7 Track C "Replace All in
+   *  Selection" [danger]. Same core, same no-op conditions, same thin
+   *  binding as `replaceInSelection` above; see that method's doc comment. */
+  replaceAllInSelection(): void;
   /** Move the cursor to a 1-based line and scroll it into view. `line` is
    *  clamped to the document's line range. `column` (1-based, UTF-16 code
    *  units — same unit and origin as the `column` `onCursorMoved` reports,
@@ -1232,6 +1263,59 @@ export function createEditor(
 
   const view = new EditorView({ state: newBuffer(""), parent });
 
+  /**
+   * Shared plumbing behind `replaceInSelection`/`replaceAllInSelection`
+   * below (ROADMAP.md v0.7 Track C [danger]): read the live search query
+   * and selection, hand plain data to `core` (replacescope.ts's pure
+   * `replaceInSelection`/`replaceAllInSelection`), and dispatch its result.
+   *
+   * `getSearchQuery(view.state)` returns `@codemirror/search`'s own
+   * default (empty, invalid) query when the search panel has never been
+   * opened this session — `!query.valid` catches that the same way it
+   * catches an empty search field or, in regexp mode, a pattern that
+   * doesn't parse (mirrors `SearchQuery.valid`; see replacescope.ts's
+   * `buildRegExp` doc comment), so this never even calls into the core
+   * with a query CM6 itself would refuse to search with.
+   *
+   * `result.edits.length === 0` (nothing matched, or every selection range
+   * was empty) dispatches nothing — same no-op-dispatches-nothing contract
+   * as `transformLines`/`transformSelection`/`joinLines` above, so an
+   * unproductive invocation never creates a spurious undo step. The new
+   * selection is built from `result.ranges` (post-edit coordinates, one
+   * per original range — see `ReplaceScopeResult.ranges`'s doc comment)
+   * with the original selection's `mainIndex` preserved, so whichever
+   * range was "main" before stays "main" after.
+   */
+  function dispatchScopedReplace(
+    core: (
+      docText: string,
+      ranges: readonly ReplaceRange[],
+      query: ReplaceScopeQuery,
+    ) => ReplaceScopeResult,
+    userEvent: string,
+  ): void {
+    const query = getSearchQuery(view.state);
+    if (!query.valid) return;
+    const { ranges: liveRanges, mainIndex } = view.state.selection;
+    const ranges: ReplaceRange[] = liveRanges.map((r) => ({ from: r.from, to: r.to }));
+    const result = core(view.state.doc.toString(), ranges, {
+      search: query.search,
+      replace: query.replace,
+      regexp: query.regexp,
+      caseSensitive: query.caseSensitive,
+      wholeWord: query.wholeWord,
+    });
+    if (result.edits.length === 0) return;
+    view.dispatch({
+      changes: result.edits,
+      selection: EditorSelection.create(
+        result.ranges.map((r) => EditorSelection.range(r.from, r.to)),
+        mainIndex,
+      ),
+      userEvent,
+    });
+  }
+
   return {
     newBuffer,
     swap: (buffer) => {
@@ -1286,6 +1370,12 @@ export function createEditor(
     },
     openSearch: () => {
       openSearchPanel(view);
+    },
+    replaceInSelection: () => {
+      dispatchScopedReplace(coreReplaceInSelection, "input.replace");
+    },
+    replaceAllInSelection: () => {
+      dispatchScopedReplace(coreReplaceAllInSelection, "input.replace.all");
     },
     revealCursor: () => {
       view.dispatch({
