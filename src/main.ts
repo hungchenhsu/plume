@@ -23,7 +23,9 @@ import {
 import { showCharInspector } from "./charinspect";
 import {
   encodingChoices,
+  filterEncodingChoices,
   groupEncodingChoices,
+  matchedEncodingAlias,
   reopenEncodingChoices,
   streamConvertEncodingChoices,
   type EncodingChoice,
@@ -116,7 +118,7 @@ import { planNormalization, type NormalizeForm } from "./normalize";
 import { orphanBackups } from "./orphans";
 import { showPalette } from "./palette";
 import { showQuickOpen } from "./quickopen";
-import { showMenu, type MenuItem } from "./popup";
+import { showFilterableMenu, showMenu, type MenuItem } from "./popup";
 import { decideSaveCompletion } from "./savecompletion";
 import { fingerprintsEqual, mustDefer, nextDrainStep } from "./savemutex";
 import { createSessionPersister } from "./sessionpersist";
@@ -2257,16 +2259,30 @@ function showMojibakeRepairWizard(): void {
  * `groupEncodingChoices`'s buckets. `toItem` supplies the per-choice
  * `checked`/`action` (and anything else besides `label`/`header`), which
  * differs across this menu's three encoding submenus below.
+ *
+ * `query` (ROADMAP.md v0.7 Track C encoding-picker alias search) is the
+ * filterable menu's *current* search text, used only to annotate each item
+ * with `hint` — encodings.ts's matchedEncodingAlias, so an item that only
+ * matched via an informal alias (e.g. typing "cp950" surfacing Big5) shows
+ * which alias it was. It does not filter `choices` itself: the caller
+ * already did that via filterEncodingChoices before calling this, since
+ * showFilterableMenu's `getItems` needs the filtered-and-grouped result,
+ * not a second filtering pass here. Omitted (empty string) for showMenu's
+ * plain, unfiltered top-level submenus (none exist below — every one of
+ * this menu's three encoding submenus is filterable — but the default
+ * keeps this helper usable for a future non-filterable caller too).
  */
 function encodingMenuItems(
   choices: EncodingChoice[],
   toItem: (choice: EncodingChoice) => Omit<MenuItem, "label" | "header">,
+  query = "",
 ): MenuItem[] {
   const items: MenuItem[] = [];
   for (const group of groupEncodingChoices(choices)) {
     items.push({ label: group.label, header: true });
     for (const choice of group.choices) {
-      items.push({ label: choice.label, ...toItem(choice) });
+      const hint = matchedEncodingAlias(choice, query);
+      items.push({ label: choice.label, ...(hint ? { hint } : {}), ...toItem(choice) });
     }
   }
   return items;
@@ -2349,13 +2365,19 @@ function showEncodingMenu(anchor: HTMLElement): void {
       label: t("menu.reopenWithEncoding"),
       disabled: doc.path === null,
       action: () =>
-        showMenu(
-          anchor,
-          encodingMenuItems(reopenEncodingChoices(), (e) => ({
-            checked: e.value === doc.encoding,
-            action: () => void reopenWithEncoding(e.value),
-          })),
-        ),
+        showFilterableMenu(anchor, {
+          placeholder: t("encodingPicker.searchPlaceholder"),
+          emptyText: t("encodingPicker.noResults"),
+          getItems: (query) =>
+            encodingMenuItems(
+              filterEncodingChoices(reopenEncodingChoices(), query),
+              (e) => ({
+                checked: e.value === doc.encoding,
+                action: () => void reopenWithEncoding(e.value),
+              }),
+              query,
+            ),
+        }),
     },
     {
       label: t("menu.compareEncodings"),
@@ -2373,188 +2395,192 @@ function showEncodingMenu(anchor: HTMLElement): void {
     },
     {
       label: t("menu.saveWithEncoding"),
-      action: () =>
-        showMenu(
-          anchor,
-          encodingMenuItems(encodingChoices(), (e) => ({
-            checked: e.value === doc.encoding && e.withBom === doc.withBom,
-            action: () => {
-              // Applied speculatively so the save encodes with the new
-              // choice; rolled back if nothing was written (lossy save
-              // declined, dialog cancelled, or write failure) so a
-              // "clean" doc never shows an encoding the disk doesn't have.
-              // The protected original is also mirrored onto
-              // doc.speculativeEncoding (issue #161): a reload landing
-              // before this save resolves — the stale-save dialog's own
-              // "Reload" choice, most commonly, deferred through the lock
-              // into reevaluateReload — decodes with it instead of this
-              // not-yet-written target (see asyncguard.ts's
-              // reloadEncodingFor). applyOpenedForReload clears the marker
-              // the instant such a reload actually applies, which doubles
-              // as this rollback's own signal: a reference match below
-              // means no reload consumed it, so the plain metadata-only
-              // rollback below is still correct; a mismatch (cleared to
-              // null, or — double Save with Encoding — replaced by a
-              // newer speculative window's own marker) means a reload (or
-              // a newer speculative save) already established a fresher,
-              // internally-coherent doc.encoding/withBom/buffer/
-              // fingerprint/malformed of its own that this rollback must
-              // not stomp those two fields back out of sync with.
-              const original: SpeculativeEncoding = {
-                encoding: doc.encoding,
-                withBom: doc.withBom,
-              };
-              doc.encoding = e.value;
-              doc.withBom = e.withBom;
-              doc.speculativeEncoding = original;
-              // Draws a new revision from the shared sequence (issue
-              // #210), same reasoning as setLineEnding's own bump
-              // (main.ts:1916, issue #160): this mutation changes what a
-              // save will write to disk exactly like a content edit does,
-              // so a plain save already in flight for this doc must be
-              // able to tell the difference. Without this, that other
-              // save's own revisionAtStart snapshot (captured before this
-              // ever ran) still matches doc.revision once it resolves,
-              // decideSaveCompletion (src/savecompletion.ts) wrongly
-              // clears dirty for bytes that never carried the new
-              // encoding, and drainLock's nextDrainStep
-              // (src/savemutex.ts) then sees a "clean" doc and drops this
-              // now-pending request outright (dropSave) instead of
-              // running it — the caller is told it succeeded and the tab
-              // shows the new encoding, but disk still holds the old
-              // bytes.
-              doc.revision = nextRevision++;
-              // Captured right after the bump above (issue #231): the
-              // write-failure rollback below must only undo the force-dirty
-              // transition just below when nothing else — a real edit,
-              // another save/reload, or a tab close — touched the doc while
-              // this call's own saveFlow was in flight. Reuses the same
-              // capture-before/validate-after pair (asyncguard.ts's
-              // captureIdentity/validateIdentity) every other post-await
-              // mutation in this file already goes through, rather than a
-              // bespoke revision check.
-              const forceDirtyGuard = captureIdentity(doc);
-              // Whether the force just below actually fires (issue #231's
-              // own critic-review addition): a doc that was already dirty
-              // entering this action has real unsaved edits — and possibly
-              // a hot-exit backup genuinely covering them — that the
-              // failure rollback below has no business touching. The
-              // {id, revision} guard alone can't tell that case apart: a
-              // non-stale write failure bumps nothing after this action's
-              // own bump above, so validateIdentity would still say
-              // "apply" and a rollback gated on it alone would mark real
-              // unsaved content clean and delete its only backup —
-              // silent data loss, strictly worse than the cosmetic
-              // spurious-dirty this fix exists to remove.
-              const wasClean = !doc.dirty;
-              // Also force dirty=true when the doc was fully clean (issue
-              // #221, a residual gap the revision bump above doesn't
-              // close): if dirty was already false, the bump alone never
-              // sets it — it only stops decideSaveCompletion from wrongly
-              // *clearing* an already-true dirty on some unrelated
-              // in-flight save's completion. A doc that's clean start to
-              // finish (the blocking save/reload is itself a no-op, and
-              // this mutation never touches dirty on its own) comes out of
-              // the lock still clean, so savemutex.ts's nextDrainStep sees
-              // pendingSaveAs !== null && !dirty and drops this now-pending
-              // request outright — same dropSave failure #210 fixed, just
-              // reached from the "no real edit anywhere" angle instead of
-              // "an in-flight save races a dirty doc". Same clean->dirty
-              // transition as setLineEnding's own fix just above (issue
-              // #160) and the editor's onChange handler near the top of
-              // this file.
-              if (!doc.dirty) {
-                doc.dirty = true;
-                tabs.render();
-                updateWindowTitle();
-              }
-              // Also mirrors setLineEnding/onChange: this mutation is a
-              // save-relevant change with no disk copy yet, so it needs the
-              // same hot-exit backup coverage a content edit gets.
-              backupFlush.schedule();
-              updateStatusBar(doc);
-              void saveFlow(false)
-                .then((written) => {
-                  if (!written && doc.speculativeEncoding === original) {
-                    doc.encoding = original.encoding;
-                    doc.withBom = original.withBom;
-                    // Issue #231: a write failure that never reached disk
-                    // (stale or not — a stale failure resolved via the
-                    // stale dialog's own "reload" choice already cleared
-                    // speculativeEncoding above via applyOpenedForReload,
-                    // so this never runs for that case) must also undo the
-                    // force-dirty transition above, not just
-                    // encoding/withBom, when it's still safe to — BOTH
-                    // gates below are load-bearing: wasClean means the
-                    // force above actually fired (an already-dirty doc's
-                    // dirty and backup belong to real unsaved edits this
-                    // rollback must never touch — see wasClean's own doc
-                    // comment); "apply" means the doc is still open and
-                    // its revision hasn't moved since forceDirtyGuard was
-                    // captured, i.e. no real edit (or other save/reload)
-                    // landed while this save's IPC round trip was in
-                    // flight. Either failing means dirty must stay —
-                    // genuinely edited content, or nothing left to fix.
-                    if (
-                      wasClean &&
-                      validateIdentity(forceDirtyGuard, doc, tabs.docs.includes(doc)) ===
-                        "apply"
-                    ) {
-                      doc.dirty = false;
-                      tabs.render();
-                      updateWindowTitle();
-                      // The backupFlush.schedule() call above may already
-                      // have landed a hot-exit backup covering the
-                      // now-reverted dirty transition (its debounce can
-                      // fire before this failed save's own IPC round trip
-                      // resolves), or may still be pending. Either way,
-                      // backups.drop reconciles it: an already-committed
-                      // backup is queued for deletion and backupName
-                      // cleared synchronously; a still-pending flush is
-                      // cancelled via the epoch bump before it ever writes.
-                      // Mirrors runSaveFlow's own successful-completion
-                      // pairing of clearDirty with dropBackup
-                      // (decideSaveCompletion's dropBackup branch, just
-                      // above in this file) — same clean transition,
-                      // reached from the rollback side instead of a
-                      // successful write.
-                      backups.drop(doc);
-                    }
-                    updateStatusBar(doc);
+      action: () => {
+        const toItem = (e: EncodingChoice): Omit<MenuItem, "label" | "header"> => ({
+          checked: e.value === doc.encoding && e.withBom === doc.withBom,
+          action: () => {
+            // Applied speculatively so the save encodes with the new
+            // choice; rolled back if nothing was written (lossy save
+            // declined, dialog cancelled, or write failure) so a
+            // "clean" doc never shows an encoding the disk doesn't have.
+            // The protected original is also mirrored onto
+            // doc.speculativeEncoding (issue #161): a reload landing
+            // before this save resolves — the stale-save dialog's own
+            // "Reload" choice, most commonly, deferred through the lock
+            // into reevaluateReload — decodes with it instead of this
+            // not-yet-written target (see asyncguard.ts's
+            // reloadEncodingFor). applyOpenedForReload clears the marker
+            // the instant such a reload actually applies, which doubles
+            // as this rollback's own signal: a reference match below
+            // means no reload consumed it, so the plain metadata-only
+            // rollback below is still correct; a mismatch (cleared to
+            // null, or — double Save with Encoding — replaced by a
+            // newer speculative window's own marker) means a reload (or
+            // a newer speculative save) already established a fresher,
+            // internally-coherent doc.encoding/withBom/buffer/
+            // fingerprint/malformed of its own that this rollback must
+            // not stomp those two fields back out of sync with.
+            const original: SpeculativeEncoding = {
+              encoding: doc.encoding,
+              withBom: doc.withBom,
+            };
+            doc.encoding = e.value;
+            doc.withBom = e.withBom;
+            doc.speculativeEncoding = original;
+            // Draws a new revision from the shared sequence (issue
+            // #210), same reasoning as setLineEnding's own bump
+            // (main.ts:1916, issue #160): this mutation changes what a
+            // save will write to disk exactly like a content edit does,
+            // so a plain save already in flight for this doc must be
+            // able to tell the difference. Without this, that other
+            // save's own revisionAtStart snapshot (captured before this
+            // ever ran) still matches doc.revision once it resolves,
+            // decideSaveCompletion (src/savecompletion.ts) wrongly
+            // clears dirty for bytes that never carried the new
+            // encoding, and drainLock's nextDrainStep
+            // (src/savemutex.ts) then sees a "clean" doc and drops this
+            // now-pending request outright (dropSave) instead of
+            // running it — the caller is told it succeeded and the tab
+            // shows the new encoding, but disk still holds the old
+            // bytes.
+            doc.revision = nextRevision++;
+            // Captured right after the bump above (issue #231): the
+            // write-failure rollback below must only undo the force-dirty
+            // transition just below when nothing else — a real edit,
+            // another save/reload, or a tab close — touched the doc while
+            // this call's own saveFlow was in flight. Reuses the same
+            // capture-before/validate-after pair (asyncguard.ts's
+            // captureIdentity/validateIdentity) every other post-await
+            // mutation in this file already goes through, rather than a
+            // bespoke revision check.
+            const forceDirtyGuard = captureIdentity(doc);
+            // Whether the force just below actually fires (issue #231's
+            // own critic-review addition): a doc that was already dirty
+            // entering this action has real unsaved edits — and possibly
+            // a hot-exit backup genuinely covering them — that the
+            // failure rollback below has no business touching. The
+            // {id, revision} guard alone can't tell that case apart: a
+            // non-stale write failure bumps nothing after this action's
+            // own bump above, so validateIdentity would still say
+            // "apply" and a rollback gated on it alone would mark real
+            // unsaved content clean and delete its only backup —
+            // silent data loss, strictly worse than the cosmetic
+            // spurious-dirty this fix exists to remove.
+            const wasClean = !doc.dirty;
+            // Also force dirty=true when the doc was fully clean (issue
+            // #221, a residual gap the revision bump above doesn't
+            // close): if dirty was already false, the bump alone never
+            // sets it — it only stops decideSaveCompletion from wrongly
+            // *clearing* an already-true dirty on some unrelated
+            // in-flight save's completion. A doc that's clean start to
+            // finish (the blocking save/reload is itself a no-op, and
+            // this mutation never touches dirty on its own) comes out of
+            // the lock still clean, so savemutex.ts's nextDrainStep sees
+            // pendingSaveAs !== null && !dirty and drops this now-pending
+            // request outright — same dropSave failure #210 fixed, just
+            // reached from the "no real edit anywhere" angle instead of
+            // "an in-flight save races a dirty doc". Same clean->dirty
+            // transition as setLineEnding's own fix just above (issue
+            // #160) and the editor's onChange handler near the top of
+            // this file.
+            if (!doc.dirty) {
+              doc.dirty = true;
+              tabs.render();
+              updateWindowTitle();
+            }
+            // Also mirrors setLineEnding/onChange: this mutation is a
+            // save-relevant change with no disk copy yet, so it needs the
+            // same hot-exit backup coverage a content edit gets.
+            backupFlush.schedule();
+            updateStatusBar(doc);
+            void saveFlow(false)
+              .then((written) => {
+                if (!written && doc.speculativeEncoding === original) {
+                  doc.encoding = original.encoding;
+                  doc.withBom = original.withBom;
+                  // Issue #231: a write failure that never reached disk
+                  // (stale or not — a stale failure resolved via the
+                  // stale dialog's own "reload" choice already cleared
+                  // speculativeEncoding above via applyOpenedForReload,
+                  // so this never runs for that case) must also undo the
+                  // force-dirty transition above, not just
+                  // encoding/withBom, when it's still safe to — BOTH
+                  // gates below are load-bearing: wasClean means the
+                  // force above actually fired (an already-dirty doc's
+                  // dirty and backup belong to real unsaved edits this
+                  // rollback must never touch — see wasClean's own doc
+                  // comment); "apply" means the doc is still open and
+                  // its revision hasn't moved since forceDirtyGuard was
+                  // captured, i.e. no real edit (or other save/reload)
+                  // landed while this save's IPC round trip was in
+                  // flight. Either failing means dirty must stay —
+                  // genuinely edited content, or nothing left to fix.
+                  if (
+                    wasClean &&
+                    validateIdentity(forceDirtyGuard, doc, tabs.docs.includes(doc)) ===
+                      "apply"
+                  ) {
+                    doc.dirty = false;
+                    tabs.render();
+                    updateWindowTitle();
+                    // The backupFlush.schedule() call above may already
+                    // have landed a hot-exit backup covering the
+                    // now-reverted dirty transition (its debounce can
+                    // fire before this failed save's own IPC round trip
+                    // resolves), or may still be pending. Either way,
+                    // backups.drop reconciles it: an already-committed
+                    // backup is queued for deletion and backupName
+                    // cleared synchronously; a still-pending flush is
+                    // cancelled via the epoch bump before it ever writes.
+                    // Mirrors runSaveFlow's own successful-completion
+                    // pairing of clearDirty with dropBackup
+                    // (decideSaveCompletion's dropBackup branch, just
+                    // above in this file) — same clean transition,
+                    // reached from the rollback side instead of a
+                    // successful write.
+                    backups.drop(doc);
                   }
-                })
-                .finally(() => {
-                  // Only drop the marker if it's still this call's own
-                  // (issue #212) — mirrors the .then() rollback's own
-                  // reference-equality guard just above. A newer,
-                  // overlapping Save with Encoding call may already have
-                  // replaced it with its own (same "coalesce" scenario the
-                  // `original` comment above describes), or a reload that
-                  // landed and applied in between may already have cleared
-                  // it (applyOpenedForReload's own unconditional clear,
-                  // which is correct there since an applied reload always
-                  // establishes fresher, disk-verified truth no pending
-                  // speculative save's own rollback may second-guess — see
-                  // asyncguard.ts's reloadEncodingFor doc comment). This
-                  // finally has no such standing over a *different*,
-                  // still-in-flight call's own marker: clearing it
-                  // unconditionally would drop that other call's marker out
-                  // from under it — its own eventual rollback would then
-                  // read null instead of its own original and silently
-                  // skip restoring doc.encoding/withBom, and any reload
-                  // landing in the gap would fall back to doc.encoding
-                  // directly, which at that point is the *other* call's own
-                  // not-yet-written speculative target, not disk truth
-                  // (still stale even if saveFlow itself threw, e.g. the
-                  // untitled-doc save dialog IPC rejecting — same reasoning
-                  // either way).
-                  if (doc.speculativeEncoding === original) {
-                    doc.speculativeEncoding = null;
-                  }
-                });
-            },
-          })),
-        ),
+                  updateStatusBar(doc);
+                }
+              })
+              .finally(() => {
+                // Only drop the marker if it's still this call's own
+                // (issue #212) — mirrors the .then() rollback's own
+                // reference-equality guard just above. A newer,
+                // overlapping Save with Encoding call may already have
+                // replaced it with its own (same "coalesce" scenario the
+                // `original` comment above describes), or a reload that
+                // landed and applied in between may already have cleared
+                // it (applyOpenedForReload's own unconditional clear,
+                // which is correct there since an applied reload always
+                // establishes fresher, disk-verified truth no pending
+                // speculative save's own rollback may second-guess — see
+                // asyncguard.ts's reloadEncodingFor doc comment). This
+                // finally has no such standing over a *different*,
+                // still-in-flight call's own marker: clearing it
+                // unconditionally would drop that other call's marker out
+                // from under it — its own eventual rollback would then
+                // read null instead of its own original and silently
+                // skip restoring doc.encoding/withBom, and any reload
+                // landing in the gap would fall back to doc.encoding
+                // directly, which at that point is the *other* call's own
+                // not-yet-written speculative target, not disk truth
+                // (still stale even if saveFlow itself threw, e.g. the
+                // untitled-doc save dialog IPC rejecting — same reasoning
+                // either way).
+                if (doc.speculativeEncoding === original) {
+                  doc.speculativeEncoding = null;
+                }
+              });
+          },
+        });
+        showFilterableMenu(anchor, {
+          placeholder: t("encodingPicker.searchPlaceholder"),
+          emptyText: t("encodingPicker.noResults"),
+          getItems: (query) =>
+            encodingMenuItems(filterEncodingChoices(encodingChoices(), query), toItem, query),
+        });
+      },
     },
     {
       label: t("menu.convertFileToEncoding"),
@@ -2565,39 +2591,47 @@ function showEncodingMenu(anchor: HTMLElement): void {
       // streamConvertEncodingChoices) — the streaming decode side has no
       // dead end, only the encode side does (streamconvert.rs doc comment).
       disabled: !doc.truncated,
-      action: () =>
-        showMenu(
-          anchor,
-          encodingMenuItems(streamConvertEncodingChoices(), (e) => ({
-            checked: e.value === doc.encoding && e.withBom === doc.withBom,
-            action: () => {
-              if (!doc.path) return;
-              const path = doc.path;
-              // Captured before runStreamConvert's own await chain starts
-              // (issue #163): the tab can close — or close and have a
-              // fresh tab reopened onto the same path — while the
-              // (potentially long-running) conversion itself runs. See
-              // streamCompletionTarget's doc comment.
-              const guard = captureIdentity(doc);
-              void runStreamConvert(path, doc.encoding, e, () => {
-                const target = streamCompletionTarget(guard, doc, path);
-                if (!target) {
-                  void messageDialog(t("streamConvert.completedTabClosedMessage"), {
-                    title: t("streamConvert.title", basename(path)),
-                    kind: "info",
-                  });
-                  return;
-                }
-                // Set *before* reloadFromDisk, since reloadFromDisk reopens
-                // with whatever target.encoding already holds — it must
-                // already be the new encoding, not the file's old one.
-                target.encoding = e.value;
-                target.withBom = e.withBom;
-                void reloadFromDisk(target);
-              });
-            },
-          })),
-        ),
+      action: () => {
+        const toItem = (e: EncodingChoice): Omit<MenuItem, "label" | "header"> => ({
+          checked: e.value === doc.encoding && e.withBom === doc.withBom,
+          action: () => {
+            if (!doc.path) return;
+            const path = doc.path;
+            // Captured before runStreamConvert's own await chain starts
+            // (issue #163): the tab can close — or close and have a
+            // fresh tab reopened onto the same path — while the
+            // (potentially long-running) conversion itself runs. See
+            // streamCompletionTarget's doc comment.
+            const guard = captureIdentity(doc);
+            void runStreamConvert(path, doc.encoding, e, () => {
+              const target = streamCompletionTarget(guard, doc, path);
+              if (!target) {
+                void messageDialog(t("streamConvert.completedTabClosedMessage"), {
+                  title: t("streamConvert.title", basename(path)),
+                  kind: "info",
+                });
+                return;
+              }
+              // Set *before* reloadFromDisk, since reloadFromDisk reopens
+              // with whatever target.encoding already holds — it must
+              // already be the new encoding, not the file's old one.
+              target.encoding = e.value;
+              target.withBom = e.withBom;
+              void reloadFromDisk(target);
+            });
+          },
+        });
+        showFilterableMenu(anchor, {
+          placeholder: t("encodingPicker.searchPlaceholder"),
+          emptyText: t("encodingPicker.noResults"),
+          getItems: (query) =>
+            encodingMenuItems(
+              filterEncodingChoices(streamConvertEncodingChoices(), query),
+              toItem,
+              query,
+            ),
+        });
+      },
     },
     {
       label: t("menu.repairMojibake"),
