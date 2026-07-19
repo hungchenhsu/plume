@@ -247,3 +247,149 @@ export function reopenEncodingChoices(): EncodingChoice[] {
 export function streamConvertEncodingChoices(): EncodingChoice[] {
   return encodingChoices().filter((e) => e.value !== "UTF-16LE" && e.value !== "UTF-16BE");
 }
+
+// Alias search (ROADMAP.md v0.7 Track C encoding-picker alias search):
+// investigation first established that none of the three encoding submenus
+// (reopen / save-with-encoding / convert-file-to-encoding, all built from
+// this module's choice lists via main.ts's encodingMenuItems) had any
+// filter mechanism at all — popup.ts's showMenu is a plain click list, no
+// text input, so a search for an informal name like "latin1" or "cp950"
+// had nothing to match against. This section is the data + pure logic half
+// of the fix; popup.ts's showFilterableMenu is the new UI half.
+//
+// Every alias below is verified against one of two sources — never typed
+// from memory — cited per group:
+//
+// 1. The IANA/WHATWG labels `encoding_rs::Encoding::for_label` actually
+//    recognizes: mechanically extracted from
+//    `encoding_rs-0.8.35/src/test_labels_names.rs` (the exact version
+//    Cargo.lock pins), which is itself a generated, verbatim transcription
+//    of the WHATWG Encoding Standard's "names and labels" table
+//    (https://encoding.spec.whatwg.org/#names-and-labels). Every label
+//    whose `for_label` target isn't one of this catalog's 27 values was
+//    discarded (e.g. "arabic"/ISO-8859-6, "ibm866"/IBM866 — real labels,
+//    just not encodings this app offers), and so was any label that's
+//    already redundant with the catalog entry's own display label after
+//    normalization (e.g. "shift_jis" needs no alias — Shift_JIS's own
+//    label already contains it) or with another kept alias for the same
+//    value (e.g. "gb_2312" dropped once "gb2312" is kept — both normalize
+//    identically). A further hand-curated cut dropped labels no one
+//    searching by an informal name would plausibly type — bare IANA
+//    registry shorthand ("csbig5", "csisolatin1", …), ISO registration
+//    numbers ("iso-ir-100", …), and dated ISO variants ("iso_8859-1:1987",
+//    …) — the same "verified but deliberately excluded" shape as this
+//    file's MANUAL_ONLY_ENCODINGS/top-of-file exclusions, not a gap in
+//    verification.
+//
+// 2. Windows codepage numbers that predate/sit outside the WHATWG label
+//    list entirely (cp932/cp936/cp949/cp950, and the bare "ansi"
+//    colloquialism): verified against Microsoft's own "Code Page
+//    Identifiers" reference
+//    (https://learn.microsoft.com/en-us/windows/win32/intl/code-page-identifiers),
+//    which documents 932/936/949/950 by exact name ("ANSI/OEM Japanese;
+//    Japanese (Shift-JIS)", "…Simplified Chinese…(GB2312)", "…Korean
+//    (Unified Hangul Code)", "…Traditional Chinese…(Big5)") — corroborated
+//    for 936/949 by encoding_rs's own "gb2312"→GBK and
+//    "ks_c_5601-1987"→EUC_KR label mappings. Plain "ansi" is *not* on
+//    either list — Windows' own docs describe ANSI code pages as
+//    locale-dependent ("can be different on different computers"): the
+//    system code page an "ANSI" file actually carries is cp1252 on a
+//    Western install but cp950 (Big5) on Traditional Chinese, cp932
+//    (Shift_JIS) on Japanese, cp936 (GBK) on Simplified Chinese, and
+//    cp949 (EUC-KR) on Korean ones. This app's core audience works with
+//    exactly those East Asian legacy files, so "ansi" is deliberately
+//    attached to all five catalog values below — typing it surfaces
+//    every regional candidate (each tagged with the alias) and the user
+//    picks, instead of the picker silently asserting the Western
+//    meaning.
+export const ENCODING_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  "UTF-8": ["unicode20utf8", "unicode11utf8", "x-unicode20utf8"],
+  "UTF-16LE": ["ucs-2", "unicode", "unicodefeff", "iso-10646-ucs-2"],
+  "UTF-16BE": ["unicodefffe"],
+  // "ansi" on the four East Asian entries and windows-1252: locale-
+  // dependent by design — see the section doc comment above.
+  Big5: ["ansi", "cp950", "cn-big5", "x-x-big5", "big5-hkscs"],
+  GBK: ["ansi", "cp936", "x-gbk", "gb2312", "gb_2312-80"],
+  Shift_JIS: ["ansi", "cp932", "sjis", "ms932", "x-sjis", "ms_kanji", "windows-31j"],
+  "EUC-JP": ["x-euc-jp"],
+  "EUC-KR": ["ansi", "cp949", "ksc5601", "windows-949", "ks_c_5601-1987", "ks_c_5601-1989"],
+  "windows-1252": [
+    "ansi",
+    "l1",
+    "cp819",
+    "ascii",
+    "latin1",
+    "cp1252",
+    "ibm819",
+    "iso88591",
+    "x-cp1252",
+    "us-ascii",
+    "ansi_x3.4-1968",
+  ],
+  "windows-1250": ["cp1250", "x-cp1250"],
+  "windows-1251": ["cp1251", "x-cp1251"],
+  "windows-1253": ["cp1253", "x-cp1253"],
+  "windows-1254": ["l5", "cp1254", "latin5", "x-cp1254", "iso88599"],
+  "windows-1255": ["cp1255", "x-cp1255"],
+  "windows-1256": ["cp1256", "x-cp1256"],
+  "windows-1257": ["cp1257", "x-cp1257"],
+  "windows-1258": ["cp1258", "x-cp1258"],
+  "ISO-8859-2": ["l2", "latin2"],
+  "ISO-8859-7": ["greek8", "ecma-118", "elot_928", "sun_eu_greek"],
+  "ISO-8859-15": ["l9"],
+  "KOI8-U": ["koi8-ru"],
+  "windows-874": ["tis-620", "dos-874", "iso885911"],
+  macintosh: ["x-mac-roman"],
+};
+
+/** Normalizes picker search input for label/alias matching: lowercased,
+ *  with hyphens, underscores, and whitespace stripped, so "Latin-1",
+ *  "latin_1", "LATIN 1", and "latin1" all compare equal. Deliberately
+ *  narrow — colons/periods are left alone, since after stripping
+ *  -/_/whitespace no two distinct catalog labels or ENCODING_ALIASES
+ *  entries collide, so there's nothing further to gain from normalizing
+ *  them too. */
+export function normalizeEncodingQuery(query: string): string {
+  return query.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/** Whether `choice` matches search `query` (ROADMAP.md v0.7 Track C): true
+ *  when `query` normalizes to the empty string (an empty filter matches
+ *  everything, same convention as palette.ts's filterAndSortCommands), or
+ *  when the normalized query is a substring of the choice's normalized
+ *  label, its normalized canonical `value`, or any one of its
+ *  ENCODING_ALIASES entries (also normalized). `value` is checked
+ *  separately from `label` even though every current label already
+ *  contains its own value as a literal prefix in all four locales
+ *  (verified in src/i18n.ts) — matching `value` directly doesn't depend on
+ *  that convention holding for every label in every future locale. */
+export function encodingChoiceMatchesQuery(choice: EncodingChoice, query: string): boolean {
+  const q = normalizeEncodingQuery(query);
+  if (q === "") return true;
+  if (normalizeEncodingQuery(choice.label).includes(q)) return true;
+  if (normalizeEncodingQuery(choice.value).includes(q)) return true;
+  const aliases = ENCODING_ALIASES[choice.value];
+  return aliases !== undefined && aliases.some((alias) => normalizeEncodingQuery(alias).includes(q));
+}
+
+/** Filters `choices` down to those `encodingChoiceMatchesQuery` accepts,
+ *  preserving relative order — the picker's live-filter core. */
+export function filterEncodingChoices(choices: EncodingChoice[], query: string): EncodingChoice[] {
+  return choices.filter((choice) => encodingChoiceMatchesQuery(choice, query));
+}
+
+/** The ENCODING_ALIASES entry (if any) that made `choice` match `query`,
+ *  for the picker's optional "matched via alias" hint — `undefined` when
+ *  `query` is empty, when the label or value itself already matches (no
+ *  alias needed to explain the hit), or when no alias matches either.
+ *  Picks the first matching alias in ENCODING_ALIASES's own array order
+ *  when more than one would match. */
+export function matchedEncodingAlias(choice: EncodingChoice, query: string): string | undefined {
+  const q = normalizeEncodingQuery(query);
+  if (q === "") return undefined;
+  if (normalizeEncodingQuery(choice.label).includes(q)) return undefined;
+  if (normalizeEncodingQuery(choice.value).includes(q)) return undefined;
+  const aliases = ENCODING_ALIASES[choice.value];
+  if (!aliases) return undefined;
+  return aliases.find((alias) => normalizeEncodingQuery(alias).includes(q));
+}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { closeMenu, showMenu } from "./popup";
+import { closeMenu, showFilterableMenu, showMenu } from "./popup";
 
 function anchor(): HTMLElement {
   const el = document.createElement("button");
@@ -159,5 +159,129 @@ describe("showMenu positioning", () => {
     const menu = document.querySelector(".popup-menu") as HTMLElement;
     expect(menu.style.top).toBe(`${40 + 6}px`);
     expect(menu.style.bottom).toBe("");
+  });
+});
+
+// showFilterableMenu (ROADMAP.md v0.7 Track C encoding-picker alias
+// search): the filterable sibling of showMenu — same shared
+// buildItemElement/positionElement/registerOpenMenu, plus a text input
+// that re-invokes the caller's own getItems(query) on every keystroke. The
+// caller (main.ts, backed by encodings.ts's filterEncodingChoices/
+// matchedEncodingAlias) owns all matching logic; this module only renders
+// whatever getItems returns, so these tests stay domain-agnostic (plain
+// "Alpha"/"Beta" labels) exactly like showMenu's own tests above.
+describe("showFilterableMenu", () => {
+  afterEach(() => {
+    closeMenu();
+    document.body.innerHTML = "";
+  });
+
+  it("calls getItems('') up front and renders the unfiltered list, with the placeholder set on the input", () => {
+    const getItems = vi.fn((query: string) =>
+      query === "" ? [{ label: "Alpha" }, { label: "Beta" }] : [],
+    );
+    showFilterableMenu(anchor(), { placeholder: "Search…", emptyText: "No matches", getItems });
+
+    expect(getItems).toHaveBeenCalledWith("");
+    const input = document.querySelector<HTMLInputElement>(".popup-filter-input");
+    expect(input).not.toBeNull();
+    expect(input!.placeholder).toBe("Search…");
+    expect(document.querySelectorAll(".popup-filter-list button.popup-item")).toHaveLength(2);
+  });
+
+  it("re-invokes getItems on every keystroke and re-renders the list, without recreating the input", () => {
+    const getItems = vi.fn((query: string) =>
+      query === "a" ? [{ label: "Alpha" }] : [{ label: "Alpha" }, { label: "Beta" }],
+    );
+    showFilterableMenu(anchor(), { placeholder: "Search…", emptyText: "No matches", getItems });
+    const input = document.querySelector<HTMLInputElement>(".popup-filter-input")!;
+
+    input.value = "a";
+    input.dispatchEvent(new Event("input"));
+
+    expect(getItems).toHaveBeenLastCalledWith("a");
+    const buttons = document.querySelectorAll(".popup-filter-list button.popup-item");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].textContent).toContain("Alpha");
+    // Same input element survives the re-render — focus/cursor position
+    // would otherwise reset on every keystroke.
+    expect(document.querySelector(".popup-filter-input")).toBe(input);
+  });
+
+  it("shows emptyText in place of the list when getItems returns none — the no-match fallback", () => {
+    showFilterableMenu(anchor(), {
+      placeholder: "Search…",
+      emptyText: "No matching encoding",
+      getItems: () => [],
+    });
+    const empty = document.querySelector(".popup-filter-empty");
+    expect(empty).not.toBeNull();
+    expect(empty!.textContent).toBe("No matching encoding");
+    expect(document.querySelectorAll(".popup-filter-list button.popup-item")).toHaveLength(0);
+  });
+
+  it("clicking an item closes the menu and runs its action, same as showMenu", () => {
+    const action = vi.fn();
+    showFilterableMenu(anchor(), {
+      placeholder: "Search…",
+      emptyText: "No matches",
+      getItems: () => [{ label: "Windows-1252", action }],
+    });
+    const button = document.querySelector<HTMLButtonElement>(
+      ".popup-filter-list button.popup-item",
+    )!;
+    button.click();
+    expect(action).toHaveBeenCalledOnce();
+    expect(document.querySelector(".popup-filter-menu")).toBeNull();
+  });
+
+  it("renders a header item as a non-clickable .popup-section-header, same as showMenu", () => {
+    showFilterableMenu(anchor(), {
+      placeholder: "Search…",
+      emptyText: "No matches",
+      getItems: () => [
+        { label: "Unicode", header: true },
+        { label: "UTF-8", checked: true },
+      ],
+    });
+    expect(document.querySelectorAll(".popup-filter-list .popup-section-header")).toHaveLength(1);
+    expect(document.querySelectorAll(".popup-filter-list button.popup-item")).toHaveLength(1);
+  });
+
+  it("renders an item's hint as muted trailing text", () => {
+    showFilterableMenu(anchor(), {
+      placeholder: "Search…",
+      emptyText: "No matches",
+      getItems: () => [{ label: "Big5 (Traditional Chinese)", hint: "cp950" }],
+    });
+    const hint = document.querySelector(".popup-item-hint");
+    expect(hint).not.toBeNull();
+    expect(hint!.textContent).toBe("cp950");
+  });
+
+  it("focuses the input on open, so typing filters immediately with no extra click", () => {
+    showFilterableMenu(anchor(), {
+      placeholder: "Search…",
+      emptyText: "No matches",
+      getItems: () => [],
+    });
+    expect(document.activeElement).toBe(document.querySelector(".popup-filter-input"));
+  });
+
+  it("opening a showFilterableMenu closes an already-open showMenu, and vice versa — one shared open-menu instance", () => {
+    showMenu(anchor(), [{ label: "Plain menu item" }]);
+    expect(document.querySelector(".popup-menu")).not.toBeNull();
+
+    showFilterableMenu(anchor(), {
+      placeholder: "Search…",
+      emptyText: "No matches",
+      getItems: () => [],
+    });
+    expect(document.querySelector(".popup-menu")).toBeNull();
+    expect(document.querySelector(".popup-filter-menu")).not.toBeNull();
+
+    showMenu(anchor(), [{ label: "Another plain item" }]);
+    expect(document.querySelector(".popup-filter-menu")).toBeNull();
+    expect(document.querySelector(".popup-menu")).not.toBeNull();
   });
 });

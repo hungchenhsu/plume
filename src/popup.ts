@@ -11,6 +11,13 @@ export interface MenuItem {
    *  caller (line-ending menu, decode-warning menu, the top-level encoding
    *  menu, etc.) needs no changes. */
   header?: boolean;
+  /** Muted trailing text rendered after `label` (e.g. "latin1" — the alias
+   *  a filter query matched rather than the label itself; see
+   *  encodings.ts's matchedEncodingAlias). Only meaningful to
+   *  showFilterableMenu's callers — plain `showMenu` items never set this
+   *  today, but it's on the shared shape so both renderers draw from the
+   *  same MenuItem list rather than needing parallel item types. */
+  hint?: string;
 }
 
 interface OpenMenu {
@@ -29,46 +36,61 @@ export function closeMenu(): void {
   current = null;
 }
 
-export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
-  closeMenu();
-  const el = document.createElement("div");
-  el.className = "popup-menu";
-
-  for (const item of items) {
-    if (item.header) {
-      const headerEl = document.createElement("div");
-      headerEl.className = "popup-section-header";
-      headerEl.textContent = item.label;
-      el.appendChild(headerEl);
-      continue;
-    }
-
-    const button = document.createElement("button");
-    button.className = "popup-item";
-    button.disabled = item.disabled ?? false;
-
-    const check = document.createElement("span");
-    check.className = "popup-check";
-    check.textContent = item.checked ? "✓" : "";
-    button.appendChild(check);
-
-    const label = document.createElement("span");
-    label.textContent = item.label;
-    button.appendChild(label);
-
-    button.addEventListener("click", () => {
-      // Belt-and-suspenders alongside the native `disabled` attribute set
-      // above (which already suppresses the browser's own click dispatch
-      // on a disabled button in every real WebView/jsdom): an explicit
-      // guard here doesn't depend on that platform behavior being uniform.
-      if (item.disabled) return;
-      closeMenu();
-      item.action?.();
-    });
-    el.appendChild(button);
+/** Builds one item's DOM node — a non-interactive header `<div>`, or a
+ *  clickable `.popup-item` `<button>` with its check column, label, and
+ *  optional trailing `hint`. Shared by showMenu's static item list and
+ *  showFilterableMenu's per-keystroke re-rendered one, so both draw
+ *  identical markup/behavior from the same MenuItem shape. A click always
+ *  closes the (single, module-level) open menu before running the item's
+ *  own `action` — correct for either caller, since only one of showMenu /
+ *  showFilterableMenu is ever open at a time (both funnel through
+ *  `current`). */
+function buildItemElement(item: MenuItem): HTMLElement {
+  if (item.header) {
+    const headerEl = document.createElement("div");
+    headerEl.className = "popup-section-header";
+    headerEl.textContent = item.label;
+    return headerEl;
   }
 
-  document.body.appendChild(el);
+  const button = document.createElement("button");
+  button.className = "popup-item";
+  button.disabled = item.disabled ?? false;
+
+  const check = document.createElement("span");
+  check.className = "popup-check";
+  check.textContent = item.checked ? "✓" : "";
+  button.appendChild(check);
+
+  const label = document.createElement("span");
+  label.textContent = item.label;
+  button.appendChild(label);
+
+  if (item.hint) {
+    const hint = document.createElement("span");
+    hint.className = "popup-item-hint";
+    hint.textContent = item.hint;
+    button.appendChild(hint);
+  }
+
+  button.addEventListener("click", () => {
+    // Belt-and-suspenders alongside the native `disabled` attribute set
+    // above (which already suppresses the browser's own click dispatch on
+    // a disabled button in every real WebView/jsdom): an explicit guard
+    // here doesn't depend on that platform behavior being uniform.
+    if (item.disabled) return;
+    closeMenu();
+    item.action?.();
+  });
+  return button;
+}
+
+/** Positions fixed-position element `el` (already appended to
+ *  `document.body`, so `el.offsetWidth` reflects its real rendered size)
+ *  against `anchor` — shared by showMenu and showFilterableMenu so both
+ *  open on the same side-with-more-room logic. See showMenu's original
+ *  inline comment (preserved below) for why the up-vs-down choice exists. */
+function positionElement(el: HTMLElement, anchor: HTMLElement): void {
   const rect = anchor.getBoundingClientRect();
   el.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - el.offsetWidth - 8))}px`;
 
@@ -91,7 +113,13 @@ export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
   } else {
     el.style.bottom = `${window.innerHeight - rect.top + 6}px`;
   }
+}
 
+/** Wires `el` up as the single open menu: away-click and Escape both close
+ *  it (via the shared `closeMenu`), deferred by a tick so the same click
+ *  that opened the menu doesn't immediately register as an away-click.
+ *  Shared by showMenu and showFilterableMenu. */
+function registerOpenMenu(el: HTMLElement): void {
   const onAway = (event: MouseEvent) => {
     if (!el.contains(event.target as Node)) closeMenu();
   };
@@ -99,9 +127,96 @@ export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
     if (event.key === "Escape") closeMenu();
   };
   current = { el, onAway, onKey };
-  // Deferred so the click that opened the menu doesn't immediately close it.
   setTimeout(() => {
     document.addEventListener("mousedown", onAway);
     document.addEventListener("keydown", onKey);
   }, 0);
+}
+
+export function showMenu(anchor: HTMLElement, items: MenuItem[]): void {
+  closeMenu();
+  const el = document.createElement("div");
+  el.className = "popup-menu";
+  for (const item of items) el.appendChild(buildItemElement(item));
+
+  document.body.appendChild(el);
+  positionElement(el, anchor);
+  registerOpenMenu(el);
+}
+
+/**
+ * Filterable variant of showMenu (ROADMAP.md v0.7 Track C encoding-picker
+ * alias search): a text input above the item list, live-recomputing the
+ * list on every keystroke via `getItems(query)` — the caller owns all
+ * matching logic (e.g. encodings.ts's filterEncodingChoices/
+ * matchedEncodingAlias); this module stays domain-agnostic, same as
+ * showMenu itself. Investigated first: showMenu has no filter mechanism at
+ * all today (a plain click list, no input), so this is new, not an
+ * extension of an existing one — see encodings.ts's ENCODING_ALIASES doc
+ * comment for the fuller investigation note.
+ *
+ * Deliberately anchored/positioned like showMenu (via the same
+ * positionElement/registerOpenMenu), not a centered modal overlay like
+ * palette.ts's showPalette/quickopen.ts's showQuickOpen — the encoding
+ * picker is a status-bar-anchored dropdown today, and swapping that for a
+ * full-screen overlay would be a bigger UX change than "add a filter"
+ * calls for. Trade-off accepted for the same reason: no arrow-key
+ * navigation / Enter-to-select like the palette/quickopen overlays have —
+ * showMenu's items were always mouse-click-only, and adding keyboard
+ * selection here would be a second new interaction model in one PR rather
+ * than the minimal filter this was scoped as.
+ *
+ * `getItems` is called once up front with an empty query (so the picker
+ * opens showing the full unfiltered list, not an empty one) and again on
+ * every `input` event; only the list portion re-renders, so the input
+ * itself is never recreated and keeps focus/cursor position across
+ * keystrokes (same technique as palette.ts's own render()).
+ */
+export function showFilterableMenu(
+  anchor: HTMLElement,
+  options: {
+    /** Localized placeholder text — this module has no i18n dependency of
+     *  its own, callers pass already-translated strings (mirrors
+     *  showMenu's items already carrying pre-translated labels). */
+    placeholder: string;
+    /** Localized text shown in place of the list when `getItems` returns
+     *  an empty array (the "no match" fallback). */
+    emptyText: string;
+    getItems: (query: string) => MenuItem[];
+  },
+): void {
+  closeMenu();
+  const el = document.createElement("div");
+  el.className = "popup-filter-menu";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "popup-filter-input";
+  input.placeholder = options.placeholder;
+  el.appendChild(input);
+
+  const listEl = document.createElement("div");
+  listEl.className = "popup-filter-list";
+  el.appendChild(listEl);
+
+  const renderList = (query: string): void => {
+    listEl.replaceChildren();
+    const items = options.getItems(query);
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "popup-filter-empty";
+      empty.textContent = options.emptyText;
+      listEl.appendChild(empty);
+      return;
+    }
+    for (const item of items) listEl.appendChild(buildItemElement(item));
+  };
+
+  input.addEventListener("input", () => renderList(input.value));
+
+  document.body.appendChild(el);
+  renderList("");
+  positionElement(el, anchor);
+  registerOpenMenu(el);
+  input.focus();
 }

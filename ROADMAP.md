@@ -96,7 +96,7 @@ the good-first-issue surface.
 
 - [x] go to matching bracket: menu + palette wiring for the built-in
   cursorMatchingBracket command
-- [ ] encoding-picker alias search: typing an IANA/common alias
+- [x] encoding-picker alias search: typing an IANA/common alias
   (latin1, cp950, …) matches the canonical encoding in the picker;
   investigate the picker's existing filter mechanism first — if
   aliases already match, close with findings

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  ENCODING_ALIASES,
   ENCODING_GROUP_ORDER,
+  encodingChoiceMatchesQuery,
   encodingChoices,
+  filterEncodingChoices,
   groupEncodingChoices,
   groupedEncodingChoices,
   isManualOnlyEncoding,
   MANUAL_ONLY_ENCODINGS,
+  matchedEncodingAlias,
+  normalizeEncodingQuery,
   streamConvertEncodingChoices,
 } from "./encodings";
 
@@ -172,5 +177,175 @@ describe("isManualOnlyEncoding", () => {
     for (const value of MANUAL_ONLY_ENCODINGS) {
       expect(catalogValues.has(value)).toBe(true);
     }
+  });
+});
+
+// ROADMAP.md v0.7 Track C encoding-picker alias search: investigation found
+// the picker had no filter mechanism at all (popup.ts's showMenu is a plain
+// click list), so this is new, not an extension of existing matching. Every
+// alias asserted against here is cited in ENCODING_ALIASES's own doc
+// comment (encoding_rs 0.8.35's generated WHATWG label table, or Microsoft's
+// Code Page Identifiers reference for the cp93x/cp95x/"ansi" entries).
+describe("normalizeEncodingQuery", () => {
+  it("lowercases", () => {
+    expect(normalizeEncodingQuery("LATIN1")).toBe("latin1");
+  });
+
+  it("strips hyphens, underscores, and whitespace", () => {
+    expect(normalizeEncodingQuery("ISO-8859-1")).toBe("iso88591");
+    expect(normalizeEncodingQuery("ks_c_5601-1987")).toBe("ksc56011987");
+    expect(normalizeEncodingQuery("windows 1252")).toBe("windows1252");
+  });
+
+  it("makes differently-punctuated/-cased spellings of the same name compare equal", () => {
+    const spellings = ["Latin-1", "latin_1", "LATIN 1", "latin1"];
+    const normalized = new Set(spellings.map(normalizeEncodingQuery));
+    expect(normalized.size).toBe(1);
+  });
+
+  it("leaves colons alone (deliberately narrow — see doc comment)", () => {
+    expect(normalizeEncodingQuery("iso_8859-1:1987")).toBe("iso88591:1987");
+  });
+
+  it("empty string normalizes to empty string", () => {
+    expect(normalizeEncodingQuery("")).toBe("");
+  });
+});
+
+describe("ENCODING_ALIASES", () => {
+  it("every key is a real value in the 27-entry catalog", () => {
+    const catalogValues = new Set(encodingChoices().map((c) => c.value));
+    for (const value of Object.keys(ENCODING_ALIASES)) {
+      expect(catalogValues.has(value)).toBe(true);
+    }
+  });
+
+  it("has no empty alias lists (an absent key, not an empty array, means 'no aliases')", () => {
+    for (const aliases of Object.values(ENCODING_ALIASES)) {
+      expect(aliases.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("has no duplicate alias within a single value's list", () => {
+    for (const [value, aliases] of Object.entries(ENCODING_ALIASES)) {
+      expect(new Set(aliases).size, `duplicate alias for ${value}`).toBe(aliases.length);
+    }
+  });
+});
+
+describe("encodingChoiceMatchesQuery / filterEncodingChoices", () => {
+  it("an empty query matches every choice", () => {
+    expect(filterEncodingChoices(encodingChoices(), "")).toHaveLength(encodingChoices().length);
+  });
+
+  it("matches by canonical value substring even when the label differs", () => {
+    const choice = { label: "Something else entirely", value: "GBK", withBom: false };
+    expect(encodingChoiceMatchesQuery(choice, "GBK")).toBe(true);
+  });
+
+  it("matches by label substring, case-insensitively", () => {
+    const results = filterEncodingChoices(encodingChoices(), "traditional chinese");
+    expect(results.map((c) => c.value)).toEqual(["Big5"]);
+  });
+
+  it("latin1 matches windows-1252 (WHATWG's own latin1->windows-1252 mapping, not ISO-8859-1)", () => {
+    const results = filterEncodingChoices(encodingChoices(), "latin1");
+    expect(results.map((c) => c.value)).toEqual(["windows-1252"]);
+  });
+
+  it("cp950 matches Big5 (Microsoft code page 950)", () => {
+    const results = filterEncodingChoices(encodingChoices(), "cp950");
+    expect(results.map((c) => c.value)).toEqual(["Big5"]);
+  });
+
+  it("cp932/ms932 both match Shift_JIS (Microsoft code page 932)", () => {
+    expect(filterEncodingChoices(encodingChoices(), "cp932").map((c) => c.value)).toEqual([
+      "Shift_JIS",
+    ]);
+    expect(filterEncodingChoices(encodingChoices(), "ms932").map((c) => c.value)).toEqual([
+      "Shift_JIS",
+    ]);
+  });
+
+  it("cp936 matches GBK (Microsoft code page 936)", () => {
+    expect(filterEncodingChoices(encodingChoices(), "cp936").map((c) => c.value)).toEqual(["GBK"]);
+  });
+
+  it("cp949 matches EUC-KR (Microsoft code page 949)", () => {
+    expect(filterEncodingChoices(encodingChoices(), "cp949").map((c) => c.value)).toEqual([
+      "EUC-KR",
+    ]);
+  });
+
+  it("ansi surfaces every regional system-code-page candidate (locale-dependent by design)", () => {
+    // Not a single best-effort mapping: "ANSI" means the Windows system
+    // code page, which differs per locale (cp1252 Western, cp950 Big5,
+    // cp932 Shift_JIS, cp936 GBK, cp949 EUC-KR). The picker surfaces all
+    // five and the user picks — see ENCODING_ALIASES doc comment.
+    expect(filterEncodingChoices(encodingChoices(), "ansi").map((c) => c.value)).toEqual([
+      "Big5",
+      "GBK",
+      "Shift_JIS",
+      "EUC-KR",
+      "windows-1252",
+    ]);
+  });
+
+  it("ucs-2 matches UTF-16LE", () => {
+    expect(filterEncodingChoices(encodingChoices(), "ucs-2").map((c) => c.value)).toEqual([
+      "UTF-16LE",
+    ]);
+  });
+
+  it("gb2312 matches GBK, not gb18030 (encoding_rs's own for_label table, not the newer superset)", () => {
+    expect(filterEncodingChoices(encodingChoices(), "gb2312").map((c) => c.value)).toEqual(["GBK"]);
+  });
+
+  it("matches case-insensitively and with hyphens/underscores/spaces ignored, identically across spellings", () => {
+    const spellings = ["CP1252", "cp-1252", "cp_1252", "cp 1252"];
+    for (const spelling of spellings) {
+      expect(filterEncodingChoices(encodingChoices(), spelling).map((c) => c.value)).toEqual([
+        "windows-1252",
+      ]);
+    }
+  });
+
+  it("a query with no matching label/value/alias returns an empty list — the no-match fallback", () => {
+    expect(filterEncodingChoices(encodingChoices(), "not-a-real-encoding-name")).toEqual([]);
+  });
+});
+
+describe("matchedEncodingAlias", () => {
+  it("returns the matched alias when the hit came from an alias, not the label/value", () => {
+    expect(
+      matchedEncodingAlias({ label: "Big5 (Traditional Chinese)", value: "Big5", withBom: false }, "cp950"),
+    ).toBe("cp950");
+  });
+
+  it("returns undefined when the label itself already matches — no alias needed to explain the hit", () => {
+    expect(
+      matchedEncodingAlias({ label: "Big5 (Traditional Chinese)", value: "Big5", withBom: false }, "big5"),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when the canonical value itself already matches", () => {
+    expect(
+      matchedEncodingAlias({ label: "Something else", value: "GBK", withBom: false }, "gbk"),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for an empty query", () => {
+    expect(
+      matchedEncodingAlias({ label: "Big5 (Traditional Chinese)", value: "Big5", withBom: false }, ""),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when nothing matches at all", () => {
+    expect(
+      matchedEncodingAlias(
+        { label: "Big5 (Traditional Chinese)", value: "Big5", withBom: false },
+        "not-a-real-encoding-name",
+      ),
+    ).toBeUndefined();
   });
 });

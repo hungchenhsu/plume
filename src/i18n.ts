@@ -456,6 +456,13 @@ export interface Messages {
   "encoding.windows874": string;
   "encoding.macintosh": string;
 
+  // Encoding picker filter (ROADMAP.md v0.7 Track C encoding-picker alias
+  // search) — popup.ts's showFilterableMenu chrome text, same split as
+  // palette.searchPlaceholder/noResults above (the matched choices'
+  // `label`s come from the encoding.* keys above, not this pair).
+  "encodingPicker.searchPlaceholder": string;
+  "encodingPicker.noResults": string;
+
   "encoding.group.unicode": string;
   "encoding.group.eastAsian": string;
   "encoding.group.westernEuropean": string;
@@ -857,6 +864,9 @@ const en: Messages = {
   "encoding.windows874": "Windows-874 (Thai)",
   "encoding.macintosh": "Macintosh (Mac Roman)",
 
+  "encodingPicker.searchPlaceholder": "Search encodings (name or alias)…",
+  "encodingPicker.noResults": "No matching encoding",
+
   "encoding.group.unicode": "Unicode",
   "encoding.group.eastAsian": "East Asian",
   "encoding.group.westernEuropean": "Western European",
@@ -1215,6 +1225,9 @@ const zhTW: Messages = {
   "encoding.koi8u": "KOI8-U（烏克蘭文）",
   "encoding.windows874": "Windows-874（泰文）",
   "encoding.macintosh": "Macintosh（Mac Roman）",
+
+  "encodingPicker.searchPlaceholder": "搜尋編碼（名稱或別名）…",
+  "encodingPicker.noResults": "沒有符合的編碼",
 
   "encoding.group.unicode": "Unicode",
   "encoding.group.eastAsian": "東亞",
@@ -1600,6 +1613,9 @@ const ja: Messages = {
   "encoding.windows874": "Windows-874（タイ語）",
   "encoding.macintosh": "Macintosh（Mac Roman）",
 
+  "encodingPicker.searchPlaceholder": "エンコーディングを検索（名前またはエイリアス）…",
+  "encodingPicker.noResults": "一致するエンコーディングがありません",
+
   "encoding.group.unicode": "Unicode",
   "encoding.group.eastAsian": "東アジア",
   "encoding.group.westernEuropean": "西欧",
@@ -1956,6 +1972,9 @@ const zhCN: Messages = {
   "encoding.koi8u": "KOI8-U（乌克兰文）",
   "encoding.windows874": "Windows-874（泰文）",
   "encoding.macintosh": "Macintosh（Mac Roman）",
+
+  "encodingPicker.searchPlaceholder": "搜索编码（名称或别名）…",
+  "encodingPicker.noResults": "没有匹配的编码",
 
   "encoding.group.unicode": "Unicode",
   "encoding.group.eastAsian": "东亚",
