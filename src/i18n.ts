@@ -38,6 +38,13 @@ export interface Messages {
   "statusbar.encodingWithBom": (encoding: string) => string;
   "statusbar.readonlyPreview": (size: string) => string;
   "statusbar.userReadOnly": string;
+  /** Shown when doc.missingOnDisk is set (ROADMAP.md v0.7 Track V
+   *  "external delete/rename visibility") — a reload attempt already
+   *  confirmed this doc's file no longer exists on disk (see main.ts's
+   *  markMissingIfConfirmed / missingondisk.ts's isConfirmedMissing).
+   *  Purely informational: the buffer is untouched and dirty-state is
+   *  unaffected, see tabs.ts's Doc.missingOnDisk doc comment. */
+  "statusbar.missingOnDisk": string;
   "statusbar.decodeWarning": string;
   "statusbar.buildingIndex": string;
   "statusbar.textStats": (words: number, chars: number, lines: number) => string;
@@ -319,6 +326,14 @@ export interface Messages {
   "dialog.fileChangedTitle": string;
   "dialog.fileChangedMessage": (title: string) => string;
   "dialog.reload": string;
+  /** Shown instead of dialog.fileChangedMessage's own reload/cancel
+   *  confirm when handleExternalChange already knows this doc's file is
+   *  gone (doc.missingOnDisk — ROADMAP.md v0.7 Track V): a "Reload?"
+   *  question is misleading once Reload is known to be a silent no-op, so
+   *  this is a single-button (messageDialog, not confirmDialog)
+   *  acknowledgement instead. */
+  "dialog.fileDeletedTitle": string;
+  "dialog.fileDeletedMessage": (title: string) => string;
   "dialog.staleFileMessage": (title: string) => string;
   "dialog.overwrite": string;
   "dialog.openFailedTitle": string;
@@ -492,6 +507,7 @@ const en: Messages = {
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `Read-only preview of ${size} file`,
   "statusbar.userReadOnly": "🔒 Read-only",
+  "statusbar.missingOnDisk": "⚠ File deleted from disk",
   "statusbar.decodeWarning": "⚠ decoded with errors",
   "statusbar.buildingIndex": "Building line index…",
   "statusbar.textStats": (words, chars, lines) =>
@@ -756,6 +772,9 @@ const en: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `"${title}" changed on disk. Reload it and discard your unsaved changes?`,
   "dialog.reload": "Reload",
+  "dialog.fileDeletedTitle": "File deleted",
+  "dialog.fileDeletedMessage": (title) =>
+    `"${title}" was deleted from disk. The buffer still holds its content; saving will recreate the file.`,
   "dialog.staleFileMessage": (title) =>
     `"${title}" changed on disk since it was opened. Overwrite it with ` +
     `your version, reload the newer version and discard your unsaved ` +
@@ -897,6 +916,7 @@ const zhTW: Messages = {
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `唯讀預覽（檔案大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 唯讀",
+  "statusbar.missingOnDisk": "⚠ 檔案已從磁碟移除",
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
   "statusbar.buildingIndex": "正在建立行號索引…",
   "statusbar.textStats": (words, chars, lines) => `${words} 詞、${chars} 字元、${lines} 行`,
@@ -1135,6 +1155,9 @@ const zhTW: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `「${title}」已在磁碟上異動，要重新載入並捨棄未儲存的變更嗎？`,
   "dialog.reload": "重新載入",
+  "dialog.fileDeletedTitle": "檔案已刪除",
+  "dialog.fileDeletedMessage": (title) =>
+    `「${title}」已從磁碟移除。緩衝區內容仍保留；儲存可重建檔案。`,
   "dialog.staleFileMessage": (title) =>
     `「${title}」自開啟後已在磁碟上異動。要覆寫為目前版本、重新載入較新的版本並捨棄未儲存的變更，還是取消這次儲存？`,
   "dialog.overwrite": "覆寫",
@@ -1260,6 +1283,7 @@ const ja: Messages = {
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `読み取り専用プレビュー（ファイルサイズ ${size}）`,
   "statusbar.userReadOnly": "🔒 読み取り専用",
+  "statusbar.missingOnDisk": "⚠ ディスクから削除されました",
   "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
   "statusbar.buildingIndex": "行番号インデックスを構築中…",
   "statusbar.textStats": (words, chars, lines) => `${words} 語、${chars} 文字、${lines} 行`,
@@ -1512,6 +1536,9 @@ const ja: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `「${title}」はディスク上で変更されています。再読み込みして未保存の変更を破棄しますか？`,
   "dialog.reload": "再読み込み",
+  "dialog.fileDeletedTitle": "ファイルが削除されました",
+  "dialog.fileDeletedMessage": (title) =>
+    `「${title}」はディスクから削除されました。バッファの内容は保持されており、保存するとファイルが再作成されます。`,
   "dialog.staleFileMessage": (title) =>
     `「${title}」を開いた後にディスク上で変更されました。現在の内容で上書きするか、` +
     `未保存の変更を破棄して新しいバージョンを再読み込みするか、この保存をキャンセルしてください。`,
@@ -1648,6 +1675,7 @@ const zhCN: Messages = {
   "statusbar.encodingWithBom": (encoding) => `${encoding} BOM`,
   "statusbar.readonlyPreview": (size) => `只读预览（文件大小 ${size}）`,
   "statusbar.userReadOnly": "🔒 只读",
+  "statusbar.missingOnDisk": "⚠ 文件已从磁盘删除",
   "statusbar.decodeWarning": "⚠ 解码时发生错误",
   "statusbar.buildingIndex": "正在构建行号索引…",
   "statusbar.textStats": (words, chars, lines) => `${words} 词、${chars} 字符、${lines} 行`,
@@ -1886,6 +1914,9 @@ const zhCN: Messages = {
   "dialog.fileChangedMessage": (title) =>
     `“${title}”已在磁盘上更改，是否重新加载并放弃未保存的更改？`,
   "dialog.reload": "重新加载",
+  "dialog.fileDeletedTitle": "文件已删除",
+  "dialog.fileDeletedMessage": (title) =>
+    `“${title}”已从磁盘删除。缓冲区内容仍会保留，保存即可重建文件。`,
   "dialog.staleFileMessage": (title) =>
     `“${title}”自打开后已在磁盘上更改。要覆盖为当前版本、重新加载较新的版本并放弃未保存的更改，还是取消这次保存？`,
   "dialog.overwrite": "覆盖",

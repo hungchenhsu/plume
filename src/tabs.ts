@@ -167,6 +167,26 @@ export interface Doc {
    *  see applyOpenedForReload/reopenWithEncoding in main.ts — since the
    *  drift verdict for the old baseline says nothing about the new one. */
   byteDriftChecked: boolean;
+  /** Set once a reload attempt's own openDocument fetch has failed AND a
+   *  follow-up documentMetadata(path) re-check also failed (ROADMAP.md
+   *  v0.7 Track V "external delete/rename visibility" — see main.ts's
+   *  markMissingIfConfirmed and missingondisk.ts's isConfirmedMissing).
+   *  Before this flag existed, that same double failure was swallowed by
+   *  fetchAndApplyReload/reevaluateReload's bare catch with zero UI
+   *  signal: a clean doc's tab looked untouched even though its file was
+   *  actually gone. Orthogonal to `dirty` — a missing file says nothing
+   *  about whether the in-editor buffer has unsaved changes, and this
+   *  must never be treated as if it did (no extra save-blocking, no
+   *  discard-confirm of its own; Cmd+S still just goes through the
+   *  ordinary stale-fingerprint → Overwrite path, which already recreates
+   *  the file). Cleared the instant there's fresh proof the file exists
+   *  again: a successful reload/reopen (applyOpenedForReload/
+   *  applyOpenedForReopen) or a save that actually wrote bytes
+   *  (runSaveFlow — a save recreates the file). Optional rather than a
+   *  required boolean so every existing Doc-literal call site (docFromOpened,
+   *  the untitled-tab factory, backup-restore reconstruction, ...) stays
+   *  untouched; absent is exactly as falsy as `false` at every read site. */
+  missingOnDisk?: boolean;
   buffer: EditorBuffer;
 }
 

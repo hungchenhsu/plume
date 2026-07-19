@@ -113,6 +113,7 @@ import {
   uniqueLines,
   upperCase,
 } from "./lineops";
+import { isConfirmedMissing } from "./missingondisk";
 import { isMojibakeSnapshotStale, showMojibakeWizard } from "./mojibake";
 import { planNormalization, type NormalizeForm } from "./normalize";
 import { orphanBackups } from "./orphans";
@@ -1439,14 +1440,15 @@ async function reloadFromDisk(doc: Doc): Promise<void> {
  *  different on disk) resolves as a silent no-op instead of an
  *  unnecessary prompt. */
 async function fetchAndApplyReload(doc: Doc): Promise<void> {
-  if (!doc.path) return;
+  const path = doc.path;
+  if (!path) return;
   const guard = captureIdentity(doc);
   try {
     // reloadEncodingFor, not doc.encoding directly: a Save with Encoding
     // still in flight for this doc has that speculatively set to its
     // not-yet-written target (issue #161) — see asyncguard.ts's doc
     // comment.
-    const opened = await openDocument(doc.path, reloadEncodingFor(doc));
+    const opened = await openDocument(path, reloadEncodingFor(doc));
     const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
     if (verdict === "closed") return;
     if (verdict === "edited") {
@@ -1455,8 +1457,42 @@ async function fetchAndApplyReload(doc: Doc): Promise<void> {
     }
     applyOpenedForReload(doc, opened);
   } catch {
-    // The file may be mid-replace or deleted; keep the buffer as-is.
+    // The file may be mid-replace or deleted; find out which (ROADMAP.md
+    // v0.7 Track V "external delete/rename visibility") — see
+    // markMissingIfConfirmed's own doc comment for why this reactive,
+    // catch-only check never costs the (overwhelmingly common)
+    // reload-succeeds path an extra IPC round trip.
+    await markMissingIfConfirmed(doc, path);
   }
+}
+
+/**
+ * Shared tail of fetchAndApplyReload/reevaluateReload's own catch
+ * (ROADMAP.md v0.7 Track V): a reload's openDocument fetch just failed;
+ * find out whether that's because the file is genuinely gone, and if so,
+ * raise doc.missingOnDisk so the status bar can say so. Before this
+ * existed, both catches swallowed every failure identically — mid-replace,
+ * a permissions hiccup, or a real deletion alike — leaving a clean doc's
+ * tab with zero signal that anything had happened at all.
+ *
+ * `path` is whatever path the caller's own just-failed openDocument call
+ * used, passed in rather than re-read from doc.path here — the two could
+ * only ever differ if a concurrent Save As moved this doc mid-await, a
+ * vanishingly rare window, but reusing the caller's own local is free and
+ * removes the question entirely.
+ *
+ * Only mutates `doc` when it's still open: a tab close during this
+ * function's own extra await (isConfirmedMissing's documentMetadata call)
+ * leaves nothing to show a status-bar hint on. A same-tab edit in that
+ * same window is fine to mutate through, unlike an actual content apply —
+ * the missing flag is orthogonal to buffer content, so it doesn't need
+ * asyncguard.ts's full revision check, just plain tab membership.
+ */
+async function markMissingIfConfirmed(doc: Doc, path: string): Promise<void> {
+  const missing = await isConfirmedMissing(path);
+  if (!missing || !tabs.docs.includes(doc)) return;
+  doc.missingOnDisk = true;
+  if (tabs.activeId === doc.id) updateStatusBar(doc);
 }
 
 /**
@@ -1623,7 +1659,13 @@ async function reevaluateReload(doc: Doc): Promise<void> {
     }
     applyOpenedForReload(doc, opened);
   } catch {
-    // Same as fetchAndApplyReload: mid-replace/deleted, leave as-is.
+    // Same as fetchAndApplyReload: mid-replace/deleted, find out which
+    // (ROADMAP.md v0.7 Track V) — see markMissingIfConfirmed. Covers both
+    // this function's own opening fetch above and its guarded post-confirm
+    // second fetch just above (issue #209's fetchAndApplyGuarded call),
+    // since neither has a try/catch of its own — a rejection from either
+    // one unwinds to this same catch.
+    await markMissingIfConfirmed(doc, path);
   }
 }
 
@@ -1635,6 +1677,14 @@ function applyOpenedForReload(doc: Doc, opened: OpenedDocument): void {
   doc.lineEnding = opened.lineEnding;
   doc.malformed = opened.malformed;
   doc.dirty = false;
+  // This reload's own openDocument call just succeeded, so the file
+  // unambiguously exists again — clears a missing-on-disk flag a previous
+  // reload attempt may have raised (ROADMAP.md v0.7 Track V; see
+  // markMissingIfConfirmed). Unconditional, like every other reset below:
+  // every caller of this function has already resolved applying fresh
+  // disk content, so there's no "safe to apply the buffer reset but not
+  // this" case to gate on.
+  doc.missingOnDisk = false;
   // This reload just established a fresh, coherent, disk-verified
   // encoding/withBom (from reloadEncodingFor's protected value, if a Save
   // with Encoding was in flight) alongside the buffer/fingerprint/malformed
@@ -1707,6 +1757,36 @@ async function handleExternalChange(path: string): Promise<void> {
   if (reloadPrompts.has(path)) return;
   reloadPrompts.add(path);
   try {
+    // ROADMAP.md v0.7 Track V: once an earlier reload attempt already
+    // confirmed this path is gone (doc.missingOnDisk), the ordinary
+    // "changed on disk — reload?" question is the wrong one to ask —
+    // clicking Reload would just re-run reloadFromDisk, re-fail
+    // openDocument, and land right back in fetchAndApplyReload's own catch
+    // (markMissingIfConfirmed) with nothing visibly different. Tell the
+    // user what's actually known instead, with a single acknowledgement
+    // button — there's nothing to reload.
+    // Deliberately reads the flag rather than re-querying documentMetadata
+    // here: this is the same reactive-only discipline isConfirmedMissing's
+    // own doc comment describes, just applied at the dialog-choice level
+    // instead of the catch-block level. A file that reappears after this
+    // flag was set is picked up the next time a reload actually succeeds
+    // (applyOpenedForReload's own clear) — most directly, the very next
+    // external-change notification for this path while doc is clean.
+    // That last step leans on a platform assumption: the OS watcher must
+    // redeliver a create event for a path whose file was deleted and
+    // recreated. True on both Tier-1 backends (FSEvents and
+    // ReadDirectoryChangesW watch the parent directory), but a purely
+    // file-inode-based backend would go quiet after the delete, leaving
+    // the badge stale until a manual save/reopen — accepted, documented
+    // here rather than guarded, since no Tier-1 platform behaves that
+    // way.
+    if (doc.missingOnDisk) {
+      await messageDialog(t("dialog.fileDeletedMessage", doc.title), {
+        title: t("dialog.fileDeletedTitle"),
+        kind: "warning",
+      });
+      return;
+    }
     const reload = await confirmDialog(t("dialog.fileChangedMessage", doc.title), {
       title: t("dialog.fileChangedTitle"),
       kind: "warning",
@@ -1981,6 +2061,13 @@ async function runSaveFlow(doc: Doc, saveAs: boolean): Promise<boolean> {
     // Only once the bytes are actually on disk do we touch doc state or
     // run any of the success side effects below.
     if (!result.written) return false;
+    // A successful write means the file exists on disk right now,
+    // regardless of the revisionMatches gate decideSaveCompletion applies
+    // to dirty/fingerprint just below — a save recreates the file even for
+    // a doc previously flagged missingOnDisk (ROADMAP.md v0.7 Track V), so
+    // clearing this is unconditional on `written`, not on
+    // completion.clearDirty.
+    doc.missingOnDisk = false;
     recentSaves.set(path, Date.now());
     // Checked before this flow's own Save As (below) reassigns doc.path —
     // true only if some concurrent flow already moved this doc to a
@@ -2170,6 +2257,11 @@ function applyOpenedForReopen(doc: Doc, opened: OpenedDocument): void {
   doc.lineEnding = opened.lineEnding;
   doc.malformed = opened.malformed;
   doc.dirty = false;
+  // Same "this openDocument call just proved the file exists" reasoning as
+  // applyOpenedForReload (ROADMAP.md v0.7 Track V) — a stale missing-on-disk
+  // flag from an earlier failed passive reload must not survive a
+  // successful explicit Reopen with Encoding of the very same file.
+  doc.missingOnDisk = false;
   // Same stale-backup reasoning as reloadFromDisk (issue #115): by this
   // point the user either wasn't dirty or explicitly confirmed discarding
   // (initially, or again via reevaluateReopen), so the buffer's previous

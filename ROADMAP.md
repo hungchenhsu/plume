@@ -125,11 +125,22 @@ the good-first-issue surface.
   recent.rs each get their own truncated/invalid-JSON tests against
   their real file name and real struct (today they only inherit
   store.rs's generic guarantee)
-- [ ] external delete/rename visibility: verify what the watcher
-  actually surfaces today for on-disk delete and rename (notify
-  Remove / Modify(Name) events), document the gap analysis; any fix
-  this cycle is limited to vitest-testable logic — findings-only is a
-  valid close (adversarial-review scoping)
+- [x] external delete/rename visibility: gap analysis found a confirmed
+  on-disk deletion had zero UI signal for a clean doc (fetchAndApplyReload's
+  bare catch silently swallowed it) and a misleading "Reload?" prompt for a
+  dirty one (Reload was a silent no-op). Fixed within the vitest-testable
+  scope: `doc.missingOnDisk`, set once a reload's openDocument failure is
+  confirmed (not just guessed) via a documentMetadata re-check
+  (missingondisk.ts), cleared by any subsequent successful open/reload/save;
+  surfaced via a status-bar hint and a dedicated "file deleted" dialog
+  (single acknowledgement button, not a reload offer). Known reactive-only
+  limits (adversarial-review notes, accepted): a dirty doc whose user
+  keeps cancelling the change prompt never triggers the failed reload
+  that sets the badge, and a metadata re-check rejection is treated as
+  missing even when the true cause is e.g. a permission loss —
+  both mislead the label only, never the buffer, and self-heal on the
+  next successful reload/save. Rename tracking is a separate,
+  still-open concern (issue #280); zero Rust changes.
 
 **Track H — outward**
 
