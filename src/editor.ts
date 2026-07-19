@@ -396,6 +396,28 @@ export interface EditorHandle {
    * clean, same contract as `transformLines`/`transformSelection` above.
    */
   trimTrailingWhitespaceForSave(): void;
+
+  /**
+   * Insert `text` at the cursor, replacing the current selection if one is
+   * non-empty — CM6's own `EditorState.replaceSelection`, dispatched
+   * directly rather than through a `@codemirror/commands` "command"
+   * function (a thin wrapper, same shape as `moveLineUp`/
+   * `goToMatchingBracket` above). Used by the Edit > Insert Date/Time
+   * command (ROADMAP.md v0.7 Track C stretch; see insertdatetime.ts's
+   * `formatInsertDateTime` for what `text` actually is). The cursor ends up
+   * immediately after the inserted text: `replaceSelection` collapses each
+   * selection range to `EditorSelection.cursor(range.from + text.length)`
+   * (verified from `@codemirror/state` source — `changeByRange`'s callback
+   * in `replaceSelection`), so a plain cursor (empty selection, the common
+   * case here) simply grows into that same cursor-after-insert position.
+   *
+   * Like `transformLines`/`transformSelection`/`joinLines` above, this is a
+   * raw `view.dispatch` with explicit changes, which does *not* consult
+   * `state.readOnly` on its own (see `setReadOnly`'s doc comment) — callers
+   * must guard against a read-only/truncated document themselves (main.ts's
+   * `runLineOperation`, the same guard those three go through).
+   */
+  insertTextAtCursor(text: string): void;
 }
 
 export function isEmptyBuffer(buffer: EditorBuffer): boolean {
@@ -1523,6 +1545,9 @@ export function createEditor(
       const changes = computeTrimChanges(view.state);
       if (!changes) return;
       view.dispatch({ changes, annotations: isolateHistory.of("full") });
+    },
+    insertTextAtCursor: (text) => {
+      view.dispatch(view.state.replaceSelection(text));
     },
   };
 }

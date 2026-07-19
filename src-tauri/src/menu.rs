@@ -270,6 +270,17 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "NFD に正規化",
         "规范化为 NFD",
     ),
+    // ROADMAP.md v0.7 Track C stretch: not part of line_ops_menu above —
+    // it inserts at the cursor rather than transforming a line/selection
+    // span, so it sits as its own Edit-menu entry instead (see `build`'s
+    // Edit submenu below).
+    (
+        "insert_datetime",
+        "Insert Date/Time",
+        "插入日期時間",
+        "日時を挿入",
+        "插入日期时间",
+    ),
     (
         "batch_convert",
         "Batch Encoding Conversion…",
@@ -624,6 +635,21 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .separator()
         .item(&line_ops_menu)
         .separator()
+        // ROADMAP.md v0.7 Track C stretch: inserts a localized timestamp at
+        // the cursor (src/insertdatetime.ts's formatInsertDateTime, via
+        // editor.ts's insertTextAtCursor). Not folded into line_ops_menu
+        // above — every item there transforms a line/selection span it
+        // already reads back from the buffer, while this only writes new
+        // text in at the cursor, so it gets its own top-level Edit entry
+        // instead, right after Line Operations. No accelerator: the
+        // conventional key for this on Windows-lineage editors is F5, but
+        // that key already carries a reload connotation in a WebView
+        // context, and this module otherwise stays conservative about
+        // claiming single-key accelerators (see the Line Operations/
+        // goto_matching_bracket/select_next_occurrence comments above) —
+        // Command Palette and a manual click are enough for a stretch item.
+        .item(&MenuItemBuilder::with_id("insert_datetime", l("insert_datetime")).build(app)?)
+        .separator()
         .item(&MenuItemBuilder::with_id("batch_convert", l("batch_convert")).build(app)?)
         .item(&MenuItemBuilder::with_id("stream_replace", l("stream_replace")).build(app)?)
         .build()?;
@@ -961,6 +987,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "toggle_bookmark",
             "next_bookmark",
             "prev_bookmark",
+            "insert_datetime",
             "batch_convert",
             "stream_replace",
         ] {
@@ -1420,6 +1447,17 @@ mod tests {
         assert_eq!(label("goto_matching_bracket", "zh-TW"), "跳至對應括號");
         assert_eq!(label("goto_matching_bracket", "ja"), "対応する括弧に移動");
         assert_eq!(label("goto_matching_bracket", "zh-CN"), "跳转到匹配括号");
+    }
+
+    // ROADMAP.md v0.7 Track C insert date/time: the Edit menu's new
+    // "insert_datetime" item id, pinned across all four languages -- same
+    // rationale as goto_matching_bracket's dedicated test above.
+    #[test]
+    fn label_returns_the_correct_insert_datetime_text_for_every_language() {
+        assert_eq!(label("insert_datetime", "en"), "Insert Date/Time");
+        assert_eq!(label("insert_datetime", "zh-TW"), "插入日期時間");
+        assert_eq!(label("insert_datetime", "ja"), "日時を挿入");
+        assert_eq!(label("insert_datetime", "zh-CN"), "插入日期时间");
     }
 
     #[test]
