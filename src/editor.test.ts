@@ -3,8 +3,8 @@
 // (or convincingly faked) layout engine to test meaningfully — this file
 // covers what's reachable without one: which character offsets get an EOL
 // mark. See CLAUDE.md "Frontend logic that doesn't need the WebView".
-import { moveLineDown as cmMoveLineDown } from "@codemirror/commands";
-import { Compartment, EditorSelection, EditorState, Text } from "@codemirror/state";
+import { history, moveLineDown as cmMoveLineDown, undo, undoDepth } from "@codemirror/commands";
+import { Compartment, EditorSelection, EditorState, Text, Transaction } from "@codemirror/state";
 import { EditorView, highlightSpecialChars } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { describe, expect, it, vi } from "vitest";
@@ -19,9 +19,10 @@ import {
   lineSpanForSelectionInDoc,
   suspiciousCharCountOf,
   textStatsOf,
+  trimTrailingWhitespaceOf,
 } from "./editor";
 import { detectIndentation } from "./indentdetect";
-import { lineSpanForSelection } from "./lineops";
+import { lineSpanForSelection, trimTrailingWhitespace } from "./lineops";
 import { scanSuspiciousChars, SUSPICIOUS_CHARS_PATTERN } from "./suspiciouschars";
 import { countTextStats } from "./textstats";
 
@@ -777,5 +778,196 @@ describe("detectIndentationOf", () => {
     const text = "a\n  b\nc";
     const state = EditorState.create({ doc: text });
     expect(detectIndentationOf(state, 1000)).toEqual(detectIndentationOf(state, 3));
+  });
+});
+
+// ROADMAP.md v0.7 Track C "trim trailing whitespace on save". Like
+// textStatsOf/isNonNfcOf/detectIndentationOf above, trimTrailingWhitespaceOf
+// operates on a detached EditorState via `.update()` rather than a live
+// EditorView, so it's fully reachable here without a WebView — including
+// the undo-history behavior, since `EditorState.update()` runs through the
+// exact same transaction pipeline `view.dispatch()` does (see that
+// function's own doc comment in editor.ts for the full design rationale).
+// `EditorHandle.trimTrailingWhitespaceForSave` (the live-view wrapper
+// main.ts's runSaveFlow actually calls) shares this same change-list
+// computation and is not separately covered here, for the same reason
+// transformLines/transformSelection/replaceContent aren't: it needs a real
+// layout engine to test meaningfully (see this file's own header comment).
+describe("trimTrailingWhitespaceOf", () => {
+  it("returns the exact same buffer reference when there is nothing to trim", () => {
+    const state = EditorState.create({ doc: "hello\nworld" });
+    expect(trimTrailingWhitespaceOf(state)).toBe(state);
+  });
+
+  it("trims trailing spaces/tabs from every line, agreeing with lineops.trimTrailingWhitespace", () => {
+    const text = "foo   \nbar\t\t\nbaz \t \nclean\n   \nlast  ";
+    const state = EditorState.create({ doc: text });
+    const trimmed = trimTrailingWhitespaceOf(state);
+    expect(trimmed.doc.toString()).toBe(trimTrailingWhitespace(text));
+    expect(trimmed).not.toBe(state);
+  });
+
+  // (e) mixed line endings / whitespace-only / clean lines in one pass.
+  describe("mixed content", () => {
+    it("trims a mix of trailing spaces, tabs, a whitespace-only line, and clean lines in one pass", () => {
+      const text = "a  \nb\nc\t\n   \nd \t";
+      const trimmed = trimTrailingWhitespaceOf(EditorState.create({ doc: text }));
+      expect(trimmed.doc.toString()).toBe("a\nb\nc\n\nd");
+      expect(trimmed.doc.toString()).toBe(trimTrailingWhitespace(text));
+    });
+
+    // Unlike lineops.test.ts's own "stray \r" case, there is no CM6-level
+    // equivalent to test here: EditorState.create's line splitter
+    // (@codemirror/state's DefaultSplit, /\r\n?|\n/) already treats "\r\n"
+    // as a single line break at construction time, so a CM6 `Text` can
+    // never actually hold a trailing "\r" as line content in the first
+    // place — trimTrailingWhitespaceOf never sees one to (not) touch. The
+    // defensive rule is meaningful only for lineops.ts's plain-string
+    // trimTrailingWhitespace/trailingWhitespaceSpans, already covered in
+    // lineops.test.ts.
+  });
+
+  // (d) caret stability: CM6's default change-mapping (assoc: -1) is relied
+  // on rather than hand-rolled, per computeTrimChanges's per-line-span
+  // design — these tests verify it actually behaves as documented rather
+  // than assuming it.
+  describe("caret stability", () => {
+    it("leaves a cursor on an untouched line at exactly the same offset", () => {
+      const state = EditorState.create({
+        doc: "clean\nfoo   \nbar",
+        selection: { anchor: 2 }, // inside "clean", a line with nothing to trim
+      });
+      const trimmed = trimTrailingWhitespaceOf(state);
+      expect(trimmed.selection.main.head).toBe(2);
+    });
+
+    it("shifts a cursor on a later, untouched line by exactly what was removed before it", () => {
+      // "foo   \nbar", cursor at the "b" of "bar" (offset 7). The 3-space
+      // run removed before it shifts it back to offset 4 — still
+      // immediately before "bar".
+      const state = EditorState.create({ doc: "foo   \nbar", selection: { anchor: 7 } });
+      const trimmed = trimTrailingWhitespaceOf(state);
+      expect(trimmed.doc.toString()).toBe("foo\nbar");
+      expect(trimmed.selection.main.head).toBe(4);
+      expect(trimmed.doc.sliceString(trimmed.selection.main.head)).toBe("bar");
+    });
+
+    it("collapses a cursor anywhere inside a trimmed run onto the line's new end", () => {
+      // "foo   \nbar": "foo" is [0,3), the trimmed run is [3,6).
+      const text = "foo   \nbar";
+      for (const pos of [3, 4, 5, 6]) {
+        const state = EditorState.create({ doc: text, selection: { anchor: pos } });
+        const trimmed = trimTrailingWhitespaceOf(state);
+        expect(trimmed.doc.toString()).toBe("foo\nbar");
+        expect(trimmed.selection.main.head).toBe(3);
+      }
+    });
+
+    it("collapses a cursor inside a whitespace-only line onto that now-empty line's start", () => {
+      // "a\n   \nb": the whole middle line [2,5) is the trimmed run.
+      const text = "a\n   \nb";
+      for (const pos of [2, 3, 4, 5]) {
+        const state = EditorState.create({ doc: text, selection: { anchor: pos } });
+        const trimmed = trimTrailingWhitespaceOf(state);
+        expect(trimmed.doc.toString()).toBe("a\n\nb");
+        expect(trimmed.selection.main.head).toBe(2);
+      }
+    });
+  });
+
+  // (c) undo semantics. See trimTrailingWhitespaceOf's own doc comment in
+  // editor.ts for the full trade-off analysis (verified against
+  // node_modules/@codemirror/commands/dist/index.js): isolateHistory
+  // deliberately makes trim its own, deterministic undo step rather than
+  // relying on CM6's default timing/adjacency-dependent merge heuristic.
+  describe("undo semantics", () => {
+    /** Runs CM6's `undo` command against `state` (requires the `history()`
+     *  extension) and returns the resulting state — fails the test via the
+     *  `ok` assertion if there was nothing left to undo, so callers don't
+     *  need to separately check it. */
+    function applyUndo(state: EditorState): EditorState {
+      let result: EditorState | null = null;
+      const ok = undo({
+        state,
+        dispatch: (tr) => {
+          result = tr.state;
+        },
+      });
+      expect(ok).toBe(true);
+      return result as unknown as EditorState;
+    }
+
+    it("addToHistory:false would be wrong: it must not be how this is implemented, since Undo has to be able to reach the pre-trim buffer at all", () => {
+      // Sanity/documentation check on the CM6 primitive itself (not on
+      // trimTrailingWhitespaceOf, which never sets this annotation): a
+      // transaction with addToHistory=false changes the document but is
+      // never recorded, so Undo has nothing to pop back to — pinned here
+      // so the contrast with isolateHistory below is verified, not assumed.
+      const state = EditorState.create({ doc: "hello", extensions: [history()] });
+      const noHistory = state.update({
+        changes: { from: 5, insert: "   " },
+        annotations: Transaction.addToHistory.of(false),
+      }).state;
+      expect(noHistory.doc.toString()).toBe("hello   ");
+      expect(undoDepth(noHistory)).toBe(0);
+      expect(undo({ state: noHistory, dispatch: () => {} })).toBe(false);
+    });
+
+    it("one Undo after trim restores the pre-trim buffer with the user's last edit intact; a second Undo then removes that edit", () => {
+      const original = EditorState.create({
+        doc: "hello  \nworld",
+        extensions: [history()],
+      });
+      // The user's last real edit before Save: append "!" to "world".
+      const edited = original.update({
+        changes: { from: original.doc.length, insert: "!" },
+        annotations: Transaction.userEvent.of("input.type"),
+      }).state;
+      expect(edited.doc.toString()).toBe("hello  \nworld!");
+
+      const trimmed = trimTrailingWhitespaceOf(edited);
+      expect(trimmed.doc.toString()).toBe("hello\nworld!");
+      // Two distinct steps on the undo stack: the edit, then the trim —
+      // never merged into one.
+      expect(undoDepth(trimmed)).toBe(2);
+
+      const afterFirstUndo = applyUndo(trimmed);
+      expect(afterFirstUndo.doc.toString()).toBe("hello  \nworld!");
+
+      const afterSecondUndo = applyUndo(afterFirstUndo);
+      expect(afterSecondUndo.doc.toString()).toBe("hello  \nworld");
+    });
+
+    it("never merges with the preceding edit even when it is immediate and spatially adjacent", () => {
+      // The scenario most likely to trip CM6's default merge heuristic
+      // (isAdjacent + newGroupDelay): the trimmed run is typed by the same
+      // "user edit" transaction, with zero elapsed time before the trim
+      // that follows it. isolateHistory must still keep them separate.
+      const original = EditorState.create({ doc: "hello", extensions: [history()] });
+      const edited = original.update({
+        changes: { from: 5, insert: "   " },
+        annotations: Transaction.userEvent.of("input.type"),
+      }).state;
+      const trimmed = trimTrailingWhitespaceOf(edited);
+      expect(trimmed.doc.toString()).toBe("hello");
+      expect(undoDepth(trimmed)).toBe(2);
+
+      const afterFirstUndo = applyUndo(trimmed);
+      expect(afterFirstUndo.doc.toString()).toBe("hello   ");
+      const afterSecondUndo = applyUndo(afterFirstUndo);
+      expect(afterSecondUndo.doc.toString()).toBe("hello");
+    });
+
+    it("a no-op trim (already clean) leaves the undo stack untouched", () => {
+      const original = EditorState.create({ doc: "hello", extensions: [history()] });
+      const edited = original.update({
+        changes: { from: 5, insert: "!" },
+        annotations: Transaction.userEvent.of("input.type"),
+      }).state;
+      expect(undoDepth(edited)).toBe(1);
+      const trimmed = trimTrailingWhitespaceOf(edited);
+      expect(trimmed).toBe(edited); // no transaction dispatched at all
+      expect(undoDepth(trimmed)).toBe(1);
+    });
   });
 });

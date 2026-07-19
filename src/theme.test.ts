@@ -47,6 +47,7 @@ function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
     suspiciousChars: true,
     indentWidth: 4,
     extensionEncodings: [],
+    trimTrailingWhitespaceOnSave: false,
     ...overrides,
   };
 }

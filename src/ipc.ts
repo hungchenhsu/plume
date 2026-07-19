@@ -506,6 +506,16 @@ export interface Preferences {
    *  are lowercase without a leading dot (see extensionEncodings.ts);
    *  mirrors prefs.rs `extension_encodings: Vec<(String, String)>`. */
   extensionEncodings: [string, string][];
+  /** Opt-in: strip trailing spaces/tabs from every line as part of the
+   *  normal save flow (ROADMAP.md v0.7 Track C). Default `false` — unlike
+   *  `indentGuides`/`suspiciousChars`, this rewrites buffer content, not
+   *  just a display setting, so it stays opt-in like `showInvisibles`. See
+   *  main.ts's `runSaveFlow`/`shouldTrimTrailingWhitespaceOnSave`
+   *  (trimonsave.ts) for where this is consulted, and
+   *  `EditorHandle.trimTrailingWhitespaceForSave`/`trimTrailingWhitespaceOf`
+   *  (editor.ts) for the actual trim. Mirrors prefs.rs
+   *  `trim_trailing_whitespace_on_save: bool`. */
+  trimTrailingWhitespaceOnSave: boolean;
 }
 
 export function loadPreferences(): Promise<Preferences> {

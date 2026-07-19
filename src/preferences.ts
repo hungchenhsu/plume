@@ -78,6 +78,7 @@ let current: Preferences = {
   // changes by hand-editing preferences.json.
   indentWidth: 4,
   extensionEncodings: [],
+  trimTrailingWhitespaceOnSave: false,
 };
 
 let editorRef: EditorHandle | null = null;
@@ -415,6 +416,13 @@ export function showPreferencesDialog(): void {
   if (encoding.selectedIndex < 0) encoding.selectedIndex = 0;
   dialog.appendChild(row(t("preferences.encodingForNewFiles"), encoding));
 
+  const trimTrailingWhitespaceOnSave = document.createElement("input");
+  trimTrailingWhitespaceOnSave.type = "checkbox";
+  trimTrailingWhitespaceOnSave.checked = current.trimTrailingWhitespaceOnSave;
+  dialog.appendChild(
+    row(t("preferences.trimTrailingWhitespaceOnSave"), trimTrailingWhitespaceOnSave),
+  );
+
   const extensions = extensionTable(current.extensionEncodings);
   dialog.appendChild(extensions.element);
 
@@ -453,6 +461,7 @@ export function showPreferencesDialog(): void {
       suspiciousChars: current.suspiciousChars,
       indentWidth: current.indentWidth,
       extensionEncodings: normalizeTable(extensions.read()),
+      trimTrailingWhitespaceOnSave: trimTrailingWhitespaceOnSave.checked,
     };
     // Applied immediately regardless of persistence outcome, same as the
     // ambient font/theme toggles elsewhere in this file — the live UI

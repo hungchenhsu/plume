@@ -62,6 +62,7 @@ function defaultPreferences(overrides: Partial<Preferences> = {}): Preferences {
     suspiciousChars: true,
     indentWidth: 4,
     extensionEncodings: [],
+    trimTrailingWhitespaceOnSave: false,
     ...overrides,
   };
 }
@@ -151,6 +152,56 @@ describe("showPreferencesDialog Save button", () => {
     // keep the dialog open.
     expect(document.querySelector(".prefs-overlay")).toBeNull();
     expect(messageDialog).not.toHaveBeenCalled();
+  });
+
+  // ROADMAP.md v0.7 Track C "trim trailing whitespace on save": the
+  // Preferences dialog's own checkbox for the opt-in preference.
+  describe("trim-trailing-whitespace-on-save checkbox", () => {
+    it("initializes unchecked, reflecting the default (false) preference", async () => {
+      showPreferencesDialog();
+      const checkbox = document.querySelector<HTMLInputElement>(
+        ".prefs-dialog input[type='checkbox']",
+      )!;
+      expect(checkbox.checked).toBe(false);
+    });
+
+    it("reflects a loaded preference of true in the checkbox's initial state", async () => {
+      loadPreferences.mockResolvedValue(
+        defaultPreferences({ trimTrailingWhitespaceOnSave: true }),
+      );
+      await initPreferences(fakeEditor);
+      showPreferencesDialog();
+      const checkbox = document.querySelector<HTMLInputElement>(
+        ".prefs-dialog input[type='checkbox']",
+      )!;
+      expect(checkbox.checked).toBe(true);
+    });
+
+    it("persists true once checked and saved", async () => {
+      showPreferencesDialog();
+      const checkbox = document.querySelector<HTMLInputElement>(
+        ".prefs-dialog input[type='checkbox']",
+      )!;
+      checkbox.checked = true;
+
+      document.querySelector<HTMLButtonElement>(".prefs-save")!.click();
+      await flush();
+
+      expect(savePreferences).toHaveBeenCalledWith(
+        expect.objectContaining({ trimTrailingWhitespaceOnSave: true }),
+      );
+    });
+
+    it("persists false when left unchecked", async () => {
+      showPreferencesDialog();
+
+      document.querySelector<HTMLButtonElement>(".prefs-save")!.click();
+      await flush();
+
+      expect(savePreferences).toHaveBeenCalledWith(
+        expect.objectContaining({ trimTrailingWhitespaceOnSave: false }),
+      );
+    });
   });
 });
 

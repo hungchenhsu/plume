@@ -18,6 +18,7 @@ import {
   sortLinesNumeric,
   toFullWidth,
   toHalfWidth,
+  trailingWhitespaceSpans,
   trimTrailingWhitespace,
   uniqueLines,
   upperCase,
@@ -327,6 +328,85 @@ describe("trimTrailingWhitespace", () => {
 
   it("reduces a whitespace-only line to empty", () => {
     expect(trimTrailingWhitespace("a\n   \nb")).toBe("a\n\nb");
+  });
+});
+
+// ROADMAP.md v0.7 Track C "trim trailing whitespace on save": the
+// position-tracking counterpart of trimTrailingWhitespace above, which
+// editor.ts's save-time trim needs to build a precise multi-range CM6
+// transaction instead of a whole-document replace (see its own doc comment
+// for why that matters for caret stability).
+describe("trailingWhitespaceSpans", () => {
+  it("returns no spans for an empty string", () => {
+    expect(trailingWhitespaceSpans("")).toEqual([]);
+  });
+
+  it("returns no spans when nothing needs trimming", () => {
+    expect(trailingWhitespaceSpans("foo\nbar")).toEqual([]);
+  });
+
+  it("finds a single trailing-space run", () => {
+    // "foo   \nbar": "foo" occupies [0,3), the 3-space run [3,6).
+    expect(trailingWhitespaceSpans("foo   \nbar")).toEqual([{ from: 3, to: 6 }]);
+  });
+
+  it("finds a trailing-tab run", () => {
+    expect(trailingWhitespaceSpans("foo\t\t\nbar")).toEqual([{ from: 3, to: 5 }]);
+  });
+
+  it("finds mixed trailing spaces and tabs as one span", () => {
+    expect(trailingWhitespaceSpans("foo \t \nbar")).toEqual([{ from: 3, to: 6 }]);
+  });
+
+  it("finds a span on every affected line, skipping clean ones", () => {
+    // "a  \nb\nc\t\n" -> lines "a  " (dirty), "b" (clean), "c\t" (dirty),
+    // "" (the trailing newline's empty final line, clean).
+    expect(trailingWhitespaceSpans("a  \nb\nc\t\n")).toEqual([
+      { from: 1, to: 3 },
+      { from: 7, to: 8 },
+    ]);
+  });
+
+  it("does not touch leading or interior whitespace", () => {
+    expect(trailingWhitespaceSpans("  foo  bar  \n  baz")).toEqual([{ from: 10, to: 12 }]);
+  });
+
+  it("does not touch a trailing carriage return (buffer is LF-normalized; defensive only)", () => {
+    expect(trailingWhitespaceSpans("foo\r\nbar")).toEqual([]);
+  });
+
+  it("spans the whole line when it is whitespace-only", () => {
+    expect(trailingWhitespaceSpans("a\n   \nb")).toEqual([{ from: 2, to: 5 }]);
+  });
+
+  it("finds a span on the last line even with no trailing newline", () => {
+    expect(trailingWhitespaceSpans("foo  ")).toEqual([{ from: 3, to: 5 }]);
+  });
+
+  it("applying every span as a deletion reproduces trimTrailingWhitespace's output (oracle)", () => {
+    const samples = [
+      "foo   \nbar",
+      "foo\t\t\nbar",
+      "foo \t \nbar",
+      "  foo  bar  \n  baz",
+      "foo\r\nbar",
+      "foo  \n",
+      "foo  ",
+      "a\n   \nb",
+      "only",
+      "a  \nb\nc\t\n",
+      "",
+    ];
+    for (const text of samples) {
+      const spans = trailingWhitespaceSpans(text);
+      // Apply back to front so earlier offsets stay valid as later spans
+      // are removed — the same discipline a real multi-range edit needs.
+      let result = text;
+      for (const span of [...spans].reverse()) {
+        result = result.slice(0, span.from) + result.slice(span.to);
+      }
+      expect(result).toBe(trimTrailingWhitespace(text));
+    }
   });
 });
 
