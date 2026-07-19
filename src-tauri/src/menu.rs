@@ -122,6 +122,20 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "跳转到匹配括号",
     ),
     (
+        "replace_in_selection",
+        "Replace in Selection",
+        "在選取範圍內取代",
+        "選択範囲内で置換",
+        "在选取范围内替换",
+    ),
+    (
+        "replace_all_in_selection",
+        "Replace All in Selection",
+        "在選取範圍內全部取代",
+        "選択範囲内ですべて置換",
+        "在选取范围内全部替换",
+    ),
+    (
         "toggle_bookmark",
         "Toggle Bookmark",
         "切換書籤",
@@ -628,6 +642,24 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &MenuItemBuilder::with_id("goto_matching_bracket", l("goto_matching_bracket"))
                 .build(app)?,
         )
+        // ROADMAP.md v0.7 Track C [danger]: @codemirror/search's own panel
+        // has no "in selection" scope toggle, and this project deliberately
+        // leaves that native panel unmodified (see replacescope.ts's module
+        // comment) — these two commands run the scoped replace directly
+        // against whatever query the panel currently holds
+        // (@codemirror/search's `getSearchQuery`), reachable only from this
+        // menu and the Command Palette. No accelerator: a brand-new
+        // capability with no existing keymap entry to mirror, and picking a
+        // fresh cross-platform shortcut needs the dual-WebView manual
+        // acceptance this cycle explicitly defers (ROADMAP.md v0.7 header).
+        .item(
+            &MenuItemBuilder::with_id("replace_in_selection", l("replace_in_selection"))
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("replace_all_in_selection", l("replace_all_in_selection"))
+                .build(app)?,
+        )
         .separator()
         .item(&MenuItemBuilder::with_id("toggle_bookmark", l("toggle_bookmark")).build(app)?)
         .item(&MenuItemBuilder::with_id("next_bookmark", l("next_bookmark")).build(app)?)
@@ -984,6 +1016,8 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "find",
             "find_in_files",
             "goto_line",
+            "replace_in_selection",
+            "replace_all_in_selection",
             "toggle_bookmark",
             "next_bookmark",
             "prev_bookmark",
@@ -1458,6 +1492,38 @@ mod tests {
         assert_eq!(label("insert_datetime", "zh-TW"), "插入日期時間");
         assert_eq!(label("insert_datetime", "ja"), "日時を挿入");
         assert_eq!(label("insert_datetime", "zh-CN"), "插入日期时间");
+    }
+
+    // ROADMAP.md v0.7 Track C find/replace in selection: the Edit menu's
+    // new "replace_in_selection"/"replace_all_in_selection" item ids,
+    // pinned across all four languages -- same rationale as
+    // goto_matching_bracket's dedicated test above.
+    #[test]
+    fn label_returns_the_correct_replace_in_selection_text_for_every_language() {
+        assert_eq!(label("replace_in_selection", "en"), "Replace in Selection");
+        assert_eq!(label("replace_in_selection", "zh-TW"), "在選取範圍內取代");
+        assert_eq!(label("replace_in_selection", "ja"), "選択範囲内で置換");
+        assert_eq!(label("replace_in_selection", "zh-CN"), "在选取范围内替换");
+    }
+
+    #[test]
+    fn label_returns_the_correct_replace_all_in_selection_text_for_every_language() {
+        assert_eq!(
+            label("replace_all_in_selection", "en"),
+            "Replace All in Selection"
+        );
+        assert_eq!(
+            label("replace_all_in_selection", "zh-TW"),
+            "在選取範圍內全部取代"
+        );
+        assert_eq!(
+            label("replace_all_in_selection", "ja"),
+            "選択範囲内ですべて置換"
+        );
+        assert_eq!(
+            label("replace_all_in_selection", "zh-CN"),
+            "在选取范围内全部替换"
+        );
     }
 
     #[test]
