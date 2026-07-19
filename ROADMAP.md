@@ -114,7 +114,7 @@ the good-first-issue surface.
   ((docText, ranges, query) → edits, including post-replace
   range-shift bookkeeping) with a thin CodeMirror binding, per the
   adversarial review; dual-WebView manual acceptance deferred [danger]
-- [ ] insert date/time (stretch — first to cut if the cycle runs
+- [x] insert date/time (stretch — first to cut if the cycle runs
   long): Edit-menu + palette command inserting a localized timestamp
   at the caret
 

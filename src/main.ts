@@ -97,6 +97,7 @@ import { showDocumentInfo } from "./docinfo";
 import { showFindInFiles } from "./findinfiles";
 import { showGoToLine } from "./goto";
 import { showHexView } from "./hexview";
+import { formatInsertDateTime } from "./insertdatetime";
 import { clampLine, indexMatchesBaseline, selectCheckpoint } from "./lineindex";
 import {
   convertLeadingSpacesToTabs,
@@ -3072,7 +3073,8 @@ window.addEventListener("keydown", (event) => {
  * line-operation case (sort/unique/reverse/trim/case/width/normalize/move/
  * duplicate/delete/join — ROADMAP.md v0.6 C2's join_lines/reverse_lines and
  * C3's sort_lines_case_insensitive/sort_lines_numeric included, both added
- * after this audit but through the same guard); `saveFlow`
+ * after this audit but through the same guard, as does ROADMAP.md v0.7
+ * Track C's insert_datetime); `saveFlow`
  * has its own no-doc + `blockedByReadOnly`
  * check; `toggleReadOnly`/`handleGotoLine`/`toggleBookmarkFlow`/
  * `nextBookmarkFlow`/`previousBookmarkFlow` each have their own no-doc
@@ -3272,6 +3274,17 @@ function dispatchMenuCommand(id: string): void {
       break;
     case "normalize_nfd":
       runLineOperation(() => void runNormalizeFlow("NFD"));
+      break;
+    // ROADMAP.md v0.7 Track C stretch: inserts a localized "now" timestamp
+    // at the cursor, replacing the selection if there is one
+    // (editor.ts's insertTextAtCursor — CM6 replaceSelection semantics).
+    // A buffer mutation, not a selection/navigation command, so it goes
+    // through the same runLineOperation guard as the Line Operations group
+    // above rather than running unguarded like goto_matching_bracket.
+    case "insert_datetime":
+      runLineOperation(() =>
+        editor.insertTextAtCursor(formatInsertDateTime(getLocale(), new Date())),
+      );
       break;
     case "batch_convert":
       showBatchConvert();
