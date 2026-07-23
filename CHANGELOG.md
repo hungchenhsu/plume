@@ -6,6 +6,52 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 Mojidori is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
+## [v0.8.0-alpha.1] - 2026-07-24
+
+### Added
+
+- Official product name: Mojidori (the "Plume" working name is retired
+  to history; it is no longer used in user-facing text). The bundle
+  identifier changed from `app.plume.editor` to `app.mojidori.editor`
+  across every platform, along with the window title, IPC event
+  namespace, and internal crate name (#307, #308).
+- A one-time, crash-safe migration moves an existing config directory
+  to the new identifier's location on first launch: staged with a
+  `.partial` directory and verified before an atomic rename, guarded
+  by a durable completion marker so a failed or interrupted attempt is
+  retried correctly rather than silently skipped or repeated. If the
+  new directory already has some content (e.g. from a partial prior
+  attempt), recovery merges in only the items still missing, never
+  overwriting anything already there, and rolls back only what it
+  copied on failure. Copies preserve source file permissions and are
+  fsync'd before the directory is renamed; an OS-level lock prevents
+  two launches from migrating concurrently. The old directory is kept
+  alongside as a `.migrated` backup rather than deleted (#307, #311).
+- Auto-update: Mojidori checks for new releases silently on startup
+  and via File > Check for Updates, prompts before downloading, and
+  relaunches after installing. The release pipeline signs and
+  notarizes macOS builds and publishes updater feed files from a
+  rolling `updater` release tag; every tag push produces a draft
+  release for manual review before publishing (#309).
+- Update-time data safety: the editor freezes against further edits
+  while the final pre-restart flush is in progress, funneled through
+  one mutation guard shared by every input path (typing, line-ending
+  and encoding pickers, mojibake/normalize wizards, and more) so none
+  of them can slip a change past the flush; the flush itself is
+  serialized with any other in-flight save so the two can't race (#309).
+
+### Known limitations
+
+- Search history does not carry over from Plume to Mojidori: it lives
+  in the WebView's per-origin storage, which is keyed by the bundle
+  identifier and is not part of the migrated config directory.
+- Close the old Plume build before launching Mojidori for the first
+  time — the two are not aware of each other's file locks, so running
+  both against the same config directory at once is not serialized.
+- The updater compares version numbers, so two alpha builds sharing
+  the same version (e.g. two re-releases of an `-alpha.1`) will not
+  trigger an update between them; only an actual version bump does.
+
 ## [v0.7.0-alpha.1] - 2026-07-19
 
 ### Added
@@ -383,7 +429,10 @@ Semantic Versioning compatibility guarantees.
 - Read-only preview mode for files over 10 MB, avoiding WebView freezes
   and accidental overwrites of huge files.
 
-[Unreleased]: https://github.com/hungchenhsu/mojidori/compare/v0.5.0-alpha.2...HEAD
+[Unreleased]: https://github.com/hungchenhsu/mojidori/compare/v0.8.0-alpha.1...HEAD
+[v0.8.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.7.0-alpha.1...v0.8.0-alpha.1
+[v0.7.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.6.0-alpha.1...v0.7.0-alpha.1
+[v0.6.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.5.0-alpha.2...v0.6.0-alpha.1
 [v0.5.0-alpha.2]: https://github.com/hungchenhsu/mojidori/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
 [v0.5.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.4.0-alpha.1...v0.5.0-alpha.1
 [v0.4.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
