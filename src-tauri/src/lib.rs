@@ -707,6 +707,46 @@ pub fn run() {
     startup_probe::mark_process_start();
     startup_probe::checkpoint("run() entered");
 
+    // Hoisted out of the final `.build(context)` call below so the
+    // identifier is available before the `tauri::Builder` chain starts —
+    // see the migration call immediately after this for why that matters.
+    let context = tauri::generate_context!();
+
+    // Must complete before any Tauri plugin's own setup runs — in
+    // particular tauri-plugin-window-state's (registered a few lines
+    // down): that plugin loads its on-disk cache (`.window-state.json`,
+    // itself under app_config_dir()) as part of its *own* plugin setup,
+    // which Tauri runs during `Builder::build()`, strictly before this
+    // app's `.setup()` closure ever gets a chance to run. Migrating from
+    // inside `.setup()` (the previous design) is therefore too late: any
+    // `.window-state.json` this migrates in would already have been
+    // missed by window-state's one-time cache load.
+    //
+    // The obvious-looking fix — move window-state's *registration* into
+    // `.setup()`, after migration — doesn't work either: per
+    // tauri 2.11.5's `fn setup()` (src/app.rs), windows declared in
+    // `tauri.conf.json` are built *before* the app-level `.setup()`
+    // closure runs, and a plugin's `on_window_ready` hook only fires for
+    // windows created *after* that plugin is registered (see
+    // `PluginStore::window_created`, `src/plugin.rs`) — a late
+    // registration would silently never attach window-state to the main
+    // window at all, breaking it far worse than the bug being fixed.
+    //
+    // Running the migration here, before `tauri::Builder` is even
+    // constructed, sidesteps both problems: it's simply earlier than any
+    // plugin setup or window creation. It's a synchronous, one-time cost
+    // (every later launch is a completion-marker file check — see
+    // migrate.rs — cheap enough to be a no-op in practice), so blocking
+    // here on the one launch that actually does work is accepted; only a
+    // *failure* additionally blocks on user interaction, via the dialog
+    // shown from `.setup()` below once a `Dialog` is available to show it
+    // with.
+    let migration_result = migrate::run(&context.config().identifier);
+    if let Err(e) = &migration_result {
+        eprintln!("migrate: data migration failed: {e}");
+    }
+    startup_probe::checkpoint("migration completed");
+
     let builder = tauri::Builder::default();
 
     // On Windows and Linux, opening an associated file launches a second
@@ -746,30 +786,39 @@ pub fn run() {
         .manage(PendingFiles(Mutex::new(existing_paths_from_args(
             std::env::args(),
         ))))
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
-            // Must run before anything below reads preferences/session/
-            // recent files/backups (menu::build, a few lines down, already
-            // does): those all live under app_config_dir(), and after the
-            // Mojidori rename that resolves to a brand-new directory the
-            // previous install's data won't be in unless this moves it
-            // first (see migrate.rs for which old identifier that is).
-            // This runs synchronously and only once per install (repeat
-            // launches are a no-op once `new_dir` has content), so the
-            // one-time copy blocking startup here is accepted; only a
-            // *failure* additionally blocks on user interaction, via the
-            // dialog below. Either way the app continues afterwards with
-            // whatever it finds (typically: a fresh, empty config dir).
-            if let Err(e) = migrate::run(app.handle()) {
-                eprintln!("migrate: data migration failed: {e}");
+            // The migration itself already ran, above, before this
+            // Builder chain even started — see the comment there. All
+            // that's left here is surfacing a failure to the user, once
+            // the app is far enough along to have a `Dialog` to show it
+            // with.
+            if let Err(e) = &migration_result {
                 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                app.dialog()
-                    .message(format!(
+                // migrate::MigrationError distinguishes two very
+                // different states of the user's data on disk (see its
+                // own doc comment) — the message must match, since
+                // telling someone their old data is untouched when it's
+                // actually already been moved would be actively
+                // misleading, not just imprecise.
+                let message = match e {
+                    migrate::MigrationError::NotStarted(msg) => format!(
                         "Mojidori couldn't automatically bring over your settings, \
-                         session, and backups from the previous install ({e}). \
+                         session, and backups from the previous install ({msg}). \
                          Your old data has not been modified or deleted; the app \
                          will start fresh. See the application log for details."
-                    ))
+                    ),
+                    migrate::MigrationError::ConfirmationFailed(msg) => format!(
+                        "Mojidori brought over your settings, session, and backups \
+                         from the previous install, but couldn't confirm that move \
+                         was fully saved to disk ({msg}). Your data is already in \
+                         its new location — nothing was lost. The app will \
+                         automatically finish confirming this on the next launch. \
+                         See the application log for details."
+                    ),
+                };
+                app.dialog()
+                    .message(message)
                     .title("Mojidori")
                     .kind(MessageDialogKind::Error)
                     .blocking_show();
@@ -843,7 +892,7 @@ pub fn run() {
             openfile_probe::report_openfile_ready,
             startup_probe::report_startup_ready
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app, _event| {
             // macOS delivers associated files through Apple Events; they can
