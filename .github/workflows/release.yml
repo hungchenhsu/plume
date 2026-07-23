@@ -12,6 +12,20 @@ name: Release
 # repository secrets that only exist once the maintainer has provisioned
 # them (see ROADMAP.md D2); until then, the tauri-action step below fails
 # on the macOS legs specifically.
+#
+# .github/workflows/updater-json.yml republishes this release's
+# latest.json to a fixed rolling "updater" release once the maintainer
+# manually publishes it — see that workflow's own header for why
+# (releases/latest/... 404s against an all-prerelease alpha series).
+#
+# Known alpha-period limitation (accepted, not solved here): latest.json's
+# version is tauri.conf.json's plain semver (e.g. 0.8.0), with no alpha
+# suffix baked in — Windows' MSI/NSIS updater packaging doesn't support
+# prerelease version strings, so this can't distinguish alpha.1 from
+# alpha.2 of the same 0.8.0. Two alphas that share a version number never
+# trigger an update between each other; the updater only fires across an
+# actual version bump (0.8.0 -> 0.9.0). Users on an interim alpha get the
+# next real bump, not every alpha in between.
 
 on:
   push:

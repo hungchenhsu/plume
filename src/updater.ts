@@ -33,17 +33,20 @@ interface UpdateMetadata {
  *  `createBackupPipeline`/`createSessionPersister`/`createOpQueue`
  *  elsewhere in this codebase. */
 export interface UpdaterDeps {
-  /** Best-effort: flush every dirty buffer to its hot-exit backup and
-   *  persist the session, then resolve regardless of whether that
-   *  succeeded. `plugin:process|restart` calls Tauri's `request_restart`,
-   *  which skips every window's `onCloseRequested` listener entirely (it
-   *  restarts on the next `RuntimeRunEvent::Exit`, not through the
-   *  per-window close-request path main.ts's own hot-exit flush hangs
-   *  off) — without this call, an update-triggered relaunch could
-   *  silently drop unsaved edits despite the app's hot-exit promise. This
-   *  is why `updater.availableMessage` below can truthfully tell the user
-   *  their edits are backed up automatically before restarting. */
-  flushForExit: () => Promise<void>;
+  /** Flush every dirty buffer to its hot-exit backup and persist the
+   *  session; resolves `true` when everything landed, `false` when any
+   *  backup or the session write failed (never rejects — a thrown error
+   *  is treated the same as `false` by `promptAndInstall` below).
+   *  `plugin:process|restart` calls Tauri's `request_restart`, which skips
+   *  every window's `onCloseRequested` listener entirely (it restarts on
+   *  the next `RuntimeRunEvent::Exit`, not through the per-window
+   *  close-request path main.ts's own hot-exit flush hangs off) — without
+   *  this call, an update-triggered relaunch could silently drop unsaved
+   *  edits despite the app's hot-exit promise. A `false` result makes
+   *  `promptAndInstall` ask the user before relaunching anyway, rather
+   *  than silently relaunching over a failed backup — see
+   *  `updater.flushFailedMessage`. */
+  flushForExit: () => Promise<boolean>;
 }
 
 async function checkForUpdate(): Promise<UpdateMetadata | null> {
@@ -87,9 +90,24 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
     return;
   }
 
-  await deps.flushForExit().catch((error) => {
+  const flushed = await deps.flushForExit().catch((error) => {
     console.error("updater: flushForExit failed", error);
+    return false;
   });
+  if (!flushed) {
+    // Default is Cancel (both the explicit button and confirmDialog's own
+    // dismiss-as-false behavior): the update is already downloaded and
+    // installed on disk, so declining costs nothing but a later restart —
+    // relaunching over a failed backup is the choice that can actually
+    // lose data, so it must be opt-in, never the fallback.
+    const restartAnyway = await confirmDialog(t("updater.flushFailedMessage"), {
+      title: t("updater.flushFailedTitle"),
+      kind: "warning",
+      okLabel: t("updater.restartAnyway"),
+      cancelLabel: t("updater.cancelRestart"),
+    }).catch(() => false);
+    if (!restartAnyway) return;
+  }
   await relaunch().catch((error) => {
     console.error("updater: relaunch failed", error);
   });

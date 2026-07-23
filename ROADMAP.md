@@ -32,7 +32,11 @@ archived v0.3 record and in DIRECTION §2/§3.
   the frontend (`src/updater.ts`) checks silently at startup and offers
   Download & Restart, flushing hot-exit backups before relaunching. Not
   yet exercised end-to-end — the first real `v*` tag push is this
-  pipeline's actual test.
+  pipeline's actual test. Updater endpoint is a fixed rolling `updater`
+  release (`.github/workflows/updater-json.yml`), not `releases/latest/...`
+  (prerelease alphas would 404 there); known accepted limitation: alphas
+  sharing one version number (e.g. two 0.8.0-alpha.N) never update each
+  other, only an actual version bump does.
 
 ## Completed cycles
 

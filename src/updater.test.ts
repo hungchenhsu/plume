@@ -35,7 +35,7 @@ const update = {
 };
 
 function makeDeps(): { deps: UpdaterDeps; flushForExit: ReturnType<typeof vi.fn> } {
-  const flushForExit = vi.fn().mockResolvedValue(undefined);
+  const flushForExit = vi.fn().mockResolvedValue(true);
   return { deps: { flushForExit }, flushForExit };
 }
 
@@ -111,6 +111,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     const order: string[] = [];
     flushForExit.mockImplementation(async () => {
       order.push("flush");
+      return true;
     });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "plugin:updater|check") return update;
@@ -158,11 +159,57 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(invoke).not.toHaveBeenCalledWith("plugin:process|restart", expect.anything());
   });
 
-  it("still relaunches even when the hot-exit flush itself fails (best-effort)", async () => {
+  it("when the hot-exit flush fails, defaults to NOT relaunching (Cancel) — the update stays downloaded and installs on the next natural restart", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
+    confirmDialog.mockResolvedValueOnce(false); // flush-failed dialog, default Cancel
+    const { deps, flushForExit } = makeDeps();
+    flushForExit.mockResolvedValueOnce(false);
+    const calledCommands: string[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      calledCommands.push(cmd);
+      if (cmd === "plugin:updater|check") return update;
+      return undefined;
+    });
+
+    await checkForUpdatesAndPrompt(deps, { silent: true });
+
+    expect(calledCommands).toEqual([
+      "plugin:updater|check",
+      "plugin:updater|download_and_install",
+    ]);
+    expect(confirmDialog).toHaveBeenCalledTimes(2);
+    expect(confirmDialog).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ title: "Backup Failed" }),
+    );
+  });
+
+  it("a rejected flush is treated the same as a resolved-false one (also defaults to Cancel)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
+    confirmDialog.mockResolvedValueOnce(false);
     const { deps, flushForExit } = makeDeps();
     flushForExit.mockRejectedValueOnce(new Error("disk full"));
+    const calledCommands: string[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      calledCommands.push(cmd);
+      if (cmd === "plugin:updater|check") return update;
+      return undefined;
+    });
+
+    await checkForUpdatesAndPrompt(deps, { silent: true });
+
+    expect(calledCommands).not.toContain("plugin:process|restart");
+  });
+
+  it("when the hot-exit flush fails, still relaunches if the user explicitly opts in (Restart Anyway)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
+    confirmDialog.mockResolvedValueOnce(true); // flush-failed dialog: Restart Anyway
+    const { deps, flushForExit } = makeDeps();
+    flushForExit.mockResolvedValueOnce(false);
     const calledCommands: string[] = [];
     invoke.mockImplementation(async (cmd: string) => {
       calledCommands.push(cmd);

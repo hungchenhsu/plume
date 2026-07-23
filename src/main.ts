@@ -3547,26 +3547,41 @@ async function openCommandPalette(): Promise<void> {
 
 void listen<string>("mojidori://menu", (event) => dispatchMenuCommand(event.payload));
 
-/** Best-effort hot-exit flush for the updater's install-and-restart flow
- *  (ROADMAP.md D2, src/updater.ts's `UpdaterDeps.flushForExit`).
- *  Deliberately mirrors — rather than shares — onCloseRequested's own
- *  flush loop just below: `plugin:process|restart` bypasses
- *  onCloseRequested entirely (Tauri's `request_restart` skips per-window
- *  close events), so the updater needs a flush called explicitly, but
- *  onCloseRequested's close-vs-discard state machine is delicate enough
- *  (issue #63) that duplicating a few lines here is safer than reshaping
- *  it to serve a second caller. Unlike onCloseRequested, a failed backup
- *  here only reaches console.error rather than blocking with a dialog —
- *  this is an opt-in background flow the user already consented to
- *  ("Download and Restart"), not a close the user is actively waiting on. */
-async function flushForUpdateRestart(): Promise<void> {
+/** Hot-exit flush for the updater's install-and-restart flow (ROADMAP.md
+ *  D2, src/updater.ts's `UpdaterDeps.flushForExit`). Deliberately mirrors —
+ *  rather than shares — onCloseRequested's own flush loop just below:
+ *  `plugin:process|restart` bypasses onCloseRequested entirely (Tauri's
+ *  `request_restart` skips per-window close events), so the updater needs
+ *  a flush called explicitly, but onCloseRequested's close-vs-discard
+ *  state machine is delicate enough (issue #63) that duplicating a few
+ *  lines here is safer than reshaping it to serve a second caller.
+ *  `backupFlush.cancel()` mirrors onCloseRequested's own first line — a
+ *  pending debounced flush from typing must not race this explicit one.
+ *
+ *  Unlike onCloseRequested, a failure here doesn't block by itself — it
+ *  reports back via the return value (`false` if any backup or the
+ *  session write failed) so updater.ts's caller can ask the user whether
+ *  to restart anyway, rather than this function silently deciding for
+ *  them the way an unconditional relaunch would. */
+async function flushForUpdateRestart(): Promise<boolean> {
+  backupFlush.cancel();
+  let ok = true;
   for (const doc of tabs.docs) {
     if (!doc.dirty || doc.truncated) continue;
     const content = doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
-    const ok = await backups.flush(doc, content).catch(() => false);
-    if (!ok) console.error(`updater: backup flush failed for ${doc.title}`);
+    const flushed = await backups.flush(doc, content).catch(() => false);
+    if (!flushed) {
+      console.error(`updater: backup flush failed for ${doc.title}`);
+      ok = false;
+    }
   }
-  await sessionPersist.persist().catch(() => {});
+  try {
+    await sessionPersist.persist();
+  } catch (error) {
+    console.error("updater: session persist failed", error);
+    ok = false;
+  }
+  return ok;
 }
 
 const updaterDeps: UpdaterDeps = { flushForExit: flushForUpdateRestart };

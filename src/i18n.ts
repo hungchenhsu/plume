@@ -501,6 +501,13 @@ export interface Messages {
   "updater.checkFailedMessage": string;
   "updater.upToDateTitle": string;
   "updater.upToDateMessage": string;
+  // Shown when flushForExit (main.ts) reports a failed backup/session
+  // write — restartAnyway/cancelRestart back a two-choice dialog whose
+  // default is Cancel (see updater.ts's promptAndInstall).
+  "updater.flushFailedTitle": string;
+  "updater.flushFailedMessage": string;
+  "updater.restartAnyway": string;
+  "updater.cancelRestart": string;
 
   "common.loading": string;
 }
@@ -922,6 +929,11 @@ const en: Messages = {
   "updater.checkFailedMessage": "Could not check for updates. Please check your internet connection.",
   "updater.upToDateTitle": "You're Up to Date",
   "updater.upToDateMessage": "Mojidori is on the latest version.",
+  "updater.flushFailedTitle": "Backup Failed",
+  "updater.flushFailedMessage":
+    "Some unsaved changes could not be backed up before restarting. The downloaded update will still be installed the next time Mojidori starts — you can restart now anyway, or cancel and save your work first.",
+  "updater.restartAnyway": "Restart Anyway",
+  "updater.cancelRestart": "Cancel",
 
   "common.loading": "Loading…",
 };
@@ -1301,6 +1313,11 @@ const zhTW: Messages = {
   "updater.checkFailedMessage": "無法檢查更新，請確認網路連線。",
   "updater.upToDateTitle": "已是最新版本",
   "updater.upToDateMessage": "Mojidori 目前已是最新版本。",
+  "updater.flushFailedTitle": "備份失敗",
+  "updater.flushFailedMessage":
+    "部分未儲存的變更在重新啟動前無法備份。已下載的更新仍會在 Mojidori 下次啟動時安裝——您可以仍要重新啟動，或取消並先儲存您的工作。",
+  "updater.restartAnyway": "仍要重新啟動",
+  "updater.cancelRestart": "取消",
 
   "common.loading": "載入中…",
 };
@@ -1705,6 +1722,11 @@ const ja: Messages = {
   "updater.checkFailedMessage": "アップデートを確認できませんでした。インターネット接続をご確認ください。",
   "updater.upToDateTitle": "最新の状態です",
   "updater.upToDateMessage": "Mojidori は最新バージョンです。",
+  "updater.flushFailedTitle": "バックアップに失敗しました",
+  "updater.flushFailedMessage":
+    "再起動前に一部の未保存の変更をバックアップできませんでした。ダウンロード済みのアップデートは次回 Mojidori 起動時にインストールされます——このまま再起動するか、キャンセルして作業を保存してください。",
+  "updater.restartAnyway": "このまま再起動",
+  "updater.cancelRestart": "キャンセル",
 
   "common.loading": "読み込み中…",
 };
@@ -2082,6 +2104,11 @@ const zhCN: Messages = {
   "updater.checkFailedMessage": "无法检查更新，请确认网络连接。",
   "updater.upToDateTitle": "已是最新版本",
   "updater.upToDateMessage": "Mojidori 当前已是最新版本。",
+  "updater.flushFailedTitle": "备份失败",
+  "updater.flushFailedMessage":
+    "部分未保存的更改在重新启动前无法备份。已下载的更新仍会在 Mojidori 下次启动时安装——您可以仍然重新启动，或取消并先保存您的工作。",
+  "updater.restartAnyway": "仍然重新启动",
+  "updater.cancelRestart": "取消",
 
   "common.loading": "加载中…",
 };
