@@ -2422,6 +2422,14 @@ function setLineEnding(lineEnding: string): void {
  *   silently overwrite the user's newer edits with a rebuild of stale
  *   content (issue #93). Since the user is still on this tab, this case
  *   surfaces a dialog rather than failing silently.
+ * - The doc became blocked (ROADMAP.md D2, Codex re-review of PR #309):
+ *   the update-install freeze doesn't touch `editor.content()` (it blocks
+ *   edits, it produces none to compare), so `isMojibakeSnapshotStale`
+ *   alone can't see it — the content still matches `snapshot` even while
+ *   frozen. Checked via `blockedByReadOnly`, the same single guard
+ *   `runLineOperation`/`saveFlow` already share, rather than re-deriving
+ *   `updateFreezeActive` (or truncated/userReadOnly, which this callback
+ *   never re-checked either, before this fix) here on its own.
  */
 function showMojibakeRepairWizard(): void {
   const doc = tabs.active;
@@ -2437,6 +2445,7 @@ function showMojibakeRepairWizard(): void {
       });
       return;
     }
+    if (blockedByReadOnly(doc)) return;
     editor.replaceContent(repaired);
   });
 }
@@ -3065,7 +3074,7 @@ function isUnicodeEncoding(encoding: string): boolean {
   return encoding === "UTF-8" || encoding.startsWith("UTF-16");
 }
 
-type NormalizeGuardOutcome = "apply" | "silent" | "notify";
+type NormalizeGuardOutcome = "apply" | "silent" | "notify" | "frozen";
 
 /**
  * Re-validate `guard` (captured at the very start of `runNormalizeFlow`,
@@ -3092,10 +3101,22 @@ type NormalizeGuardOutcome = "apply" | "silent" | "notify";
  * the active tab, but its revision moved (asyncguard.ts's "edited",
  * overwhelmingly a keystroke) — the user is still looking right at this
  * tab and just confirmed an operation, so silently discarding it with no
- * explanation would be confusing; the caller shows a dialog.
+ * explanation would be confusing; the caller shows a dialog. "frozen": the
+ * update-install freeze (ROADMAP.md D2, Codex re-review of PR #309) is
+ * active — checked *before* `validateIdentity` since freezing never moves
+ * `doc.revision` (it blocks edits, it doesn't produce one), so the
+ * revision check alone would have no way to notice it and would wrongly
+ * report "apply". A second, uncollapsed apply point that skipped this is
+ * exactly how the previous review round's fix — freezing the CM6
+ * compartment plus `blockedByReadOnly` — still missed this flow's own
+ * `editor.replaceContent`, which sits *after* an async confirm/IPC gap and
+ * never re-derives `canMutateDocument` on its own; this function is now
+ * where that re-derivation lives for every one of `runNormalizeFlow`'s
+ * three checkpoints.
  */
 function normalizeGuardOutcome(guard: GuardIdentity, doc: Doc): NormalizeGuardOutcome {
   if (tabs.activeId !== guard.id) return "silent";
+  if (updateFreezeActive) return "frozen";
   const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
   if (verdict === "apply") return "apply";
   if (verdict === "closed") return "silent";
@@ -3178,6 +3199,12 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
         kind: "warning",
       });
     }
+    if (outcome === "frozen") {
+      void messageDialog(t("dialog.updateInProgressMessage"), {
+        title: t("dialog.updateInProgressTitle"),
+        kind: "warning",
+      });
+    }
     if (outcome !== "apply") return;
 
     if (!isUnicodeEncoding(doc.encoding)) {
@@ -3186,6 +3213,12 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
       if (outcome === "notify") {
         void messageDialog(t("dialog.normalizeStaleMessage"), {
           title: t("dialog.normalizeStaleTitle"),
+          kind: "warning",
+        });
+      }
+      if (outcome === "frozen") {
+        void messageDialog(t("dialog.updateInProgressMessage"), {
+          title: t("dialog.updateInProgressTitle"),
           kind: "warning",
         });
       }
@@ -3211,6 +3244,12 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
         if (outcome === "notify") {
           void messageDialog(t("dialog.normalizeStaleMessage"), {
             title: t("dialog.normalizeStaleTitle"),
+            kind: "warning",
+          });
+        }
+        if (outcome === "frozen") {
+          void messageDialog(t("dialog.updateInProgressMessage"), {
+            title: t("dialog.updateInProgressTitle"),
             kind: "warning",
           });
         }

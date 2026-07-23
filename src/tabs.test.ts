@@ -159,6 +159,42 @@ describe("canMutateDocument", () => {
   });
 });
 
+// ROADMAP.md D2, Codex re-review (3rd round) of PR #309: an async flow
+// that already passed its *own* entry guard before the freeze started
+// (mojibake repair's wizard, Edit > Normalize's confirm/representability
+// round trips) must re-check mutability again at its actual apply point —
+// main.ts's showMojibakeRepairWizard now does this via blockedByReadOnly
+// (which calls canMutateDocument), and runNormalizeFlow's
+// normalizeGuardOutcome checks updateFreezeActive before every one of its
+// three `editor.replaceContent` checkpoints, both funneling through this
+// exact function. Narrated as the scenario the review flagged, even
+// though mechanically identical to the cases above: the pure predicate is
+// what's under test, since main.ts's own dispatch/dialog wiring isn't
+// unit-testable (see sessionpersist.ts's header comment for why).
+describe("canMutateDocument — async apply-after-freeze scenario", () => {
+  const doc = { truncated: false, userReadOnly: false };
+
+  it("an async flow that started while mutable is still blocked if the doc is frozen by the time its result is ready to apply", () => {
+    // t0: the flow starts (e.g. showMojibakeRepairWizard/runNormalizeFlow
+    // checks its entry guard) — mutation is allowed.
+    const allowedAtStart = canMutateDocument(doc, false);
+    expect(allowedAtStart).toBe(true);
+
+    // t1: an update-install freeze begins while the flow's own async work
+    // (wizard round trip, confirm dialog, checkRepresentable IPC) is still
+    // in flight — nothing about `doc` itself changed.
+    const frozenBeforeApply = true;
+
+    // t2: the callback/apply point re-checks right before writing —
+    // must now be blocked, regardless of the t0 snapshot.
+    expect(canMutateDocument(doc, frozenBeforeApply)).toBe(false);
+  });
+
+  it("the same flow's apply point succeeds once the freeze has lifted", () => {
+    expect(canMutateDocument(doc, false)).toBe(true);
+  });
+});
+
 describe("TabStore", () => {
   it("activates a doc when it is added", () => {
     const { store } = makeStore();
