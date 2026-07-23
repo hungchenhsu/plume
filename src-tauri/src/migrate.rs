@@ -89,15 +89,35 @@
 //! syncs still apply there, only the "rename itself is crash-durable"
 //! guarantee is unavailable.
 //!
-//! ## Known limitation: concurrent old + new installs
+//! ## Concurrency: two instances of *this* build racing to migrate
 //!
-//! The old and new builds use different identifiers, so
-//! `tauri-plugin-single-instance`'s lock key differs between them too —
-//! an old-identifier install and this one can run at the same time, and
-//! if both happen to migrate (or write to `old_dir`/`new_dir`)
-//! concurrently their writes can interleave. Not guarded against here (no
-//! lock check is implemented); mitigated operationally by telling users
-//! in release notes to close the old install before launching this one.
+//! [`run`] moves the whole decision ahead of `tauri::Builder` (see its own
+//! doc), which means it runs before `tauri-plugin-single-instance`
+//! (Windows/Linux) has registered its own guard — and macOS has no such
+//! plugin in this codebase regardless. Two processes of this same build
+//! can therefore both reach [`migrate`] at once. [`migrate_locked`] closes
+//! that race with a blocking OS-level advisory lock (`std::fs::File::lock`,
+//! stable since Rust 1.89 — this repo has no MSRV pin and CI installs
+//! current `stable`, so no new dependency was needed) held for the whole
+//! decision: the second process simply waits for the first to finish, and
+//! by the time it acquires the lock the first's marker (if migration
+//! completed) already exists, so it sees
+//! [`MigrationOutcome::AlreadyDecided`] and does nothing. See
+//! [`migrate_locked`]'s doc for the concrete data-loss scenario this
+//! prevents.
+//!
+//! ## Known limitation: concurrent old + new *installs*
+//!
+//! The lock above only helps two processes of *this* build coordinate —
+//! it says nothing about an old-identifier (`app.plume.editor`) install of
+//! the pre-rename app running at the same time. The old and new builds use
+//! different identifiers, so `tauri-plugin-single-instance`'s lock key
+//! differs between them too, and the old binary has no idea this lock file
+//! exists at all. If both happen to write to `old_dir`/`new_dir`
+//! concurrently their writes can still interleave. Not guarded against
+//! here (doing so would require changes to a binary that's already
+//! shipped); mitigated operationally by telling users in release notes to
+//! close the old install before launching this one.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -109,6 +129,11 @@ const OLD_IDENTIFIER: &str = "app.plume.editor";
 
 /// Suffix for the durable completion marker file — see the module doc.
 const MARKER_SUFFIX: &str = ".migration-complete";
+
+/// Suffix for the OS-level advisory lock file that serializes concurrent
+/// migration attempts — see [`acquire_migration_lock`] and the module
+/// doc's Concurrency section.
+const LOCK_SUFFIX: &str = ".migration-lock";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MigrationOutcome {
@@ -284,6 +309,27 @@ fn marker_path(new_dir: &Path) -> PathBuf {
             .and_then(|n| n.to_str())
             .unwrap_or("new"),
         MARKER_SUFFIX
+    );
+    new_dir
+        .parent()
+        .map(|p| p.join(&name))
+        .unwrap_or_else(|| PathBuf::from(&name))
+}
+
+/// Path of the OS-level advisory lock file for the migration whose
+/// destination is `new_dir` — a sibling file, `<new_dir>.migration-lock`.
+/// Deliberately a sibling of `new_dir`, not a file inside it: a file
+/// inside `new_dir` would corrupt the very "is `new_dir` empty" check
+/// [`migrate`] and [`migrate_dir`] both make (and would need to be
+/// excluded from every count/verify/publish-rename step besides).
+fn lock_path(new_dir: &Path) -> PathBuf {
+    let name = format!(
+        "{}{}",
+        new_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("new"),
+        LOCK_SUFFIX
     );
     new_dir
         .parent()
@@ -802,11 +848,77 @@ pub fn migrate(
     })
 }
 
-/// Production entry point: runs [`migrate`] for `identifier` (this build's
-/// bundle identifier, e.g. `app.mojidori.editor`), computing `new_dir` as
-/// `dirs::config_dir().join(identifier)` — the same computation
-/// `tauri::AppHandle::path().app_config_dir()` does internally (same
-/// crate, same version; see the module doc) — and `old_dir` via
+/// Acquire the OS-level exclusive advisory lock at `lock_path`, creating
+/// the lock file (and its parent directory) if needed, and **blocking**
+/// until it's held. Returns the open `File` — the lock is held for as
+/// long as that value stays alive, and is released automatically (by the
+/// OS, on every platform this targets) when it drops, including on every
+/// early-return path via `?`. There is no explicit `unlock()` call here;
+/// none is needed.
+///
+/// The lock file itself is created once and then left in place forever —
+/// it is never deleted. Deleting it would reopen exactly the race this
+/// exists to close (a second process could recreate it and lock a
+/// different underlying file than a first process already holds a lock
+/// on), and an empty, permanently-lingering marker-adjacent file is
+/// harmless.
+fn acquire_migration_lock(lock_path: &Path) -> Result<File, String> {
+    if let Some(parent) = lock_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        // The lock file's content (there is none — it's a 0-byte marker)
+        // is irrelevant; explicit about not truncating an existing one on
+        // every open regardless, since the lock semantics don't depend on
+        // it either way.
+        .truncate(false)
+        .write(true)
+        .open(lock_path)
+        .map_err(|e| format!("cannot open migration lock {}: {e}", lock_path.display()))?;
+    file.lock()
+        .map_err(|e| format!("cannot acquire migration lock {}: {e}", lock_path.display()))?;
+    Ok(file)
+}
+
+/// [`migrate`], wrapped in the OS-level advisory lock at `lock_path` for
+/// the whole duration of the call.
+///
+/// Moving migration ahead of the whole `tauri::Builder` (see [`run`])
+/// means it now runs *before* `tauri-plugin-single-instance` (Windows/
+/// Linux) has had any chance to register — that plugin's own guard
+/// against a second process getting this far simply isn't active yet.
+/// Two processes of this same build can therefore both reach here at
+/// once: a double-click launch, a file-association open racing an
+/// already-in-flight startup, or (macOS has no single-instance plugin at
+/// all in this codebase) any double-launch there. Without a lock, both
+/// could observe "no marker yet" and both enter [`migrate`] concurrently
+/// — e.g. one finishes a merge-recovery and writes the marker while the
+/// other, mid-merge itself, hits an unrelated failure and rolls back
+/// *its* copied files, deleting some of the first process's just-placed
+/// data out from under it. The marker then exists, so every future launch
+/// is permanently short-circuited past ever noticing files are missing.
+///
+/// Blocking on the lock instead makes the second process simply wait for
+/// the first to finish; by the time it acquires the lock, the first
+/// process's marker (if migration completed) is already there, so it
+/// sees [`MigrationOutcome::AlreadyDecided`] and does nothing.
+pub fn migrate_locked(
+    old_dir: &Path,
+    new_dir: &Path,
+    marker_path: &Path,
+    lock_path: &Path,
+    source_identifier: &str,
+) -> Result<MigrationOutcome, String> {
+    let _lock = acquire_migration_lock(lock_path)?;
+    migrate(old_dir, new_dir, marker_path, source_identifier)
+}
+
+/// Production entry point: runs [`migrate_locked`] for `identifier` (this
+/// build's bundle identifier, e.g. `app.mojidori.editor`), computing
+/// `new_dir` as `dirs::config_dir().join(identifier)` — the same
+/// computation `tauri::AppHandle::path().app_config_dir()` does internally
+/// (same crate, same version; see the module doc) — and `old_dir` via
 /// [`old_config_dir`].
 ///
 /// Deliberately takes a plain identifier string rather than an
@@ -817,7 +929,9 @@ pub fn migrate(
 /// there (the previous design) is too late: it exists, moving the plugin's
 /// *registration* later instead doesn't work either — see `lib.rs`'s
 /// `run()` for why. Running here, ahead of the whole `Builder`, is what
-/// makes the ordering actually correct.
+/// makes the ordering actually correct — but it's also exactly why
+/// [`migrate_locked`]'s own lock is necessary rather than relying on
+/// `tauri-plugin-single-instance`; see that function's doc.
 pub fn run(identifier: &str) -> Result<MigrationOutcome, String> {
     let new_dir = dirs::config_dir()
         .ok_or_else(|| "cannot resolve config dir".to_string())?
@@ -828,8 +942,9 @@ pub fn run(identifier: &str) -> Result<MigrationOutcome, String> {
         return Ok(MigrationOutcome::NoOldData);
     };
     let marker = marker_path(&new_dir);
+    let lock = lock_path(&new_dir);
 
-    let outcome = migrate(&old_dir, &new_dir, &marker, OLD_IDENTIFIER)?;
+    let outcome = migrate_locked(&old_dir, &new_dir, &marker, &lock, OLD_IDENTIFIER)?;
     match &outcome {
         MigrationOutcome::Migrated { files, bytes } => {
             eprintln!(
@@ -1476,6 +1591,153 @@ mod tests {
             migrate(&old_dir, &new_dir, &marker, OLD_IDENTIFIER).unwrap(),
             MigrationOutcome::AlreadyDecided
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Two threads each doing their own `File::open()` on `lock_path`
+    /// creates two independent OS-level open file descriptions/handles,
+    /// subject to the exact same lock contention rules the OS would apply
+    /// across two separate *processes* — so this genuinely exercises
+    /// [`migrate_locked`]'s cross-process guarantee, not just an
+    /// in-process convention. Reproduces the exact scenario from the
+    /// module doc: `new_dir` already has a stray file (routing to the
+    /// merge path) and two racers both try to recover `old_dir` into it
+    /// at once.
+    #[test]
+    fn concurrent_migrate_locked_calls_migrate_exactly_once_and_lose_no_data() {
+        let root = temp_dir("concurrent-lock");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+        let marker = marker_path(&new_dir);
+        let lock = lock_path(&new_dir);
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"real prefs").unwrap();
+        fs::create_dir_all(old_dir.join("backups")).unwrap();
+        fs::write(old_dir.join("backups").join("tab-1.bak"), b"unsaved buffer").unwrap();
+
+        // A stray file already in new_dir, no marker yet -- the exact
+        // precondition that routes migrate() to the merge path, which is
+        // where the module doc's data-loss scenario happens without a
+        // lock.
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(
+            new_dir.join(".window-state.json"),
+            b"unrelated, must survive",
+        )
+        .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let (tx_a, rx_a) = std::sync::mpsc::channel();
+        {
+            let old_dir = old_dir.clone();
+            let new_dir = new_dir.clone();
+            let marker = marker.clone();
+            let lock = lock.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let result = migrate_locked(&old_dir, &new_dir, &marker, &lock, OLD_IDENTIFIER);
+                let _ = tx_a.send(result);
+            });
+        }
+
+        let (tx_b, rx_b) = std::sync::mpsc::channel();
+        {
+            let old_dir = old_dir.clone();
+            let new_dir = new_dir.clone();
+            let marker = marker.clone();
+            let lock = lock.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let result = migrate_locked(&old_dir, &new_dir, &marker, &lock, OLD_IDENTIFIER);
+                let _ = tx_b.send(result);
+            });
+        }
+
+        let timeout = std::time::Duration::from_secs(10);
+        let result_a = rx_a
+            .recv_timeout(timeout)
+            .expect("racer A did not return -- lock likely deadlocked");
+        let result_b = rx_b
+            .recv_timeout(timeout)
+            .expect("racer B did not return -- lock likely deadlocked");
+
+        let results = [&result_a, &result_b];
+        let did_work = results
+            .iter()
+            .filter(|r| !matches!(r, Ok(MigrationOutcome::AlreadyDecided)))
+            .count();
+        let already_decided = results
+            .iter()
+            .filter(|r| matches!(r, Ok(MigrationOutcome::AlreadyDecided)))
+            .count();
+        assert_eq!(
+            did_work, 1,
+            "expected exactly one racer to perform the migration, got {results:?}"
+        );
+        assert_eq!(
+            already_decided, 1,
+            "expected exactly one racer to see AlreadyDecided, got {results:?}"
+        );
+
+        // No data lost, whichever racer "won" the lock first.
+        assert_eq!(
+            fs::read(new_dir.join("preferences.json")).unwrap(),
+            b"real prefs"
+        );
+        assert_eq!(
+            fs::read(new_dir.join("backups").join("tab-1.bak")).unwrap(),
+            b"unsaved buffer"
+        );
+        assert_eq!(
+            fs::read(new_dir.join(".window-state.json")).unwrap(),
+            b"unrelated, must survive"
+        );
+        assert!(marker.is_file());
+        assert!(!old_dir.exists());
+        assert!(root.join("app.plume.editor.migrated").is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_locked_reentry_within_a_single_process_does_not_deadlock() {
+        let root = temp_dir("locked-reentry");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+        let marker = marker_path(&new_dir);
+        let lock = lock_path(&new_dir);
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"data").unwrap();
+
+        let first = migrate_locked(&old_dir, &new_dir, &marker, &lock, OLD_IDENTIFIER).unwrap();
+        assert!(matches!(first, MigrationOutcome::Migrated { files: 1, .. }));
+
+        // The lock acquired inside the first call must have been released
+        // (by `_lock` dropping) before it returned -- otherwise this
+        // second call would block forever waiting on itself. Bounded with
+        // a timeout so a regression here fails fast instead of hanging
+        // the test suite.
+        let (old_dir2, new_dir2, marker2, lock2) = (
+            old_dir.clone(),
+            new_dir.clone(),
+            marker.clone(),
+            lock.clone(),
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = migrate_locked(&old_dir2, &new_dir2, &marker2, &lock2, OLD_IDENTIFIER);
+            let _ = tx.send(result);
+        });
+        let second = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("second migrate_locked call did not return -- lock not released")
+            .unwrap();
+        assert_eq!(second, MigrationOutcome::AlreadyDecided);
 
         let _ = fs::remove_dir_all(&root);
     }
