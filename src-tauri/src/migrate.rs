@@ -56,20 +56,38 @@
 //!
 //! ## Durability
 //!
-//! Every file this module writes (copies during a transfer/merge, and the
-//! marker itself) is `fsync`'d individually before the operation that
-//! depends on it (verification, or the marker being considered written)
-//! proceeds. The three renames that make a decision final — the
-//! `.partial` → `new_dir` publish, `old_dir` → `.migrated` retirement,
-//! and the marker's own temp-file → final-name rename (via
-//! `crate::atomic_write`) — are each followed by an `fsync` of their
-//! parent directory on Unix, so the directory entry change itself
-//! survives a crash immediately after. Windows has no directory-fsync
-//! API (`FlushFileBuffers` doesn't support directory handles portably
-//! across Windows versions), so that half is `#[cfg(unix)]` and
-//! documented best-effort on Windows: the file-level syncs still apply
-//! there, only the "rename itself is crash-durable" guarantee is
-//! unavailable.
+//! Every file this module writes is `fsync`'d individually before the
+//! operation that depends on it (verification, or the marker being
+//! considered written) proceeds. Where that file lands matters just as
+//! much as the sync itself:
+//!
+//! - Full-transfer ([`migrate_dir`]) copies into the `.partial` staging
+//!   directory, which is wholly discarded and rebuilt from scratch on any
+//!   retry — a torn file left there by a crash is simply never looked at
+//!   again, so a plain `fsync`-after-copy ([`copy_file_synced`]) is enough.
+//! - Merge-recovery ([`merge_recover`]) writes directly into the *live*
+//!   `new_dir`, which is never discarded and whose "already exists" state
+//!   is exactly the never-overwrite signal the whole merge is built on. A
+//!   crash mid-copy there would otherwise leave a file that exists (at its
+//!   final name) but is truncated, which a later run would then protect
+//!   forever as if it were real data. So every merge-copied file instead
+//!   lands via [`copy_file_atomic_no_overwrite`]: written to a
+//!   same-directory `<name>.merge-tmp`, `fsync`'d, then `rename`'d onto the
+//!   final path only once complete. A crash can now only ever leave the
+//!   *temp* file torn — recognizable by its suffix, discarded and retried
+//!   on the next run — never the final one.
+//!
+//! The renames that make a decision final — the `.partial` → `new_dir`
+//! publish, each merge-copied file's temp → final rename, `old_dir` →
+//! `.migrated` retirement, and the marker's own temp-file → final-name
+//! rename (via `crate::atomic_write`) — are, for the three *directory*-level
+//! ones, each followed by an `fsync` of their parent directory on Unix, so
+//! the directory entry change itself survives a crash immediately after.
+//! Windows has no directory-fsync API (`FlushFileBuffers` doesn't support
+//! directory handles portably across Windows versions), so that half is
+//! `#[cfg(unix)]` and documented best-effort on Windows: the file-level
+//! syncs still apply there, only the "rename itself is crash-durable"
+//! guarantee is unavailable.
 //!
 //! ## Known limitation: concurrent old + new installs
 //!
@@ -418,9 +436,76 @@ struct MergeProgress {
     files_skipped: u64,
 }
 
-/// Recursively copy every file/subdirectory of `src` into `dst` (which
-/// must not yet exist), unconditionally — used when merging a subtree that
-/// `new_dir` doesn't have at all yet, so there's nothing to collide with.
+/// Suffix for the per-file staging temp used while merge-copying a single
+/// file into place — see [`copy_file_atomic_no_overwrite`].
+const MERGE_TMP_SUFFIX: &str = ".merge-tmp";
+
+/// Path of the staging temp file for a merge-copy landing at `dst`.
+fn merge_tmp_path(dst: &Path) -> PathBuf {
+    let mut name = dst
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    name.push_str(MERGE_TMP_SUFFIX);
+    dst.with_file_name(name)
+}
+
+/// Copy `src` to `dst` durably and atomically, *without ever overwriting an
+/// existing `dst`*: write to a same-directory temp file
+/// (`<dst-name>.merge-tmp`), `fsync` it, then `rename` it onto `dst` only
+/// if `dst` still doesn't exist.
+///
+/// Unlike [`copy_file_synced`] (used by the full-transfer path, where
+/// files land in a `.partial` staging directory that's wholly discarded
+/// and rebuilt from scratch on any retry), merge-recovery writes directly
+/// into the live `new_dir` — a crash mid-`fs::copy` there would leave a
+/// file that *exists* at its final path but is truncated/incomplete, and
+/// on the next run `merge_dir_recursive`'s "already exists, skip"
+/// never-overwrite rule would then protect that torn file forever, mistaking
+/// it for real data instead of retrying. Landing every file via a
+/// same-named-but-suffixed temp + atomic rename means a crash can only ever
+/// leave the *temp* file torn, never the final one — the final path either
+/// doesn't exist yet (safe to retry) or holds a complete, verified copy.
+///
+/// Any pre-existing temp file at the computed path is discarded before
+/// this attempt starts — it can only be debris from an interrupted
+/// previous attempt at this exact file. Returns `Ok(None)` (temp discarded,
+/// nothing written) if `dst` already exists — either found so up front, or
+/// found so in a final check right before the rename — rather than ever
+/// overwriting it.
+fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u64>> {
+    if dst.exists() {
+        return Ok(None);
+    }
+    let tmp = merge_tmp_path(dst);
+    let _ = fs::remove_file(&tmp);
+
+    let bytes = fs::copy(src, &tmp)?;
+    if let Err(e) = File::open(&tmp).and_then(|f| f.sync_all()) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if dst.exists() {
+        let _ = fs::remove_file(&tmp);
+        return Ok(None);
+    }
+    match fs::rename(&tmp, dst) {
+        Ok(()) => Ok(Some(bytes)),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Recursively copy every file/subdirectory of `src` into `dst`, used when
+/// merging a subtree that `new_dir` doesn't have at all yet. `dst` may
+/// already partially exist here (not just be freshly created) if a
+/// previous merge attempt was interrupted partway through this same
+/// subtree; each file is still placed via [`copy_file_atomic_no_overwrite`],
+/// so a file already correctly in place from that earlier attempt is left
+/// alone (never re-copied, never overwritten) rather than assumed absent.
 fn copy_dir_recursive_tracked(
     src: &Path,
     dst: &Path,
@@ -434,10 +519,15 @@ fn copy_dir_recursive_tracked(
         if file_type.is_dir() {
             copy_dir_recursive_tracked(&entry.path(), &dst_path, progress)?;
         } else if file_type.is_file() {
-            let bytes = copy_file_synced(&entry.path(), &dst_path)?;
-            progress.copied.push((dst_path, bytes));
-            progress.files_copied += 1;
-            progress.bytes_copied += bytes;
+            if let Some(bytes) = copy_file_atomic_no_overwrite(&entry.path(), &dst_path)? {
+                progress.copied.push((dst_path, bytes));
+                progress.files_copied += 1;
+                progress.bytes_copied += bytes;
+            }
+            // `None`: `dst_path` already existed -- durably placed there by
+            // an earlier, interrupted attempt at this same subtree (that
+            // placement was itself atomic, so trusting it is safe and
+            // avoids redundant work).
         }
     }
     Ok(())
@@ -482,10 +572,20 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
                 if let Some(parent) = dst_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                let bytes = copy_file_synced(&src_path, &dst_path)?;
-                progress.copied.push((dst_path, bytes));
-                progress.files_copied += 1;
-                progress.bytes_copied += bytes;
+                match copy_file_atomic_no_overwrite(&src_path, &dst_path)? {
+                    Some(bytes) => {
+                        progress.copied.push((dst_path, bytes));
+                        progress.files_copied += 1;
+                        progress.bytes_copied += bytes;
+                    }
+                    None => {
+                        // dst_path came into existence between the check
+                        // above and the copy (not expected in this
+                        // single-threaded flow, but never overwrite
+                        // either way).
+                        progress.files_skipped += 1;
+                    }
+                }
             }
         }
     }
@@ -1069,6 +1169,84 @@ mod tests {
             fs::read(new_dir.join(".window-state.json")).unwrap(),
             b"{\"main\":{}}"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_cleans_up_stray_merge_tmp_debris_before_copying() {
+        // A `.merge-tmp` file at the computed staging path can only be
+        // debris from an interrupted previous attempt at copying this
+        // exact file. It must not be mistaken for the real thing, and
+        // must not block (or corrupt) a fresh copy.
+        let root = temp_dir("merge-cleans-stray-tmp");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"real content").unwrap();
+
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join(".window-state.json"), b"unrelated").unwrap();
+        let stray_tmp = merge_tmp_path(&new_dir.join("preferences.json"));
+        fs::write(&stray_tmp, b"GARBAGE-FROM-AN-INTERRUPTED-ATTEMPT").unwrap();
+
+        let (files_copied, bytes_copied, files_skipped) =
+            merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(files_copied, 1);
+        assert_eq!(bytes_copied, b"real content".len() as u64);
+        assert_eq!(files_skipped, 0);
+
+        assert_eq!(
+            fs::read(new_dir.join("preferences.json")).unwrap(),
+            b"real content"
+        );
+        assert!(
+            !stray_tmp.exists(),
+            "the stray temp file must not survive the completed copy"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_places_the_file_after_a_simulated_death_right_before_the_final_rename() {
+        // Simulates a crash between the temp file's `fsync` and its
+        // `rename` onto the final path: the temp file is fully written
+        // (it would have been, at that point — `fs::copy` + `sync_all`
+        // already completed), but the final path doesn't exist yet. The
+        // next merge run must still place the file (not treat the temp's
+        // mere presence as "already handled" or skip it) and must end up
+        // with the *source's* content, not whatever was in the temp file.
+        let root = temp_dir("merge-death-before-rename");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(
+            old_dir.join("session.json"),
+            b"authoritative source content",
+        )
+        .unwrap();
+
+        fs::create_dir_all(&new_dir).unwrap();
+        let final_path = new_dir.join("session.json");
+        let tmp_path = merge_tmp_path(&final_path);
+        // The temp file exists (as if `fs::copy` + `sync_all` had already
+        // run last time); the final file does not.
+        fs::write(&tmp_path, b"stale bytes from the interrupted run").unwrap();
+        assert!(!final_path.exists());
+
+        let (files_copied, _, files_skipped) = merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(files_copied, 1, "the file must not be skipped");
+        assert_eq!(files_skipped, 0);
+
+        assert_eq!(
+            fs::read(&final_path).unwrap(),
+            b"authoritative source content",
+            "must be re-copied from old_dir, not resurrected from the stale temp"
+        );
+        assert!(!tmp_path.exists());
 
         let _ = fs::remove_dir_all(&root);
     }
