@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/startup-bench.mjs
 //
-// Cold-start latency benchmark for the built Plume binary (ROADMAP v0.2:
+// Cold-start latency benchmark for the built Mojidori binary (ROADMAP v0.2:
 // "Startup-time budget test"). Pillar 2 of the project ("open a text file
 // faster than an IDE") needs a regression guard, not just a vibe.
 //
@@ -14,21 +14,21 @@
 //   --threshold=MS Optional. If the median exceeds this, exits non-zero
 //                   (for automated gating). Omit for an informational run.
 //   --bin=PATH     Override the binary path (e.g. a packaged .app on
-//                   macOS: .../bundle/macos/Plume.app/Contents/MacOS/plume).
+//                   macOS: .../bundle/macos/Mojidori.app/Contents/MacOS/mojidori).
 //                   Defaults to the platform release build under
 //                   src-tauri/target/release.
 //
 // Requires a release build first:
 //   cd src-tauri && cargo build --release
 //
-// Mechanism: each run launches the binary with PLUME_STARTUP_PROBE=1 set.
+// Mechanism: each run launches the binary with MOJIDORI_STARTUP_PROBE=1 set.
 // In that mode the app measures process-start -> frontend-ready (frontend
 // init sequence complete: preferences, session restore, pending files —
 // see src/main.ts), prints `startup_ms=<n>` to stdout, and exits
 // immediately (see src-tauri/src/startup_probe.rs). Normal launches never
 // take this path, so this has zero effect on real startup behavior.
 //
-// Windows path (src-tauri\target\release\plume.exe) is implemented but
+// Windows path (src-tauri\target\release\mojidori.exe) is implemented but
 // not locally verified in this change — noted in the PR description.
 //
 // Dead end (2026-07-10): running this in CI does not work. On GitHub's
@@ -61,7 +61,7 @@ function parseArgs(argv) {
 }
 
 function defaultBinaryPath() {
-  const exe = platform() === "win32" ? "plume.exe" : "plume";
+  const exe = platform() === "win32" ? "mojidori.exe" : "mojidori";
   return join(repoRoot, "src-tauri", "target", "release", exe);
 }
 
@@ -82,7 +82,7 @@ function median(values) {
 function runOnce(binPath, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const child = spawn(binPath, [], {
-      env: { ...process.env, PLUME_STARTUP_PROBE: "1" },
+      env: { ...process.env, MOJIDORI_STARTUP_PROBE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

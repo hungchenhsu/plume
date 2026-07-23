@@ -2,7 +2,7 @@
 //! is still, on disk, the exact file some earlier metadata snapshot
 //! described. Used at commit time — immediately before an atomic rename —
 //! to detect an external replace (another process's atomic rename, a sync
-//! tool, a second Plume window/instance) that happened between reading a
+//! tool, a second Mojidori window/instance) that happened between reading a
 //! file and writing it back to the same path, so that write can abort
 //! instead of silently clobbering the newer content.
 //!
@@ -176,7 +176,8 @@ mod tests {
     use super::*;
 
     fn fixture_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("plume-fsguard-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mojidori-fsguard-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

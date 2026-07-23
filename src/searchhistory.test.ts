@@ -9,6 +9,9 @@ function makeMemoryStorage(): HistoryStorage {
     setItem: (key, value) => {
       data.set(key, value);
     },
+    removeItem: (key) => {
+      data.delete(key);
+    },
   };
 }
 
@@ -92,9 +95,51 @@ describe("SearchHistory", () => {
 
   it("falls back to an empty history when stored JSON is corrupt", () => {
     const storage = makeMemoryStorage();
-    storage.setItem("plume.searchHistory.v1", "{not valid json");
+    storage.setItem("mojidori.searchHistory.v1", "{not valid json");
     const history = new SearchHistory(storage);
     expect(history.findTerms()).toEqual([]);
     expect(history.replaceTerms()).toEqual([]);
+  });
+
+  describe("legacy key migration (plume.* -> mojidori.*)", () => {
+    it("reads a value left under the legacy key and migrates it to the new key", () => {
+      const storage = makeMemoryStorage();
+      storage.setItem(
+        "plume.searchHistory.v1",
+        JSON.stringify({ find: ["legacy-term"], replace: ["legacy-repl"] }),
+      );
+      const history = new SearchHistory(storage);
+      expect(history.findTerms()).toEqual(["legacy-term"]);
+      expect(history.replaceTerms()).toEqual(["legacy-repl"]);
+
+      // The value was copied over to the new key and the legacy key cleared.
+      expect(storage.getItem("plume.searchHistory.v1")).toBeNull();
+      expect(storage.getItem("mojidori.searchHistory.v1")).toBe(
+        JSON.stringify({ find: ["legacy-term"], replace: ["legacy-repl"] }),
+      );
+    });
+
+    it("does not let a legacy value overwrite an already-populated new key", () => {
+      const storage = makeMemoryStorage();
+      storage.setItem(
+        "plume.searchHistory.v1",
+        JSON.stringify({ find: ["legacy-term"], replace: [] }),
+      );
+      storage.setItem(
+        "mojidori.searchHistory.v1",
+        JSON.stringify({ find: ["current-term"], replace: [] }),
+      );
+      const history = new SearchHistory(storage);
+      expect(history.findTerms()).toEqual(["current-term"]);
+    });
+
+    it("does not throw when the legacy value is corrupt JSON", () => {
+      const storage = makeMemoryStorage();
+      storage.setItem("plume.searchHistory.v1", "{not valid json");
+      expect(() => new SearchHistory(storage)).not.toThrow();
+      const history = new SearchHistory(storage);
+      expect(history.findTerms()).toEqual([]);
+      expect(history.replaceTerms()).toEqual([]);
+    });
   });
 });

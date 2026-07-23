@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn backup_round_trip_and_delete() {
-        let dir = std::env::temp_dir().join("plume-backup-test");
+        let dir = std::env::temp_dir().join("mojidori-backup-test");
         let _ = std::fs::remove_dir_all(&dir);
 
         write_backup(&dir, "bk-1.txt", "未儲存的內容\nwith two lines").unwrap();
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn list_backup_names_lists_only_valid_names() {
-        let dir = std::env::temp_dir().join("plume-backup-list-test");
+        let dir = std::env::temp_dir().join("mojidori-backup-list-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn list_backup_names_missing_dir_is_empty() {
-        let dir = std::env::temp_dir().join("plume-backup-list-missing-dir");
+        let dir = std::env::temp_dir().join("mojidori-backup-list-missing-dir");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(list_backup_names(&dir).is_empty());
     }

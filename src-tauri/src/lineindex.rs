@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn index_counts_lines_and_checkpoints_correctly() {
         let content = fixed_width_lines(5000);
-        let path = write_temp("plume-lineindex-5000.txt", &content);
+        let path = write_temp("mojidori-lineindex-5000.txt", &content);
 
         let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
 
@@ -373,7 +373,7 @@ mod tests {
             content.len() > CHUNK_BYTES,
             "fixture must span >1 chunk read"
         );
-        let path = write_temp("plume-lineindex-multichunk.txt", &content);
+        let path = write_temp("mojidori-lineindex-multichunk.txt", &content);
 
         let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
 
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn locate_line_offset_finds_exact_line() {
         let content = fixed_width_lines(5000);
-        let path = write_temp("plume-lineindex-locate.txt", &content);
+        let path = write_temp("mojidori-lineindex-locate.txt", &content);
         let path_str = path.to_string_lossy().into_owned();
 
         // target_line == from_line: returns from_offset without scanning.
@@ -412,7 +412,7 @@ mod tests {
         // part of the previous line), so each line is 14 bytes wide here —
         // same treatment chunk.rs gives CRLF content.
         let crlf_content = fixed_width_crlf_lines(3000);
-        let crlf_path = write_temp("plume-lineindex-crlf.txt", &crlf_content);
+        let crlf_path = write_temp("mojidori-lineindex-crlf.txt", &crlf_content);
         let crlf_offset =
             locate_line_offset(crlf_path.to_string_lossy().into_owned(), 2500, 0, 0, None)
                 .unwrap()
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn locate_clamps_past_eof() {
         let content = fixed_width_lines(10);
-        let path = write_temp("plume-lineindex-clamp.txt", &content);
+        let path = write_temp("mojidori-lineindex-clamp.txt", &content);
         let path_str = path.to_string_lossy().into_owned();
 
         let offset = locate_line_offset(path_str, 999_999, 0, 0, None)
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn empty_file_and_single_line_file() {
-        let empty_path = write_temp("plume-lineindex-empty.txt", "");
+        let empty_path = write_temp("mojidori-lineindex-empty.txt", "");
         let report =
             build_line_index(empty_path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
         assert_eq!(report.total_lines, 0);
@@ -463,7 +463,7 @@ mod tests {
         std::fs::remove_file(&empty_path).ok();
 
         // No trailing newline: still exactly one line.
-        let single_path = write_temp("plume-lineindex-single.txt", "hello, world");
+        let single_path = write_temp("mojidori-lineindex-single.txt", "hello, world");
         let report =
             build_line_index(single_path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
         assert_eq!(report.total_lines, 1);
@@ -471,7 +471,7 @@ mod tests {
         std::fs::remove_file(&single_path).ok();
 
         // A lone newline: one (empty) line, fully terminated.
-        let lone_nl_path = write_temp("plume-lineindex-lonenl.txt", "\n");
+        let lone_nl_path = write_temp("mojidori-lineindex-lonenl.txt", "\n");
         let report =
             build_line_index(lone_nl_path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
         assert_eq!(report.total_lines, 1);
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn cr_only_index_counts_lines_and_checkpoints_correctly() {
         let content = fixed_width_cr_lines(5000);
-        let path = write_temp("plume-lineindex-cronly-5000.txt", &content);
+        let path = write_temp("mojidori-lineindex-cronly-5000.txt", &content);
 
         let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
 
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn cr_only_locate_line_offset_finds_exact_line() {
         let content = fixed_width_cr_lines(3000);
-        let path = write_temp("plume-lineindex-cronly-locate.txt", &content);
+        let path = write_temp("mojidori-lineindex-cronly-locate.txt", &content);
         let path_str = path.to_string_lossy().into_owned();
 
         let offset = locate_line_offset(path_str, 2500, 0, 0, None)
@@ -527,7 +527,7 @@ mod tests {
         // for the CR, one for the LF) — otherwise total_lines would come
         // out double the real line count.
         let content = fixed_width_crlf_lines(3000);
-        let path = write_temp("plume-lineindex-crlf-nodouble.txt", &content);
+        let path = write_temp("mojidori-lineindex-crlf-nodouble.txt", &content);
 
         let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
 
@@ -546,7 +546,7 @@ mod tests {
         // LF, CRLF, and lone CR in the same file, each terminating exactly
         // one line: "aaa\n" + "bbb\r\n" + "ccc\r" + "ddd\n".
         let content = "aaa\nbbb\r\nccc\rddd\n";
-        let path = write_temp("plume-lineindex-mixed.txt", content);
+        let path = write_temp("mojidori-lineindex-mixed.txt", content);
         let path_str = path.to_string_lossy().into_owned();
 
         let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
@@ -579,14 +579,14 @@ mod tests {
         // Mirrors `empty_file_and_single_line_file`'s LF cases but for a
         // trailing lone CR: the file ends exactly on a terminator, so no
         // phantom empty line follows it.
-        let path = write_temp("plume-lineindex-cr-trailing.txt", "hello\r");
+        let path = write_temp("mojidori-lineindex-cr-trailing.txt", "hello\r");
         let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
         assert_eq!(report.total_lines, 1);
         assert_eq!(report.checkpoints, vec![0]);
         std::fs::remove_file(&path).ok();
 
         // Two consecutive lone CRs: two empty lines, both fully terminated.
-        let path2 = write_temp("plume-lineindex-cr-cr.txt", "\r\r");
+        let path2 = write_temp("mojidori-lineindex-cr-cr.txt", "\r\r");
         let report2 =
             build_line_index(path2.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
         assert_eq!(report2.total_lines, 2);
@@ -614,7 +614,7 @@ mod tests {
             "fixture must place LF as the first byte of the second chunk read"
         );
 
-        let path = std::env::temp_dir().join("plume-lineindex-crlf-chunk-split.txt");
+        let path = std::env::temp_dir().join("mojidori-lineindex-crlf-chunk-split.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -657,7 +657,7 @@ mod tests {
             "fixture must place a non-newline byte right after the CR, at the next chunk's start"
         );
 
-        let path = std::env::temp_dir().join("plume-lineindex-lonecr-chunk-split.txt");
+        let path = std::env::temp_dir().join("mojidori-lineindex-lonecr-chunk-split.txt");
         std::fs::write(&path, &content).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn line_index_report_carries_a_fingerprint() {
-        let path = write_temp("plume-lineindex-fp.txt", &fixed_width_lines(10));
+        let path = write_temp("mojidori-lineindex-fp.txt", &fixed_width_lines(10));
         let report = build_line_index(path.to_string_lossy().into_owned(), "UTF-8".into()).unwrap();
         assert!(
             report.fingerprint.is_some(),
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn locate_is_stale_when_the_file_changed_since_the_index() {
-        let path = write_temp("plume-lineindex-stale.txt", &fixed_width_lines(2000));
+        let path = write_temp("mojidori-lineindex-stale.txt", &fixed_width_lines(2000));
         let path_str = path.to_string_lossy().into_owned();
         let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
         let fp = report.fingerprint.expect("fingerprint must be captured");
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn locate_with_matching_fingerprint_resolves_normally() {
-        let path = write_temp("plume-lineindex-fp-match.txt", &fixed_width_lines(2000));
+        let path = write_temp("mojidori-lineindex-fp-match.txt", &fixed_width_lines(2000));
         let path_str = path.to_string_lossy().into_owned();
         let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
         let fp = report.fingerprint.expect("fingerprint must be captured");
@@ -728,7 +728,7 @@ mod tests {
     /// walk happens.
     #[test]
     fn locate_checkpoint_direct_hit_still_validates_the_fingerprint() {
-        let path = write_temp("plume-lineindex-stale-hit.txt", &fixed_width_lines(2000));
+        let path = write_temp("mojidori-lineindex-stale-hit.txt", &fixed_width_lines(2000));
         let path_str = path.to_string_lossy().into_owned();
         let report = build_line_index(path_str.clone(), "UTF-8".into()).unwrap();
         let fp = report.fingerprint.expect("fingerprint must be captured");

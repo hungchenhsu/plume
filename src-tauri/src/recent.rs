@@ -96,7 +96,7 @@ mod tests {
     /// shape.
     #[test]
     fn clear_then_reload_round_trip_is_empty() {
-        let dir = std::env::temp_dir().join("plume-recent-clear-roundtrip-test");
+        let dir = std::env::temp_dir().join("mojidori-recent-clear-roundtrip-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE);
@@ -123,7 +123,7 @@ mod tests {
     /// subsequent load must see an empty list rather than erroring.
     #[test]
     fn clear_when_recent_json_never_existed_still_reloads_empty() {
-        let dir = std::env::temp_dir().join("plume-recent-clear-missing-dir-test");
+        let dir = std::env::temp_dir().join("mojidori-recent-clear-missing-dir-test");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join(FILE);
 
@@ -149,7 +149,7 @@ mod tests {
 
     fn corruption_fixture_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "plume-recent-corrupt-{name}-{}",
+            "mojidori-recent-corrupt-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

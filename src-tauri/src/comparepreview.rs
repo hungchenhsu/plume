@@ -156,7 +156,7 @@ mod tests {
             std::str::from_utf8(&bytes).is_err(),
             "fixture must not coincidentally be valid UTF-8"
         );
-        let file = write_temp("plume-compare-both-sides", "sample.txt", &bytes);
+        let file = write_temp("mojidori-compare-both-sides", "sample.txt", &bytes);
 
         let result = preview_two_encodings(
             file.to_string_lossy().into_owned(),
@@ -184,7 +184,7 @@ mod tests {
     fn preview_two_encodings_bounded_read() {
         let data: String = (0..20_000u32).map(|i| format!("line {i}\n")).collect();
         assert!(data.len() as u64 > SAMPLE_BYTES as u64);
-        let file = write_temp("plume-compare-bounded-read", "big.txt", data.as_bytes());
+        let file = write_temp("mojidori-compare-bounded-read", "big.txt", data.as_bytes());
 
         let result = preview_two_encodings(
             file.to_string_lossy().into_owned(),
@@ -211,7 +211,7 @@ mod tests {
         assert!(!unmappable);
         assert_eq!(bytes.len(), 10, "5 ASCII chars * 2 bytes, no BOM");
         bytes.push(0x41); // stray trailing byte -> odd-length sample
-        let file = write_temp("plume-compare-utf16-odd", "odd.bin", &bytes);
+        let file = write_temp("mojidori-compare-utf16-odd", "odd.bin", &bytes);
 
         let result = preview_two_encodings(
             file.to_string_lossy().into_owned(),
@@ -237,7 +237,11 @@ mod tests {
 
     #[test]
     fn preview_two_encodings_rejects_unknown_label() {
-        let file = write_temp("plume-compare-unknown-label", "sample.txt", b"hello world");
+        let file = write_temp(
+            "mojidori-compare-unknown-label",
+            "sample.txt",
+            b"hello world",
+        );
 
         let result = preview_two_encodings(
             file.to_string_lossy().into_owned(),

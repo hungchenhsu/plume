@@ -126,7 +126,7 @@ mod tests {
     // --- Forward-compat fixtures (ROADMAP.md v0.6 V1) ----------------------
     //
     // SessionFile relies on #[serde(default)] to let session.json files
-    // written by earlier Plume versions load under today's struct. That
+    // written by earlier Mojidori versions load under today's struct. That
     // contract has so far only held "by accident" -- nothing pinned it. The
     // fixtures below hard-code the JSON shapes that actually existed on disk
     // at each point in the field's real history, confirmed with
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// The flip side of forward-compat: a session.json written by a *newer*
-    /// Plume (or hand-edited) with a field this build doesn't know about
+    /// Mojidori (or hand-edited) with a field this build doesn't know about
     /// must not fail to load. SessionFile has no
     /// #[serde(deny_unknown_fields)], so serde_json silently drops anything
     /// unrecognized -- this pins that current behavior so a future
@@ -297,7 +297,7 @@ mod tests {
 
     fn corruption_fixture_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "plume-session-corrupt-{name}-{}",
+            "mojidori-session-corrupt-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

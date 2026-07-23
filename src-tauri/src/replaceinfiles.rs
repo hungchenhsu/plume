@@ -934,7 +934,7 @@ mod tests {
 
     fn fixture_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "plume-replaceinfiles-{name}-{}",
+            "mojidori-replaceinfiles-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1255,7 +1255,7 @@ mod tests {
             "scanning a real file must yield a verifiable fingerprint"
         );
 
-        // Another process (or a second Plume window) replaces the file's
+        // Another process (or a second Mojidori window) replaces the file's
         // content while this scan report is still being reviewed.
         let external_content = b"externally written content, much longer than the original";
         std::fs::write(&file, external_content).unwrap();

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/openfile-bench.mjs
 //
-// File-open latency benchmark for the built Plume binary (ROADMAP v0.4
+// File-open latency benchmark for the built Mojidori binary (ROADMAP v0.4
 // Track B: "File-open latency budget script"). Companion to
 // scripts/startup-bench.mjs, isolating "trigger open -> content rendered"
 // from full cold-start latency (WebView init, preferences, session
@@ -26,8 +26,8 @@
 //   --threshold-large=MS  exits non-zero (for a human to gate on locally).
 //                          Omit either for an informational-only run.
 //   --bin=PATH            Override the binary path (e.g. a packaged .app
-//                          on macOS: .../bundle/macos/Plume.app/Contents/
-//                          MacOS/plume). Defaults to the platform release
+//                          on macOS: .../bundle/macos/Mojidori.app/Contents/
+//                          MacOS/mojidori). Defaults to the platform release
 //                          build under src-tauri/target/release.
 //   --dry-run             Generate the synthetic fixtures, print their
 //                          paths/sizes, clean up, and exit — never spawns
@@ -40,11 +40,11 @@
 //
 // Mechanism: mirrors startup-bench's env-gated probe pattern with a new,
 // separate probe rather than overloading the existing one, because the two
-// measure different windows. startup-bench's PLUME_STARTUP_PROBE times
+// measure different windows. startup-bench's MOJIDORI_STARTUP_PROBE times
 // process-start -> frontend-ready and exits before any file would be
 // opened; reusing it would fold WebView/prefs/session-restore latency into
 // the open-latency number. Instead: each run launches the binary with
-// PLUME_OPENFILE_PROBE=<path to a synthetic fixture> and no other args. The
+// MOJIDORI_OPENFILE_PROBE=<path to a synthetic fixture> and no other args. The
 // frontend boots completely normally (no pending files — the probe path
 // deliberately bypasses the OS-args "pending files" queue), and once its
 // ordinary startup sequence finishes it reads the probe path back via
@@ -58,7 +58,7 @@
 // the end of the init IIFE in src/main.ts). Normal launches and normal
 // opens never take this path, so this has zero effect on either.
 //
-// Windows path (src-tauri\target\release\plume.exe) is implemented but not
+// Windows path (src-tauri\target\release\mojidori.exe) is implemented but not
 // locally verified in this change, matching startup-bench's own caveat.
 //
 // Dead end (2026-07-10, inherited from startup-bench — see that script's
@@ -69,7 +69,7 @@
 // unlocked, interactive desktop.
 //
 // Agent operating note (2026-07-15): actually launching this script spawns
-// the Plume binary, which opens a real GUI window (WKWebView / WebView2).
+// the Mojidori binary, which opens a real GUI window (WKWebView / WebView2).
 // Coding agents in this repo must never do that — an earlier agent's
 // `npm run tauri dev` caused macOS to revoke this process tree's disk
 // access for hours (TCC incident, see project memory). An agent that
@@ -129,7 +129,7 @@ function parseArgs(argv) {
 }
 
 function defaultBinaryPath() {
-  const exe = platform() === "win32" ? "plume.exe" : "plume";
+  const exe = platform() === "win32" ? "mojidori.exe" : "mojidori";
   return join(repoRoot, "src-tauri", "target", "release", exe);
 }
 
@@ -180,7 +180,7 @@ function synthDoc(targetBytes) {
  * invoke cleanup, success or failure.
  */
 async function generateFixtures(sizeNames) {
-  const dir = await mkdtemp(join(tmpdir(), "plume-openfile-bench-"));
+  const dir = await mkdtemp(join(tmpdir(), "mojidori-openfile-bench-"));
   const files = [];
   for (const name of sizeNames) {
     const spec = FIXTURE_SPECS[name];
@@ -207,7 +207,7 @@ async function generateFixtures(sizeNames) {
 function runOnce(binPath, filePath, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const child = spawn(binPath, [], {
-      env: { ...process.env, PLUME_OPENFILE_PROBE: filePath },
+      env: { ...process.env, MOJIDORI_OPENFILE_PROBE: filePath },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

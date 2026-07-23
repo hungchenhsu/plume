@@ -390,7 +390,8 @@ mod tests {
     use super::*;
 
     fn fixture_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("plume-search-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mojidori-search-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -500,7 +501,7 @@ mod tests {
     /// anywhere").
     #[test]
     fn nonexistent_root_fails_closed() {
-        let dir = std::env::temp_dir().join("plume-search-nonexistent-does-not-exist");
+        let dir = std::env::temp_dir().join("mojidori-search-nonexistent-does-not-exist");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!dir.exists(), "fixture precondition: path must not exist");
 

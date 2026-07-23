@@ -584,7 +584,7 @@ export interface PaletteCommand {
 /**
  * List every dispatchable native-menu command as `(id, label)` pairs in
  * `locale`, for the Command Palette (ROADMAP.md v0.6 C1). `id` is the same
- * string `main.ts`'s `plume://menu` listener dispatches on; `label` is
+ * string `main.ts`'s `mojidori://menu` listener dispatches on; `label` is
  * exactly what's currently shown for that id in the native menu — `locale`
  * is already-resolved ("en" | "zh-TW" | "ja" | "zh-CN"), the same contract
  * as `retitleMenu`, so the frontend should pass `i18n.ts`'s `getLocale()`
@@ -830,7 +830,7 @@ export function readHexDump(
 
 /**
  * Signals that frontend startup finished (preferences, session, pending
- * files). No-op unless the `PLUME_STARTUP_PROBE` env var is set on the
+ * files). No-op unless the `MOJIDORI_STARTUP_PROBE` env var is set on the
  * Rust side — see `scripts/startup-bench.mjs`.
  */
 export function reportStartupReady(): Promise<void> {
@@ -839,7 +839,7 @@ export function reportStartupReady(): Promise<void> {
 
 /**
  * Path to open for the open-file latency probe, or `null` on a normal
- * launch. Reflects the `PLUME_OPENFILE_PROBE` env var on the Rust side —
+ * launch. Reflects the `MOJIDORI_OPENFILE_PROBE` env var on the Rust side —
  * see `scripts/openfile-bench.mjs`.
  */
 export function openfileProbePath(): Promise<string | null> {
@@ -849,7 +849,7 @@ export function openfileProbePath(): Promise<string | null> {
 /**
  * Reports the open-file probe's elapsed milliseconds (trigger open ->
  * content rendered), timed in the frontend since both endpoints live here.
- * No-op unless `PLUME_OPENFILE_PROBE` is set on the Rust side — see
+ * No-op unless `MOJIDORI_OPENFILE_PROBE` is set on the Rust side — see
  * `scripts/openfile-bench.mjs`.
  */
 export function reportOpenfileReady(elapsedMs: number): Promise<void> {

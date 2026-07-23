@@ -958,7 +958,8 @@ mod tests {
     use super::*;
 
     fn fixture_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("plume-batch-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mojidori-batch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1745,7 +1746,7 @@ mod tests {
     /// decode/encode it, then commit via `atomic_write` with no check that
     /// the file on disk was still the version it read. An external atomic
     /// replace landing between the read and the commit — another process,
-    /// another Plume window, a sync tool — got silently clobbered by the
+    /// another Mojidori window, a sync tool — got silently clobbered by the
     /// batch tool's stale conversion, which then reported success. Exercises
     /// the race deterministically, rather than trying to literally win a
     /// timing race against a background writer, by calling the same two
@@ -2025,7 +2026,7 @@ mod tests {
     /// even open must fail the whole command closed instead.
     #[test]
     fn scan_fails_closed_when_root_directory_does_not_exist() {
-        let dir = std::env::temp_dir().join("plume-batch-does-not-exist-at-all");
+        let dir = std::env::temp_dir().join("mojidori-batch-does-not-exist-at-all");
         std::fs::remove_dir_all(&dir).ok();
         assert!(!dir.exists(), "fixture precondition: path must not exist");
 

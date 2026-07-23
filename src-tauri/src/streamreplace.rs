@@ -816,8 +816,10 @@ mod tests {
     /// `lib.rs`) because distinct OS processes never share a PID while both
     /// are alive.
     fn fixture_dir(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("plume-streamreplace-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "mojidori-streamreplace-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -827,7 +829,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().contains("plume-tmp"))
+            .filter(|e| e.file_name().to_string_lossy().contains("mojidori-tmp"))
             .collect();
         assert!(
             leftovers.is_empty(),

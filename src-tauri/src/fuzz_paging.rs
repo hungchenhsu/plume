@@ -273,7 +273,7 @@ impl PagingFixture {
 
     fn temp_path(&self) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "plume-fuzz-paging-{}-{}-tn{}-{:x}-{}.txt",
+            "mojidori-fuzz-paging-{}-{}-tn{}-{:x}-{}.txt",
             self.line_ending.label(),
             self.width.label(),
             self.trailing_newline as u8,
