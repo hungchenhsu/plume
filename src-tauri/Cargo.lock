@@ -2143,6 +2143,7 @@ name = "mojidori"
 version = "0.7.0"
 dependencies = [
  "chardetng",
+ "dirs",
  "encoding_rs",
  "notify",
  "regex",

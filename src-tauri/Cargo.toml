@@ -30,6 +30,12 @@ chardetng = "0.1"
 notify = "6"
 regex = "1"
 sys-locale = "0.3.2"
+# Already pulled in transitively by `tauri` itself (its app_config_dir()
+# etc. are implemented in terms of this same crate, same version — see
+# migrate.rs's module doc); declared directly so migrate.rs can compute
+# the config dir for a bundle identifier *before* any `tauri::Builder`
+# exists, without duplicating Tauri's per-platform base-dir resolution.
+dirs = "6"
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-window-state = "2"
