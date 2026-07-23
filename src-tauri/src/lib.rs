@@ -795,13 +795,30 @@ pub fn run() {
             // with.
             if let Err(e) = &migration_result {
                 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                app.dialog()
-                    .message(format!(
+                // migrate::MigrationError distinguishes two very
+                // different states of the user's data on disk (see its
+                // own doc comment) — the message must match, since
+                // telling someone their old data is untouched when it's
+                // actually already been moved would be actively
+                // misleading, not just imprecise.
+                let message = match e {
+                    migrate::MigrationError::NotStarted(msg) => format!(
                         "Mojidori couldn't automatically bring over your settings, \
-                         session, and backups from the previous install ({e}). \
+                         session, and backups from the previous install ({msg}). \
                          Your old data has not been modified or deleted; the app \
                          will start fresh. See the application log for details."
-                    ))
+                    ),
+                    migrate::MigrationError::ConfirmationFailed(msg) => format!(
+                        "Mojidori brought over your settings, session, and backups \
+                         from the previous install, but couldn't confirm that move \
+                         was fully saved to disk ({msg}). Your data is already in \
+                         its new location — nothing was lost. The app will \
+                         automatically finish confirming this on the next launch. \
+                         See the application log for details."
+                    ),
+                };
+                app.dialog()
+                    .message(message)
                     .title("Mojidori")
                     .kind(MessageDialogKind::Error)
                     .blocking_show();

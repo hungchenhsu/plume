@@ -163,6 +163,48 @@ pub enum MigrationOutcome {
     AlreadyDecided,
 }
 
+/// Distinguishes *what stage* a migration failure happened at, so a
+/// caller displaying this to the user (see `lib.rs`'s `run()`) can show
+/// an accurate message — the two cases describe opposite states of the
+/// user's data on disk:
+///
+/// - [`NotStarted`](Self::NotStarted): failed before any data was durably
+///   moved. `old_dir` is completely untouched; anything written to
+///   `new_dir` during the attempt (a `.partial` staging directory, or
+///   files a merge had started copying) was already cleaned up / rolled
+///   back before this was returned. It's accurate to tell the user
+///   nothing changed.
+/// - [`ConfirmationFailed`](Self::ConfirmationFailed): the data move
+///   itself succeeded and was byte-verified — `new_dir` already has it,
+///   and `old_dir` may already be renamed to `.migrated` — but confirming
+///   that durably (an `fsync`) or recording the fact (writing the
+///   completion marker) failed. Nothing was lost. It would be actively
+///   *wrong* to tell the user their old data is untouched here: it's
+///   already been moved. The next launch's marker-less retry finds
+///   everything already in place (`merge_recover` is idempotent for
+///   already-placed, byte-correct entries) and only needs its own
+///   `fsync`s/marker write to succeed to finish confirming it.
+///
+/// Both variants carry a human-readable description of the underlying
+/// I/O failure (their `Display` impl just prints it).
+#[derive(Debug)]
+pub enum MigrationError {
+    NotStarted(String),
+    ConfirmationFailed(String),
+}
+
+impl std::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrationError::NotStarted(msg) | MigrationError::ConfirmationFailed(msg) => {
+                write!(f, "{msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MigrationError {}
+
 /// Given the (new-identifier) app config dir, derive the sibling directory
 /// the old identifier would have resolved to. `app_config_dir()` is always
 /// `dirs::config_dir().join(identifier)`, so swapping the final path
@@ -522,9 +564,13 @@ fn retire_old_dir(old_dir: &Path) {
 ///   migrated" — `new_dir` only ever comes into existence, fully formed,
 ///   via that one atomic rename.
 /// - If the copy, verification, or publish fails: any `.partial` staging
-///   directory is removed, `old_dir` is left exactly as found, and `Err`
-///   describes the failure.
-pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, String> {
+///   directory is removed, `old_dir` is left exactly as found, and
+///   [`MigrationError::NotStarted`] describes the failure. If publish
+///   succeeds but confirming that durably (`fsync`) fails: `new_dir`
+///   already holds the verified data (nothing is rolled back), and
+///   [`MigrationError::ConfirmationFailed`] describes the failure instead
+///   — see that variant's own doc for why the distinction matters.
+pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, MigrationError> {
     if !old_dir.is_dir() {
         return Ok(MigrationOutcome::NoOldData);
     }
@@ -540,39 +586,39 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
 
     if let Err(e) = copy_dir_recursive(old_dir, &partial) {
         let _ = fs::remove_dir_all(&partial);
-        return Err(format!(
+        return Err(MigrationError::NotStarted(format!(
             "failed to copy {} to {}: {e}",
             old_dir.display(),
             partial.display()
-        ));
+        )));
     }
 
     let (old_files, old_bytes) = match dir_stats(old_dir) {
         Ok(v) => v,
         Err(e) => {
             let _ = fs::remove_dir_all(&partial);
-            return Err(format!(
+            return Err(MigrationError::NotStarted(format!(
                 "failed to verify source {}: {e}",
                 old_dir.display()
-            ));
+            )));
         }
     };
     let (new_files, new_bytes) = match dir_stats(&partial) {
         Ok(v) => v,
         Err(e) => {
             let _ = fs::remove_dir_all(&partial);
-            return Err(format!(
+            return Err(MigrationError::NotStarted(format!(
                 "failed to verify copy at {}: {e}",
                 partial.display()
-            ));
+            )));
         }
     };
 
     if old_files != new_files || old_bytes != new_bytes {
         let _ = fs::remove_dir_all(&partial);
-        return Err(format!(
+        return Err(MigrationError::NotStarted(format!(
             "migration verification mismatch: source had {old_files} file(s)/{old_bytes} byte(s), copy has {new_files} file(s)/{new_bytes} byte(s)"
-        ));
+        )));
     }
 
     // `new_dir`, if it exists at all here, was already confirmed empty
@@ -584,10 +630,10 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
     if new_dir.exists() {
         if let Err(e) = fs::remove_dir_all(new_dir) {
             let _ = fs::remove_dir_all(&partial);
-            return Err(format!(
+            return Err(MigrationError::NotStarted(format!(
                 "failed to clear pre-existing empty {}: {e}",
                 new_dir.display()
-            ));
+            )));
         }
     }
     // Publish: one atomic rename from the verified staging directory onto
@@ -597,30 +643,30 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
     // observable in-between state.
     if let Err(e) = fs::rename(&partial, new_dir) {
         let _ = fs::remove_dir_all(&partial);
-        return Err(format!(
+        return Err(MigrationError::NotStarted(format!(
             "verified copy at {} but could not publish it to {}: {e}",
             partial.display(),
             new_dir.display()
-        ));
+        )));
     }
-    // From here on, `new_dir` holds the verified, fully-published data —
-    // a failure below is a *durability confirmation* failure, not a data
-    // problem, so neither of the next two steps rolls anything back on
-    // error (there's nothing wrong to undo). Both propagate `Err` instead
-    // of swallowing it, so this call reports failure rather than telling
-    // its caller (`migrate`) it's safe to write the completion marker.
-    // The failure is still safe to retry: `new_dir` is now non-empty, so
-    // a retry routes through `migrate` to `merge_recover` instead of back
-    // here, which will find every file already correctly in place
-    // (skipped, not re-copied) and only needs its own `fsync`s to
-    // succeed to finish confirming durability.
+    // ---- Phase boundary: `new_dir` now holds the verified, published
+    // data. Everything below is a *durability confirmation* step, not a
+    // data-correctness one, so none of it rolls anything back on error
+    // (there's nothing wrong to undo) and every failure below is reported
+    // as `ConfirmationFailed`, not `NotStarted` — the caller must not
+    // tell the user their old data is untouched once this point is
+    // reached. The failure is still safe to retry: `new_dir` is now
+    // non-empty, so a retry routes through `migrate` to `merge_recover`
+    // instead of back here, which will find every file already correctly
+    // in place (skipped, not re-copied) and only needs its own `fsync`s
+    // to succeed to finish confirming durability.
     if let Some(parent) = new_dir.parent() {
         fsync_dir(parent).map_err(|e| {
-            format!(
+            MigrationError::ConfirmationFailed(format!(
                 "published {} but could not fsync {}: {e}",
                 new_dir.display(),
                 parent.display()
-            )
+            ))
         })?;
     }
     // Fsync every directory *inside* the newly-published tree too (e.g.
@@ -631,10 +677,10 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
     // that was just published, nothing else), unlike merge-recovery's
     // equivalent step, which must avoid walking `new_dir` wholesale.
     fsync_dir_tree(new_dir).map_err(|e| {
-        format!(
+        MigrationError::ConfirmationFailed(format!(
             "published {} but could not fsync its interior directories: {e}",
             new_dir.display()
-        )
+        ))
     })?;
 
     retire_old_dir(old_dir);
@@ -918,24 +964,28 @@ fn rollback_merge(progress: &MergeProgress) {
 ///
 /// Copies every item [`merge_dir_recursive`] finds missing from `new_dir`,
 /// verifies each copied file is present at its expected length, and only
-/// then retires `old_dir` to `<old_dir>.migrated`. On any failure, the
-/// files this run copied in are removed again (nothing pre-existing in
-/// `new_dir` is ever touched either way), `old_dir` is left completely
-/// intact, and `Err` describes the failure — exactly like [`migrate_dir`]'s
-/// failure contract, just without a `new_dir` to clean up (there's no
-/// staging directory here: writes land directly in `new_dir`, since unlike
-/// the full-transfer case there's a live directory to merge into, not an
-/// empty one to publish atomically).
-fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), String> {
+/// then retires `old_dir` to `<old_dir>.migrated`. On a copy or
+/// verification failure, the files this run copied in are removed again
+/// (nothing pre-existing in `new_dir` is ever touched either way),
+/// `old_dir` is left completely intact, and
+/// [`MigrationError::NotStarted`] describes the failure — exactly like
+/// [`migrate_dir`]'s failure contract, just without a `new_dir` to clean
+/// up (there's no staging directory here: writes land directly in
+/// `new_dir`, since unlike the full-transfer case there's a live
+/// directory to merge into, not an empty one to publish atomically). If
+/// copying and verification both succeed but confirming that durably
+/// (`fsync`) fails: nothing is rolled back, and
+/// [`MigrationError::ConfirmationFailed`] describes the failure instead.
+fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), MigrationError> {
     let mut progress = MergeProgress::default();
 
     if let Err(e) = merge_dir_recursive(old_dir, new_dir, &mut progress) {
         rollback_merge(&progress);
-        return Err(format!(
+        return Err(MigrationError::NotStarted(format!(
             "failed to merge {} into {}: {e}",
             old_dir.display(),
             new_dir.display()
-        ));
+        )));
     }
 
     for (path, expected_len) in &progress.copied {
@@ -943,22 +993,35 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Stri
             Ok(meta) if meta.len() == *expected_len => {}
             Ok(meta) => {
                 rollback_merge(&progress);
-                return Err(format!(
+                return Err(MigrationError::NotStarted(format!(
                     "merge verification mismatch for {}: expected {expected_len} byte(s), found {}",
                     path.display(),
                     meta.len()
-                ));
+                )));
             }
             Err(e) => {
                 rollback_merge(&progress);
-                return Err(format!(
+                return Err(MigrationError::NotStarted(format!(
                     "merge verification failed for {}: {e}",
                     path.display()
-                ));
+                )));
             }
         }
     }
 
+    // ---- Phase boundary: every file this run copied in has been
+    // byte-verified correct. Everything below is a *durability
+    // confirmation* step, not a data-correctness one, so failures here
+    // are reported as `ConfirmationFailed`, not `NotStarted` — and
+    // deliberately not `rollback_merge`d either, unlike the copy/verify
+    // failures above: there's nothing wrong to undo, and discarding
+    // good, already-placed data over a possibly-transient `fsync` error
+    // would only make the inevitable retry redo real work. That retry is
+    // safe either way: `merge_dir_recursive` is idempotent (an
+    // already-placed file is found to already exist and skipped, not
+    // re-copied), so calling this again after a partial `fsync` failure
+    // just picks up where it left off.
+    //
     // Unlike migrate_dir's single publish rename (whose containing
     // directory entry alone tells the whole story), merge-recovery places
     // files one at a time via per-file renames scattered across
@@ -971,32 +1034,20 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Stri
     // can't leave the completion marker (written next, by the caller)
     // durable while one of the files it vouches for has quietly lost its
     // directory entry.
-    //
-    // Any `fsync` failure here is propagated as `Err`, not swallowed:
-    // this loop existed specifically to back up the durability guarantee
-    // the caller relies on before writing the marker, so silently
-    // continuing past a failed `fsync` (e.g. `EIO`/`ENOSPC`) would make
-    // that guarantee false while still reporting success. Deliberately
-    // *not* `rollback_merge`d on this failure, unlike the copy/verify
-    // failures above: every file that got this far was already copied
-    // and byte-verified correct — only the durability *confirmation*
-    // failed, not the data — so there's nothing wrong to undo, and
-    // discarding good, already-placed data over a possibly-transient
-    // `fsync` error would only make the inevitable retry redo real work.
-    // That retry is safe either way: `merge_dir_recursive` is idempotent
-    // (an already-placed file is found to already exist and skipped, not
-    // re-copied), so calling this again after a partial `fsync` failure
-    // just picks up where it left off.
     for dir in &progress.touched_dirs {
-        fsync_dir(dir)
-            .map_err(|e| format!("merge succeeded but could not fsync {}: {e}", dir.display()))?;
+        fsync_dir(dir).map_err(|e| {
+            MigrationError::ConfirmationFailed(format!(
+                "merge succeeded but could not fsync {}: {e}",
+                dir.display()
+            ))
+        })?;
     }
     if let Some(parent) = new_dir.parent() {
         fsync_dir(parent).map_err(|e| {
-            format!(
+            MigrationError::ConfirmationFailed(format!(
                 "merge succeeded but could not fsync {}: {e}",
                 parent.display()
-            )
+            ))
         })?;
     }
 
@@ -1023,13 +1074,20 @@ pub fn migrate(
     new_dir: &Path,
     marker_path: &Path,
     source_identifier: &str,
-) -> Result<MigrationOutcome, String> {
+) -> Result<MigrationOutcome, MigrationError> {
     if marker_path.exists() {
         return Ok(MigrationOutcome::AlreadyDecided);
     }
 
     if !old_dir.is_dir() {
-        write_marker(marker_path, source_identifier, "no_old_data")?;
+        // No data was ever at risk here (there's nothing to migrate), but
+        // `write_marker`'s own failure is still classified
+        // `ConfirmationFailed` rather than `NotStarted` for consistency:
+        // it's the same "the actual work is done, only recording that
+        // fact durably failed" shape as the other two call sites below —
+        // there's simply no earlier "the work" step in this branch.
+        write_marker(marker_path, source_identifier, "no_old_data")
+            .map_err(MigrationError::ConfirmationFailed)?;
         return Ok(MigrationOutcome::NoOldData);
     }
 
@@ -1038,7 +1096,8 @@ pub fn migrate(
     if !new_has_content {
         return match migrate_dir(old_dir, new_dir)? {
             outcome @ MigrationOutcome::Migrated { .. } => {
-                write_marker(marker_path, source_identifier, "migrated")?;
+                write_marker(marker_path, source_identifier, "migrated")
+                    .map_err(MigrationError::ConfirmationFailed)?;
                 Ok(outcome)
             }
             // migrate_dir() only returns NoOldData/NewAlreadyPresent when
@@ -1054,7 +1113,8 @@ pub fn migrate(
     }
 
     let (files_copied, bytes_copied, files_skipped) = merge_recover(old_dir, new_dir)?;
-    write_marker(marker_path, source_identifier, "merged")?;
+    write_marker(marker_path, source_identifier, "merged")
+        .map_err(MigrationError::ConfirmationFailed)?;
     Ok(MigrationOutcome::Merged {
         files_copied,
         bytes_copied,
@@ -1123,8 +1183,10 @@ pub fn migrate_locked(
     marker_path: &Path,
     lock_path: &Path,
     source_identifier: &str,
-) -> Result<MigrationOutcome, String> {
-    let _lock = acquire_migration_lock(lock_path)?;
+) -> Result<MigrationOutcome, MigrationError> {
+    // Failing to even acquire the lock happens before any data movement
+    // whatsoever, so it's unambiguously `NotStarted`.
+    let _lock = acquire_migration_lock(lock_path).map_err(MigrationError::NotStarted)?;
     migrate(old_dir, new_dir, marker_path, source_identifier)
 }
 
@@ -1146,9 +1208,9 @@ pub fn migrate_locked(
 /// makes the ordering actually correct — but it's also exactly why
 /// [`migrate_locked`]'s own lock is necessary rather than relying on
 /// `tauri-plugin-single-instance`; see that function's doc.
-pub fn run(identifier: &str) -> Result<MigrationOutcome, String> {
+pub fn run(identifier: &str) -> Result<MigrationOutcome, MigrationError> {
     let new_dir = dirs::config_dir()
-        .ok_or_else(|| "cannot resolve config dir".to_string())?
+        .ok_or_else(|| MigrationError::NotStarted("cannot resolve config dir".to_string()))?
         .join(identifier);
     let Some(old_dir) = old_config_dir(&new_dir) else {
         // No parent directory to derive the legacy path from (a
@@ -1358,7 +1420,10 @@ mod tests {
         perms.set_readonly(false);
         fs::set_permissions(&blocked_parent, perms).unwrap();
 
-        assert!(result.is_err(), "expected an Err, got {result:?}");
+        assert!(
+            matches!(result, Err(MigrationError::NotStarted(_))),
+            "a pre-work failure must classify as NotStarted, got {result:?}"
+        );
 
         // Old directory is completely untouched.
         assert!(old_dir.is_dir());
@@ -2296,7 +2361,10 @@ mod tests {
         // new_dir's contents again.
         fs::set_permissions(&new_dir, fs::Permissions::from_mode(0o700)).unwrap();
 
-        assert!(result.is_err(), "expected an Err, got {result:?}");
+        assert!(
+            matches!(result, Err(MigrationError::ConfirmationFailed(_))),
+            "a post-work fsync failure must classify as ConfirmationFailed, got {result:?}"
+        );
 
         // old_dir was never retired -- the function stopped before that
         // step, exactly because the durability confirmation failed.
@@ -2306,6 +2374,60 @@ mod tests {
         // unreachable here since this call returned `Err`); asserted
         // directly rather than only relied on by code inspection.
         assert!(!marker_path(&new_dir).exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// End-to-end companion to the two classification assertions above,
+    /// exercised through `migrate()` itself — the exact function
+    /// `lib.rs`'s `run()` calls and whose `Err` it branches its dialog
+    /// message on — rather than the lower-level primitives directly.
+    #[test]
+    #[cfg(unix)]
+    fn migrate_classifies_a_post_work_fsync_failure_as_confirmation_failed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("migrate-error-confirmation-failed");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+        let marker = marker_path(&new_dir);
+
+        fs::create_dir_all(old_dir.join("backups")).unwrap();
+        fs::write(old_dir.join("backups").join("tab-2.bak"), b"new backup").unwrap();
+
+        // A shared `backups/` directory (both old_dir and new_dir have
+        // one), so merge_dir_recursive recurses into it rather than
+        // whole-subtree-copying it -- `new_dir` itself stays normally
+        // readable (so `dir_has_entries(new_dir)` still correctly routes
+        // this to the merge path), only the shared subdirectory is
+        // restricted.
+        fs::create_dir_all(new_dir.join("backups")).unwrap();
+        fs::write(
+            new_dir.join("backups").join("tab-1.bak"),
+            b"existing backup",
+        )
+        .unwrap();
+        fs::set_permissions(new_dir.join("backups"), fs::Permissions::from_mode(0o300)).unwrap();
+
+        let result = migrate(&old_dir, &new_dir, &marker, OLD_IDENTIFIER);
+
+        fs::set_permissions(new_dir.join("backups"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(
+            matches!(result, Err(MigrationError::ConfirmationFailed(_))),
+            "expected ConfirmationFailed, got {result:?}"
+        );
+        // The work (copying tab-2.bak in) already happened; only
+        // durability confirmation failed, so old_dir was never retired
+        // and the marker was never written -- both correctly reflect
+        // that the *decision* isn't final yet, even though the data
+        // already moved.
+        assert!(old_dir.is_dir());
+        assert!(!marker.exists());
+        assert_eq!(
+            fs::read(new_dir.join("backups").join("tab-2.bak")).unwrap(),
+            b"new backup"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
