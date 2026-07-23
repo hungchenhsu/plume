@@ -79,13 +79,20 @@ async function install(updateRid: number, bytesRid: number): Promise<void> {
   await invoke("plugin:updater|install", {
     updateRid,
     bytesRid,
-    // This module drives the restart itself on the platforms where
-    // `install` actually returns to it (see `relaunch` below) — no need
-    // for the plugin to also do it internally. Ignored entirely on
-    // macOS/Linux and only affects the installer's own launch args on
-    // Windows (which has already `exit(0)`'d us by the time it would
-    // matter here either way).
-    restartAfterInstall: false,
+    // `true`, not `false`: on Windows this is NOT "should *we* restart
+    // afterward" — the plugin reads it itself (updater.rs `install_inner`'s
+    // `#[cfg(windows)]` branch, github.com/tauri-apps/plugins-workspace v2)
+    // to decide whether to append the NSIS/MSI "relaunch app" arguments
+    // (`nsis_restart_after_install_args`/`msi_restart_after_install_args`)
+    // to the installer's own command line. `false` here previously meant
+    // the installer launched, `exit(0)` fired in the same call, and
+    // nothing ever relaunched the app on Windows — a real "update silently
+    // closes the app for good" regression a Codex re-review caught.
+    // macOS/Linux never read this field at all (verified against the same
+    // source: no reference to `restart_after_install` in either branch),
+    // so `true` is a no-op there — `relaunch()` below is still what
+    // actually restarts those platforms, since `install` returns to it.
+    restartAfterInstall: true,
   });
 }
 
@@ -98,13 +105,35 @@ async function relaunch(): Promise<void> {
   await invoke("plugin:process|restart");
 }
 
+/** Releases a Tauri resource-table entry obtained from `check`/`download`
+ *  (`update.rid`/`bytesRid` — both plain `Resource`s on the Rust side, the
+ *  same generic mechanism `@tauri-apps/api/core`'s `Resource.close()`
+ *  uses). Every `promptAndInstall` exit that doesn't lead into `install`
+ *  would otherwise leak these — `bytesRid` in particular can be the whole
+ *  downloaded update package — for the lifetime of the window. Covered by
+ *  the existing `core:default` capability without any addition: this
+ *  project's own generated `src-tauri/gen/schemas/acl-manifests.json`
+ *  shows `core:default` includes `core:resources:default`, which grants
+ *  exactly `allow-close`. Best-effort: a failure to close only reaches
+ *  `console.error`, same as this module's other cleanup-only IPC calls. */
+async function closeResource(rid: number): Promise<void> {
+  await invoke("plugin:resources|close", { rid }).catch((error) => {
+    console.error(`updater: failed to close resource ${rid}`, error);
+  });
+}
+
 async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Promise<void> {
   const proceed = await confirmDialog(t("updater.availableMessage", update.version), {
     title: t("updater.availableTitle"),
     okLabel: t("updater.downloadAndRestart"),
     cancelLabel: t("updater.later"),
   }).catch(() => false);
-  if (!proceed) return;
+  if (!proceed) {
+    // "Later": nothing downloaded yet, only the check's own resource is
+    // live.
+    await closeResource(update.rid);
+    return;
+  }
 
   let bytesRid: number;
   try {
@@ -115,6 +144,7 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
       title: t("updater.downloadFailedTitle"),
       kind: "error",
     }).catch(() => {});
+    await closeResource(update.rid);
     return;
   }
 
@@ -135,7 +165,11 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
       okLabel: t("updater.installAnyway"),
       cancelLabel: t("updater.cancelInstall"),
     }).catch(() => false);
-    if (!installAnyway) return;
+    if (!installAnyway) {
+      await closeResource(bytesRid);
+      await closeResource(update.rid);
+      return;
+    }
   }
 
   try {
@@ -148,9 +182,14 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
       title: t("updater.installFailedTitle"),
       kind: "error",
     }).catch(() => {});
+    await closeResource(bytesRid);
+    await closeResource(update.rid);
     return;
   }
-  // Windows: unreachable, the process already exited inside `install`.
+  // Windows: unreachable, the process already exited inside `install`. No
+  // resource cleanup needed past this point on macOS/Linux either — the
+  // relaunch below tears the whole process (and its resource table) down
+  // regardless of whether it succeeds.
   await relaunch().catch((error) => {
     console.error("updater: relaunch failed", error);
   });

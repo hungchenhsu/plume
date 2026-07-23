@@ -43,9 +43,13 @@ beforeEach(() => {
   // Every dialog call in the real flow is followed by `.catch(() => {})`;
   // give both mocks a resolvable default so a test only needs to override
   // `confirmDialog`'s return value when the flow's branch actually depends
-  // on it.
+  // on it. `invoke`'s own default (a resolved `undefined`) covers the
+  // `plugin:resources|close` calls a test doesn't care to assert on —
+  // `mockResolvedValueOnce`/`mockImplementation` calls in an individual
+  // test still take priority over this base.
   messageDialog.mockResolvedValue(undefined);
   confirmDialog.mockResolvedValue(false);
+  invoke.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -110,7 +114,7 @@ function stubInvokeHappyPath(calledCommands: string[]): void {
 }
 
 describe("checkForUpdatesAndPrompt — update available", () => {
-  it("declining (Later) never downloads, flushes, installs, or relaunches", async () => {
+  it("declining (Later) never downloads, flushes, or installs — but does close the checked update's resource", async () => {
     invoke.mockResolvedValueOnce(update); // plugin:updater|check
     confirmDialog.mockResolvedValueOnce(false);
     const { deps, flushForExit } = makeDeps();
@@ -118,7 +122,8 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
     expect(confirmDialog).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledTimes(1); // only the initial check
+    expect(invoke).toHaveBeenCalledTimes(2); // check, then resources|close
+    expect(invoke).toHaveBeenNthCalledWith(2, "plugin:resources|close", { rid: update.rid });
     expect(flushForExit).not.toHaveBeenCalled();
   });
 
@@ -159,7 +164,12 @@ describe("checkForUpdatesAndPrompt — update available", () => {
       expect.objectContaining({
         updateRid: update.rid,
         bytesRid,
-        restartAfterInstall: false,
+        // `true`: on Windows the plugin reads this itself to decide
+        // whether the installer relaunches the app — see install()'s doc
+        // comment in updater.ts. `false` here was the P2 regression a
+        // Codex re-review caught (installed update never came back on
+        // Windows).
+        restartAfterInstall: true,
       }),
     );
     // flush happens strictly between download and install — see
@@ -168,7 +178,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(order).toEqual(["download", "flush", "install", "relaunch"]);
   });
 
-  it("a failed download shows an error dialog and never flushes, installs, or relaunches", async () => {
+  it("a failed download shows an error dialog, never flushes or installs, and still closes the checked update's resource", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
     const { deps, flushForExit } = makeDeps();
@@ -177,6 +187,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
       calledCommands.push(cmd);
       if (cmd === "plugin:updater|check") return update;
       if (cmd === "plugin:updater|download") throw new Error("network error");
+      if (cmd === "plugin:resources|close") return undefined;
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -185,10 +196,14 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(consoleError).toHaveBeenCalled();
     expect(messageDialog).toHaveBeenCalledTimes(1);
     expect(flushForExit).not.toHaveBeenCalled();
-    expect(calledCommands).toEqual(["plugin:updater|check", "plugin:updater|download"]);
+    expect(calledCommands).toEqual([
+      "plugin:updater|check",
+      "plugin:updater|download",
+      "plugin:resources|close",
+    ]);
   });
 
-  it("when the hot-exit flush fails, defaults to NOT installing (Cancel) — nothing on disk changes, and the user is asked again next check", async () => {
+  it("when the hot-exit flush fails, defaults to NOT installing (Cancel) — nothing on disk changes, both resources are closed, and the user is asked again next check", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
     confirmDialog.mockResolvedValueOnce(false); // flush-failed dialog, default Cancel
@@ -199,7 +214,17 @@ describe("checkForUpdatesAndPrompt — update available", () => {
 
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
-    expect(calledCommands).toEqual(["plugin:updater|check", "plugin:updater|download"]);
+    expect(calledCommands).toEqual([
+      "plugin:updater|check",
+      "plugin:updater|download",
+      // bytesRid first (it's the larger resource — the whole downloaded
+      // package — and the one this fix specifically targets), then the
+      // check's own update.rid — order matches promptAndInstall's source.
+      "plugin:resources|close",
+      "plugin:resources|close",
+    ]);
+    expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: bytesRid });
+    expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: update.rid });
     expect(confirmDialog).toHaveBeenCalledTimes(2);
     expect(confirmDialog).toHaveBeenNthCalledWith(
       2,
@@ -208,7 +233,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     );
   });
 
-  it("a rejected flush is treated the same as a resolved-false one (also defaults to Cancel)", async () => {
+  it("a rejected flush is treated the same as a resolved-false one (also defaults to Cancel, also closes both resources)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
     confirmDialog.mockResolvedValueOnce(false);
@@ -221,6 +246,8 @@ describe("checkForUpdatesAndPrompt — update available", () => {
 
     expect(calledCommands).not.toContain("plugin:updater|install");
     expect(calledCommands).not.toContain("plugin:process|restart");
+    expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: bytesRid });
+    expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: update.rid });
   });
 
   it("when the hot-exit flush fails, still installs and relaunches if the user explicitly opts in (Install Anyway)", async () => {
@@ -242,7 +269,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     ]);
   });
 
-  it("a failed install shows an error dialog and never relaunches", async () => {
+  it("a failed install shows an error dialog, never relaunches, and closes both resources", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
     const { deps } = makeDeps();
@@ -252,6 +279,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
       if (cmd === "plugin:updater|check") return update;
       if (cmd === "plugin:updater|download") return bytesRid;
       if (cmd === "plugin:updater|install") throw new Error("installer failed");
+      if (cmd === "plugin:resources|close") return undefined;
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -260,6 +288,8 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(consoleError).toHaveBeenCalled();
     expect(messageDialog).toHaveBeenCalledTimes(1);
     expect(calledCommands).not.toContain("plugin:process|restart");
+    expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: bytesRid });
+    expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: update.rid });
   });
 
   it("on the macOS/Linux path where install actually returns, relaunch is called after it", async () => {
