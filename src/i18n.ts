@@ -486,6 +486,22 @@ export interface Messages {
   "encoding.group.cyrillic": string;
   "encoding.group.other": string;
 
+  // Auto-update (ROADMAP.md D2) — src/updater.ts's checkForUpdatesAndPrompt.
+  // availableMessage's "backed up automatically" clause is only true
+  // because updater.ts's flushForExit call actually runs before relaunch
+  // (see UpdaterDeps' doc comment there) — keep this wording in sync with
+  // that behavior if it ever changes.
+  "updater.availableTitle": string;
+  "updater.availableMessage": (version: string) => string;
+  "updater.downloadAndRestart": string;
+  "updater.later": string;
+  "updater.downloadFailedTitle": string;
+  "updater.downloadFailedMessage": string;
+  "updater.checkFailedTitle": string;
+  "updater.checkFailedMessage": string;
+  "updater.upToDateTitle": string;
+  "updater.upToDateMessage": string;
+
   "common.loading": string;
 }
 
@@ -895,6 +911,18 @@ const en: Messages = {
   "encoding.group.cyrillic": "Cyrillic",
   "encoding.group.other": "Other",
 
+  "updater.availableTitle": "Update Available",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} is available. Any unsaved changes will be backed up automatically before restarting.`,
+  "updater.downloadAndRestart": "Download and Restart",
+  "updater.later": "Later",
+  "updater.downloadFailedTitle": "Update Failed",
+  "updater.downloadFailedMessage": "The update could not be downloaded. Please try again later.",
+  "updater.checkFailedTitle": "Update Check Failed",
+  "updater.checkFailedMessage": "Could not check for updates. Please check your internet connection.",
+  "updater.upToDateTitle": "You're Up to Date",
+  "updater.upToDateMessage": "Mojidori is on the latest version.",
+
   "common.loading": "Loading…",
 };
 
@@ -1261,6 +1289,18 @@ const zhTW: Messages = {
   "encoding.group.centralEuropean": "中歐",
   "encoding.group.cyrillic": "西里爾",
   "encoding.group.other": "其他",
+
+  "updater.availableTitle": "有可用更新",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} 已可更新。重新啟動前，任何未儲存的變更都會自動備份。`,
+  "updater.downloadAndRestart": "下載並重新啟動",
+  "updater.later": "稍後",
+  "updater.downloadFailedTitle": "更新失敗",
+  "updater.downloadFailedMessage": "無法下載更新，請稍後再試。",
+  "updater.checkFailedTitle": "檢查更新失敗",
+  "updater.checkFailedMessage": "無法檢查更新，請確認網路連線。",
+  "updater.upToDateTitle": "已是最新版本",
+  "updater.upToDateMessage": "Mojidori 目前已是最新版本。",
 
   "common.loading": "載入中…",
 };
@@ -1654,6 +1694,18 @@ const ja: Messages = {
   "encoding.group.cyrillic": "キリル文字",
   "encoding.group.other": "その他",
 
+  "updater.availableTitle": "アップデートがあります",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} が利用可能です。再起動前に、未保存の変更は自動的にバックアップされます。`,
+  "updater.downloadAndRestart": "ダウンロードして再起動",
+  "updater.later": "後で",
+  "updater.downloadFailedTitle": "アップデートに失敗しました",
+  "updater.downloadFailedMessage": "アップデートをダウンロードできませんでした。しばらくしてから再試行してください。",
+  "updater.checkFailedTitle": "アップデートの確認に失敗しました",
+  "updater.checkFailedMessage": "アップデートを確認できませんでした。インターネット接続をご確認ください。",
+  "updater.upToDateTitle": "最新の状態です",
+  "updater.upToDateMessage": "Mojidori は最新バージョンです。",
+
   "common.loading": "読み込み中…",
 };
 
@@ -2018,6 +2070,18 @@ const zhCN: Messages = {
   "encoding.group.centralEuropean": "中欧",
   "encoding.group.cyrillic": "西里尔",
   "encoding.group.other": "其他",
+
+  "updater.availableTitle": "有可用更新",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} 已可更新。重新启动前，任何未保存的更改都会自动备份。`,
+  "updater.downloadAndRestart": "下载并重新启动",
+  "updater.later": "稍后",
+  "updater.downloadFailedTitle": "更新失败",
+  "updater.downloadFailedMessage": "无法下载更新，请稍后重试。",
+  "updater.checkFailedTitle": "检查更新失败",
+  "updater.checkFailedMessage": "无法检查更新，请确认网络连接。",
+  "updater.upToDateTitle": "已是最新版本",
+  "updater.upToDateMessage": "Mojidori 当前已是最新版本。",
 
   "common.loading": "加载中…",
 };

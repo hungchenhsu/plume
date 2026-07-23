@@ -127,6 +127,7 @@ import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
 import { shouldTrimTrailingWhitespaceOnSave } from "./trimonsave";
+import { checkForUpdatesAndPrompt, type UpdaterDeps } from "./updater";
 import {
   adjustFontSize,
   initPreferences,
@@ -3481,6 +3482,12 @@ function dispatchMenuCommand(id: string): void {
       });
       break;
     }
+    // ROADMAP.md D2 signing + auto-update: same flow the startup
+    // background check runs, but non-silent — see updater.ts's own doc
+    // comment on checkForUpdatesAndPrompt's `silent` option.
+    case "check_for_updates":
+      void checkForUpdatesAndPrompt(updaterDeps, { silent: false });
+      break;
     case "print": {
       // Defensive no-doc guard (ROADMAP.md v0.6 C1 palette dispatch-safety
       // audit, this function's own doc comment above) — structurally
@@ -3539,6 +3546,30 @@ async function openCommandPalette(): Promise<void> {
 }
 
 void listen<string>("mojidori://menu", (event) => dispatchMenuCommand(event.payload));
+
+/** Best-effort hot-exit flush for the updater's install-and-restart flow
+ *  (ROADMAP.md D2, src/updater.ts's `UpdaterDeps.flushForExit`).
+ *  Deliberately mirrors — rather than shares — onCloseRequested's own
+ *  flush loop just below: `plugin:process|restart` bypasses
+ *  onCloseRequested entirely (Tauri's `request_restart` skips per-window
+ *  close events), so the updater needs a flush called explicitly, but
+ *  onCloseRequested's close-vs-discard state machine is delicate enough
+ *  (issue #63) that duplicating a few lines here is safer than reshaping
+ *  it to serve a second caller. Unlike onCloseRequested, a failed backup
+ *  here only reaches console.error rather than blocking with a dialog —
+ *  this is an opt-in background flow the user already consented to
+ *  ("Download and Restart"), not a close the user is actively waiting on. */
+async function flushForUpdateRestart(): Promise<void> {
+  for (const doc of tabs.docs) {
+    if (!doc.dirty || doc.truncated) continue;
+    const content = doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
+    const ok = await backups.flush(doc, content).catch(() => false);
+    if (!ok) console.error(`updater: backup flush failed for ${doc.title}`);
+  }
+  await sessionPersist.persist().catch(() => {});
+}
+
+const updaterDeps: UpdaterDeps = { flushForExit: flushForUpdateRestart };
 
 // Hot exit: flush every unsaved buffer to its backup and quit without
 // asking — the next launch restores everything, including untitled tabs.
@@ -3906,4 +3937,13 @@ void (async () => {
     const elapsedMs = performance.now() - openStart;
     void reportOpenfileReady(elapsedMs).catch(() => {});
   }
+  // ROADMAP.md D2 signing + auto-update: a background check, deferred
+  // behind a delay so it can never compete with the startup-critical work
+  // above (session restore, pending-file opens, the cold-start probe) —
+  // startup-bench.mjs times against that work finishing, not this.
+  // Silent: offline is the normal state for a local desktop editor, not
+  // an error to surface unprompted (see updater.ts's own doc comment).
+  setTimeout(() => {
+    void checkForUpdatesAndPrompt(updaterDeps, { silent: true });
+  }, 5000);
 })();
