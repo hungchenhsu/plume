@@ -7,7 +7,7 @@
 // documented trade-off (ROADMAP.md v0.6 C1's own acceptance criteria).
 // Selecting a command in an invalid state (no active doc / truncated /
 // read-only) is still safe by construction: main.ts's `dispatchMenuCommand`
-// is the exact same function the native menu's `plume://menu` listener
+// is the exact same function the native menu's `mojidori://menu` listener
 // calls (see main.ts's wiring), so every guard already in that switch
 // applies uniformly regardless of which UI triggered the id -- verified
 // case-by-case as part of this change (see main.ts's switch, and the

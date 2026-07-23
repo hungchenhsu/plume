@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Plume",
+  "productName": "Mojidori",
   "version": "0.7.0",
-  "identifier": "app.plume.editor",
+  "identifier": "app.mojidori.editor",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Plume",
+        "title": "Mojidori",
         "width": 1080,
         "height": 720
       }

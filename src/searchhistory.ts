@@ -3,13 +3,50 @@
 // wires this store into the search panel's DOM. See ARCHITECTURE.md on
 // keeping the editor surface swappable.
 
-const STORAGE_KEY = "plume.searchHistory.v1";
+const STORAGE_KEY = "mojidori.searchHistory.v1";
+const LEGACY_STORAGE_KEY = "plume.searchHistory.v1";
 const MAX_ENTRIES = 20;
 
 /** Minimal storage contract — matches the DOM `Storage` interface. */
 export interface HistoryStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
+}
+
+/**
+ * Read `newKey`, falling back to a rename-era `legacyKey` the first time:
+ * if `newKey` is absent and `legacyKey` holds a value, that value is copied
+ * to `newKey` and `legacyKey` is removed (a one-shot migration off the old
+ * "plume.*" storage keys). `storage` may throw on any call (privacy mode,
+ * quota, disabled storage) — every step is wrapped so a failure here always
+ * degrades to "no value" rather than throwing.
+ */
+function readWithLegacyMigration(
+  storage: HistoryStorage,
+  newKey: string,
+  legacyKey: string,
+): string | null {
+  try {
+    const current = storage.getItem(newKey);
+    if (current !== null) return current;
+  } catch {
+    return null;
+  }
+  try {
+    const legacy = storage.getItem(legacyKey);
+    if (legacy === null) return null;
+    try {
+      storage.setItem(newKey, legacy);
+      storage.removeItem?.(legacyKey);
+    } catch {
+      // Migration write/cleanup failed — still hand back the legacy value
+      // for this session rather than losing it.
+    }
+    return legacy;
+  } catch {
+    return null;
+  }
 }
 
 interface StoredShape {
@@ -43,7 +80,7 @@ function pushMru(list: readonly string[], term: string): string[] {
 function detectStorage(): HistoryStorage | null {
   try {
     const storage = window.localStorage;
-    const probeKey = "__plume_search_history_probe__";
+    const probeKey = "__mojidori_search_history_probe__";
     storage.setItem(probeKey, "1");
     storage.removeItem(probeKey);
     return storage;
@@ -87,7 +124,7 @@ export class SearchHistory {
   private load(): void {
     if (!this.storage) return;
     try {
-      const raw = this.storage.getItem(STORAGE_KEY);
+      const raw = readWithLegacyMigration(this.storage, STORAGE_KEY, LEGACY_STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as Partial<StoredShape>;
       this.find = sanitizeList(parsed.find);

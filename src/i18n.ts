@@ -380,7 +380,7 @@ export interface Messages {
   "dialog.orphanScanFailedTitle": string;
   "dialog.orphanScanFailedMessage": string;
   /** Shown once, at startup, when takePendingFiles fails (main.ts) — the
-   *  files an OS "Open With"/CLI invocation asked Plume to open never
+   *  files an OS "Open With"/CLI invocation asked Mojidori to open never
    *  arrive, with no other feedback that anything was even requested
    *  (v0.6 V2 IPC-error-surfacing audit #3). */
   "dialog.pendingFilesFailedTitle": string;
@@ -806,15 +806,15 @@ const en: Messages = {
   "dialog.backupRestoreFailedTitle": "Backup unreadable",
   "dialog.backupRestoreFailedMessage": (titles) =>
     `The backup for ${titles.join(", ")} could not be read. Unsaved changes ` +
-    `it held may be lost; Plume will fall back to the version on disk where ` +
+    `it held may be lost; Mojidori will fall back to the version on disk where ` +
     `possible.`,
   "dialog.orphanScanFailedTitle": "Backup scan failed",
   "dialog.orphanScanFailedMessage":
-    "Plume couldn't check for backups left over from a previous session. " +
-    "Nothing on disk was changed — restart Plume to try again.",
+    "Mojidori couldn't check for backups left over from a previous session. " +
+    "Nothing on disk was changed — restart Mojidori to try again.",
   "dialog.pendingFilesFailedTitle": "Couldn't open requested files",
   "dialog.pendingFilesFailedMessage":
-    "Plume couldn't retrieve the file(s) it was asked to open. Use File > " +
+    "Mojidori couldn't retrieve the file(s) it was asked to open. Use File > " +
     "Open to open them directly.",
   "dialog.unsavedChangesTitle": "Unsaved changes",
   "dialog.reopenMessage": (title) =>
@@ -1183,13 +1183,13 @@ const zhTW: Messages = {
   "dialog.backupFailedDiscard": "放棄變更並關閉",
   "dialog.backupRestoreFailedTitle": "備份無法讀取",
   "dialog.backupRestoreFailedMessage": (titles) =>
-    `${titles.join("、")} 的備份無法讀取，其中的未儲存變更可能已遺失；如果磁碟上有檔案，Plume 將改為開啟磁碟上的版本。`,
+    `${titles.join("、")} 的備份無法讀取，其中的未儲存變更可能已遺失；如果磁碟上有檔案，Mojidori 將改為開啟磁碟上的版本。`,
   "dialog.orphanScanFailedTitle": "備份掃描失敗",
   "dialog.orphanScanFailedMessage":
-    "Plume 無法掃描前次工作階段遺留的備份。磁碟上的內容並未受影響，重新啟動 Plume 即可再試一次。",
+    "Mojidori 無法掃描前次工作階段遺留的備份。磁碟上的內容並未受影響，重新啟動 Mojidori 即可再試一次。",
   "dialog.pendingFilesFailedTitle": "無法開啟指定的檔案",
   "dialog.pendingFilesFailedMessage":
-    "Plume 無法取得這次啟動要求開啟的檔案，請改用「檔案 > 開啟」手動開啟。",
+    "Mojidori 無法取得這次啟動要求開啟的檔案，請改用「檔案 > 開啟」手動開啟。",
   "dialog.unsavedChangesTitle": "未儲存的變更",
   "dialog.reopenMessage": (title) =>
     `重新開啟將捨棄「${title}」中未儲存的變更，是否繼續？`,
@@ -1572,7 +1572,7 @@ const ja: Messages = {
   "dialog.orphanScanFailedTitle": "バックアップのスキャンに失敗しました",
   "dialog.orphanScanFailedMessage":
     "前回のセッションで残されたバックアップをスキャンできませんでした。ディスク上の" +
-    "データは変更されていません。Plume を再起動すると再試行されます。",
+    "データは変更されていません。Mojidori を再起動すると再試行されます。",
   "dialog.pendingFilesFailedTitle": "指定されたファイルを開けませんでした",
   "dialog.pendingFilesFailedMessage":
     "起動時に開くよう指定されたファイルを取得できませんでした。「ファイル > 開く」" +
@@ -1941,13 +1941,13 @@ const zhCN: Messages = {
   "dialog.backupFailedDiscard": "放弃更改并关闭",
   "dialog.backupRestoreFailedTitle": "备份无法读取",
   "dialog.backupRestoreFailedMessage": (titles) =>
-    `${titles.join("、")} 的备份无法读取，其中的未保存更改可能已丢失；如果磁盘上有文件，Plume 将改为打开磁盘上的版本。`,
+    `${titles.join("、")} 的备份无法读取，其中的未保存更改可能已丢失；如果磁盘上有文件，Mojidori 将改为打开磁盘上的版本。`,
   "dialog.orphanScanFailedTitle": "备份扫描失败",
   "dialog.orphanScanFailedMessage":
-    "Plume 无法扫描上次会话遗留的备份。磁盘上的内容未受影响，重新启动 Plume 即可重试。",
+    "Mojidori 无法扫描上次会话遗留的备份。磁盘上的内容未受影响，重新启动 Mojidori 即可重试。",
   "dialog.pendingFilesFailedTitle": "无法打开指定的文件",
   "dialog.pendingFilesFailedMessage":
-    "Plume 无法获取本次启动要求打开的文件，请改用“文件 > 打开”手动打开。",
+    "Mojidori 无法获取本次启动要求打开的文件，请改用“文件 > 打开”手动打开。",
   "dialog.unsavedChangesTitle": "未保存的更改",
   "dialog.reopenMessage": (title) => `重新打开将放弃“${title}”中未保存的更改，是否继续？`,
   "dialog.reopen": "重新打开",

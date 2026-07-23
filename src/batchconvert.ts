@@ -9,7 +9,7 @@
 // Files already open in a tab: this module never touches the editor or
 // tabs directly. A successful conversion rewrites the file on disk via the
 // same atomic-write path a normal Save uses, so the existing file watcher
-// (see main.ts's "plume://file-changed" listener / handleExternalChange)
+// (see main.ts's "mojidori://file-changed" listener / handleExternalChange)
 // picks it up exactly like any other external change — reloading a clean
 // tab silently, or prompting before discarding a dirty one. Conversion
 // never goes through saveFlow, so it never populates `recentSaves`; the

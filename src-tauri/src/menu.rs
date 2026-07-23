@@ -19,7 +19,7 @@ use tauri::menu::AboutMetadata;
 /// (id, English, Traditional Chinese, Japanese, Simplified Chinese) for
 /// every menu entry this module creates with an explicit id — submenu
 /// titles included, so they can be looked up and relabeled by
-/// `retitle_menu`. Entries without an id (the macOS "Plume" app-name
+/// `retitle_menu`. Entries without an id (the macOS "Mojidori" app-name
 /// submenu, and Tauri's OS-predefined items like Undo/Cut/Quit/About) are
 /// not listed: the app name is never translated, and predefined items are
 /// labeled by the OS itself in its own locale.
@@ -688,12 +688,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     let menu = MenuBuilder::new(app);
 
-    // The macOS app submenu's title is always "Plume" — the app name is a
+    // The macOS app submenu's title is always "Mojidori" — the app name is a
     // brand, never translated — but it still gets an id ("app_menu") so its
     // "Preferences…" item can be found and relabeled by `retitle_menu`.
     #[cfg(target_os = "macos")]
     let menu = menu.item(
-        &SubmenuBuilder::with_id(app, "app_menu", "Plume")
+        &SubmenuBuilder::with_id(app, "app_menu", "Mojidori")
             .about(Some(AboutMetadata::default()))
             .separator()
             .item(
@@ -1125,7 +1125,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
         {
             window.set_text(l("window")).map_err(|e| e.to_string())?;
         }
-        // The app submenu's title itself ("Plume") is never translated —
+        // The app submenu's title itself ("Mojidori") is never translated —
         // only its "Preferences…" item is.
         if let Some(app_menu) = menu
             .get("app_menu")
@@ -1146,7 +1146,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
 /// Ids present in `LABELS` that must never appear as a Command Palette
 /// entry (ROADMAP.md v0.6 C1): pure submenu containers with no dispatchable
 /// action of their own — clicking one only opens/closes a submenu, there is
-/// no `plume://menu` case for any of these in main.ts's `dispatchMenuCommand`
+/// no `mojidori://menu` case for any of these in main.ts's `dispatchMenuCommand`
 /// switch — plus the palette's own entry (opening the palette from inside
 /// itself is not a useful action). Checked by
 /// `palette_excluded_ids_are_all_real_labels_entries` below so a typo'd id

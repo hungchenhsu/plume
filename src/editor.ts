@@ -705,8 +705,8 @@ export function isNonNfcOf(buffer: EditorBuffer): boolean {
   return !isNfcChunked(buffer.doc.iter());
 }
 
-const FIND_DATALIST_ID = "plume-find-history";
-const REPLACE_DATALIST_ID = "plume-replace-history";
+const FIND_DATALIST_ID = "mojidori-find-history";
+const REPLACE_DATALIST_ID = "mojidori-replace-history";
 
 function populateDatalist(list: HTMLDataListElement, terms: readonly string[]): void {
   list.replaceChildren(

@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn write_json_is_atomic_and_survives_reread() {
-        let dir = std::env::temp_dir().join("plume-store-atomic-test");
+        let dir = std::env::temp_dir().join("mojidori-store-atomic-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.json");
@@ -91,7 +91,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().contains("plume-tmp"))
+            .filter(|e| e.file_name().to_string_lossy().contains("mojidori-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "no temp files may remain");
 
@@ -107,7 +107,7 @@ mod tests {
     /// the temp+rename mechanics.
     #[test]
     fn corrupt_json_reads_as_none() {
-        let dir = std::env::temp_dir().join("plume-store-corrupt-test");
+        let dir = std::env::temp_dir().join("mojidori-store-corrupt-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.json");
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn read_json_from_path_missing_file_is_none() {
-        let path = std::env::temp_dir().join("plume-store-missing-file-does-not-exist.json");
+        let path = std::env::temp_dir().join("mojidori-store-missing-file-does-not-exist.json");
         let _ = std::fs::remove_file(&path);
         let result: Option<Sample> = read_json_from_path(&path);
         assert!(result.is_none());
@@ -144,7 +144,7 @@ mod tests {
     /// deterministically on every platform (no chmod, works as root).
     #[test]
     fn write_json_to_path_unwritable_parent_is_err() {
-        let blocker = std::env::temp_dir().join("plume-store-unwritable-parent-test");
+        let blocker = std::env::temp_dir().join("mojidori-store-unwritable-parent-test");
         let _ = std::fs::remove_dir_all(&blocker);
         let _ = std::fs::remove_file(&blocker);
         std::fs::write(&blocker, b"not a directory").unwrap();

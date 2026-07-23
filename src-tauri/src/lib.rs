@@ -20,6 +20,7 @@ mod hexdump;
 mod linebreak;
 mod lineindex;
 mod menu;
+mod migrate;
 mod mojibake;
 mod normalize;
 mod openfile_probe;
@@ -513,7 +514,7 @@ static TMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Build one same-directory temporary-file candidate path for `file_name`.
 /// The name mixes the process id, the current time's subsecond
 /// nanoseconds, and [`TMP_NAME_COUNTER`], so it cannot be guessed from
-/// public information alone the way a bare `.{file_name}.plume-tmp-{pid}`
+/// public information alone the way a bare `.{file_name}.mojidori-tmp-{pid}`
 /// name could (issue #60). Unpredictability is defense in depth, not the
 /// actual safety guarantee — [`open_exclusive`] is what makes a guessed or
 /// colliding name safe.
@@ -524,7 +525,7 @@ fn tmp_candidate_path(dir: &std::path::Path, file_name: &str) -> std::path::Path
         .unwrap_or(0);
     let counter = TMP_NAME_COUNTER.fetch_add(1, Ordering::Relaxed);
     dir.join(format!(
-        ".{file_name}.plume-tmp-{}-{nanos}-{counter}",
+        ".{file_name}.mojidori-tmp-{}-{nanos}-{counter}",
         std::process::id()
     ))
 }
@@ -626,7 +627,7 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
 /// Issue #113: after encoding but before the commit (`atomic_write`), this
 /// also fail-closes against an external change to `path` since it was last
 /// read — the ordinary Save path had no guard at all against another
-/// process (or a second Plume window) writing to the same file during the
+/// process (or a second Mojidori window) writing to the same file during the
 /// encode step, unlike the large-file streaming replace path's existing
 /// fingerprint check (issue #94, shared here via `fsguard.rs`). When
 /// `expected_fingerprint` is `Some` and `force` is `false`, `path` is
@@ -718,7 +719,7 @@ pub fn run() {
         }
         let paths = existing_paths_from_args(argv.into_iter());
         if !paths.is_empty() {
-            let _ = app.emit("plume://open-files", paths);
+            let _ = app.emit("mojidori://open-files", paths);
         }
     }));
 
@@ -734,6 +735,32 @@ pub fn run() {
         ))))
         .setup(|app| {
             use tauri::Manager;
+            // Must run before anything below reads preferences/session/
+            // recent files/backups (menu::build, a few lines down, already
+            // does): those all live under app_config_dir(), and after the
+            // Mojidori rename that resolves to a brand-new directory the
+            // previous install's data won't be in unless this moves it
+            // first (see migrate.rs for which old identifier that is).
+            // This runs synchronously and only once per install (repeat
+            // launches are a no-op once `new_dir` has content), so the
+            // one-time copy blocking startup here is accepted; only a
+            // *failure* additionally blocks on user interaction, via the
+            // dialog below. Either way the app continues afterwards with
+            // whatever it finds (typically: a fresh, empty config dir).
+            if let Err(e) = migrate::run(app.handle()) {
+                eprintln!("migrate: data migration failed: {e}");
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                app.dialog()
+                    .message(format!(
+                        "Mojidori couldn't automatically bring over your settings, \
+                         session, and backups from the previous install ({e}). \
+                         Your old data has not been modified or deleted; the app \
+                         will start fresh. See the application log for details."
+                    ))
+                    .title("Mojidori")
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+            }
             let state = watcher::init(app.handle().clone())?;
             app.manage(state);
             // Built in setup (not Builder::menu) because the menu reads
@@ -751,7 +778,7 @@ pub fn run() {
             }
         })
         .on_menu_event(|app, event| {
-            let _ = app.emit("plume://menu", event.id().0.as_str());
+            let _ = app.emit("mojidori://menu", event.id().0.as_str());
         })
         .invoke_handler(tauri::generate_handler![
             open_document,
@@ -823,7 +850,7 @@ pub fn run() {
                         .lock()
                         .unwrap()
                         .extend(paths.clone());
-                    let _ = _app.emit("plume://open-files", paths);
+                    let _ = _app.emit("mojidori://open-files", paths);
                 }
             }
         });
@@ -843,7 +870,7 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {
-        let dir = std::env::temp_dir().join("plume-atomic-test");
+        let dir = std::env::temp_dir().join("mojidori-atomic-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -859,7 +886,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().contains("plume-tmp"))
+            .filter(|e| e.file_name().to_string_lossy().contains("mojidori-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "no temp files may remain");
         std::fs::remove_dir_all(&dir).ok();
@@ -869,7 +896,7 @@ mod tests {
     #[test]
     fn atomic_write_preserves_unix_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join("plume-atomic-perms");
+        let dir = std::env::temp_dir().join("mojidori-atomic-perms");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("script.sh");
@@ -885,7 +912,7 @@ mod tests {
     #[test]
     fn atomic_write_fails_cleanly_on_missing_directory() {
         let target = std::env::temp_dir()
-            .join("plume-no-such-dir")
+            .join("mojidori-no-such-dir")
             .join("nested")
             .join("doc.txt");
         assert!(atomic_write(&target, b"x").is_err());
@@ -894,7 +921,7 @@ mod tests {
     /// Issue #60, layer 1 — attack the public `atomic_write` behavior
     /// directly. Before the fix, `atomic_write` built its temp file path
     /// from only the target file name and process id
-    /// (`.{file_name}.plume-tmp-{pid}`), then opened it with
+    /// (`.{file_name}.mojidori-tmp-{pid}`), then opened it with
     /// `File::create`, which follows symlinks. A local attacker who can
     /// write into the save directory could pre-plant a symlink at that
     /// exact, guessable path pointing at any other file they can write
@@ -915,7 +942,7 @@ mod tests {
     fn atomic_write_refuses_preplanted_symlink_at_predictable_tmp_path() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("plume-atomic-symlink-attack");
+        let dir = std::env::temp_dir().join("mojidori-atomic-symlink-attack");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -924,8 +951,8 @@ mod tests {
 
         let target = dir.join("doc.txt");
         // The predictable temp path the pre-fix implementation used:
-        // `.{file_name}.plume-tmp-{pid}`, no randomness at all.
-        let legacy_tmp_path = dir.join(format!(".doc.txt.plume-tmp-{}", std::process::id()));
+        // `.{file_name}.mojidori-tmp-{pid}`, no randomness at all.
+        let legacy_tmp_path = dir.join(format!(".doc.txt.mojidori-tmp-{}", std::process::id()));
         symlink(&victim, &legacy_tmp_path).unwrap();
 
         let save_result = atomic_write(&target, b"attacker-controlled new content");
@@ -959,7 +986,7 @@ mod tests {
     fn tmp_file_creation_refuses_preexisting_symlink() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join("plume-open-exclusive-symlink");
+        let dir = std::env::temp_dir().join("mojidori-open-exclusive-symlink");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -991,7 +1018,7 @@ mod tests {
     /// anything that already exists.
     #[test]
     fn tmp_candidates_are_unique() {
-        let dir = std::env::temp_dir().join("plume-tmp-candidate-uniqueness");
+        let dir = std::env::temp_dir().join("mojidori-tmp-candidate-uniqueness");
         let first = tmp_candidate_path(&dir, "doc.txt");
         let second = tmp_candidate_path(&dir, "doc.txt");
         assert_ne!(
@@ -1151,10 +1178,10 @@ mod tests {
 
     #[test]
     fn filters_args_to_existing_files() {
-        let file = std::env::temp_dir().join("plume-args-test.txt");
+        let file = std::env::temp_dir().join("mojidori-args-test.txt");
         std::fs::write(&file, "x").unwrap();
         let args = vec![
-            "plume".to_string(),
+            "mojidori".to_string(),
             "--flag".to_string(),
             "/no/such/file.txt".to_string(),
             file.to_string_lossy().into_owned(),
@@ -1217,9 +1244,9 @@ mod tests {
     #[test]
     fn explain_detection_agrees_with_open_utf8_bom() {
         let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
-        assert_explain_matches_open(&bytes, "plume-explain-utf8-bom");
+        assert_explain_matches_open(&bytes, "mojidori-explain-utf8-bom");
 
-        let dir = std::env::temp_dir().join("plume-explain-utf8-bom-evidence");
+        let dir = std::env::temp_dir().join("mojidori-explain-utf8-bom-evidence");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -1233,15 +1260,15 @@ mod tests {
     #[test]
     fn explain_detection_agrees_with_open_utf16le_bom() {
         let (bytes, _) = crate::encoding::encode("hi", "UTF-16LE", true).unwrap();
-        assert_explain_matches_open(&bytes, "plume-explain-utf16le-bom");
+        assert_explain_matches_open(&bytes, "mojidori-explain-utf16le-bom");
     }
 
     #[test]
     fn explain_detection_agrees_with_open_plain_ascii() {
         let bytes = b"hello world, this is plain ascii text with no accents";
-        assert_explain_matches_open(bytes, "plume-explain-ascii");
+        assert_explain_matches_open(bytes, "mojidori-explain-ascii");
 
-        let dir = std::env::temp_dir().join("plume-explain-ascii-evidence");
+        let dir = std::env::temp_dir().join("mojidori-explain-ascii-evidence");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -1258,14 +1285,14 @@ mod tests {
             "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
         let (bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
         assert!(!unmappable);
-        assert_explain_matches_open(&bytes, "plume-explain-big5");
+        assert_explain_matches_open(&bytes, "mojidori-explain-big5");
     }
 
     #[test]
     fn explain_detection_agrees_with_open_empty_file() {
-        assert_explain_matches_open(&[], "plume-explain-empty");
+        assert_explain_matches_open(&[], "mojidori-explain-empty");
 
-        let dir = std::env::temp_dir().join("plume-explain-empty-evidence");
+        let dir = std::env::temp_dir().join("mojidori-explain-empty-evidence");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -1279,7 +1306,7 @@ mod tests {
     #[test]
     fn explain_detection_reports_missing_file_as_error() {
         let path = std::env::temp_dir()
-            .join("plume-explain-does-not-exist.txt")
+            .join("mojidori-explain-does-not-exist.txt")
             .to_string_lossy()
             .into_owned();
         assert!(explain_detection(path, None).is_err());
@@ -1294,22 +1321,26 @@ mod tests {
             "中文編碼偵測測試。這是一段用來驗證繁體中文自動偵測的文字，包含標點符號與常用詞彙。";
         let (big5_bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
         assert!(!unmappable);
-        assert_explain_matches_open_with_ext(&big5_bytes, "plume-explain-ext-big5", Some("Big5"));
+        assert_explain_matches_open_with_ext(
+            &big5_bytes,
+            "mojidori-explain-ext-big5",
+            Some("Big5"),
+        );
         assert_explain_matches_open_with_ext(
             text.as_bytes(),
-            "plume-explain-ext-utf8-mismatch",
+            "mojidori-explain-ext-utf8-mismatch",
             Some("Big5"),
         );
         // Short valid UTF-8 that is byte-valid as Big5 (the UTF-8 gate
         // case): both commands must agree it stays UTF-8.
         assert_explain_matches_open_with_ext(
             "測試".as_bytes(),
-            "plume-explain-ext-short-utf8",
+            "mojidori-explain-ext-short-utf8",
             Some("Big5"),
         );
         // BOM still wins over the hint at the command level too.
         let bytes = [0xEF, 0xBB, 0xBF, b'h', b'i'];
-        assert_explain_matches_open_with_ext(&bytes, "plume-explain-ext-bom", Some("Big5"));
+        assert_explain_matches_open_with_ext(&bytes, "mojidori-explain-ext-bom", Some("Big5"));
     }
 
     /// Issue #47: an even-length, pure-ASCII sample with a UTF-16
@@ -1324,7 +1355,7 @@ mod tests {
     fn explain_detection_agrees_with_open_under_utf16_extension_hint() {
         assert_explain_matches_open_with_ext(
             b"ab\ncd\n",
-            "plume-explain-ext-utf16-ascii",
+            "mojidori-explain-ext-utf16-ascii",
             Some("UTF-16LE"),
         );
     }
@@ -1339,7 +1370,7 @@ mod tests {
         let (original_bytes, unmappable) = crate::encoding::encode(text, "Big5", false).unwrap();
         assert!(!unmappable);
 
-        let dir = std::env::temp_dir().join("plume-ext-roundtrip-big5");
+        let dir = std::env::temp_dir().join("mojidori-ext-roundtrip-big5");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -1384,7 +1415,7 @@ mod tests {
         let text = "中文編碼偵測測試，這是繁體中文範例文字。\n";
         let original_bytes = text.as_bytes().to_vec();
 
-        let dir = std::env::temp_dir().join("plume-ext-roundtrip-utf8-mismatch");
+        let dir = std::env::temp_dir().join("mojidori-ext-roundtrip-utf8-mismatch");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("sample.txt");
@@ -1425,7 +1456,7 @@ mod tests {
     /// return value.
     #[test]
     fn save_document_refuses_lossy_write_without_consent() {
-        let dir = std::env::temp_dir().join("plume-save-lossy-refuse");
+        let dir = std::env::temp_dir().join("mojidori-save-lossy-refuse");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1490,7 +1521,7 @@ mod tests {
     /// correct implementation must still report `line: 2`.
     #[test]
     fn save_document_lossy_report_uses_lf_buffer_positions_regardless_of_line_ending() {
-        let dir = std::env::temp_dir().join("plume-save-lossy-cr-position");
+        let dir = std::env::temp_dir().join("mojidori-save-lossy-cr-position");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1536,7 +1567,7 @@ mod tests {
     /// true.
     #[test]
     fn save_document_stale_rejection_has_no_lossy_report() {
-        let dir = std::env::temp_dir().join("plume-save-lossy-stale-no-report");
+        let dir = std::env::temp_dir().join("mojidori-save-lossy-stale-no-report");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1575,7 +1606,7 @@ mod tests {
     /// should never spuriously populate outside the one rejection branch.
     #[test]
     fn save_document_successful_utf8_save_has_no_lossy_report() {
-        let dir = std::env::temp_dir().join("plume-save-lossy-utf8-happy-path");
+        let dir = std::env::temp_dir().join("mojidori-save-lossy-utf8-happy-path");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1605,7 +1636,7 @@ mod tests {
     /// the lossy Big5 encoding of the content.
     #[test]
     fn save_document_writes_lossy_with_consent() {
-        let dir = std::env::temp_dir().join("plume-save-lossy-consent");
+        let dir = std::env::temp_dir().join("mojidori-save-lossy-consent");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1654,7 +1685,7 @@ mod tests {
     /// `matches_path_false_after_size_change`).
     #[test]
     fn save_document_rejects_stale_fingerprint_and_preserves_external_write() {
-        let dir = std::env::temp_dir().join("plume-save-stale-fingerprint-reject");
+        let dir = std::env::temp_dir().join("mojidori-save-stale-fingerprint-reject");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1668,7 +1699,7 @@ mod tests {
             "opening a real file must yield a verifiable fingerprint"
         );
 
-        // Another process (or a second Plume window) replaces the file's
+        // Another process (or a second Mojidori window) replaces the file's
         // content while this editor's tab still holds the old snapshot.
         let external_content = b"externally written, much newer and longer content";
         std::fs::write(&target, external_content).unwrap();
@@ -1703,7 +1734,7 @@ mod tests {
     /// use as the next save's baseline.
     #[test]
     fn save_document_succeeds_when_fingerprint_matches() {
-        let dir = std::env::temp_dir().join("plume-save-fingerprint-matches");
+        let dir = std::env::temp_dir().join("mojidori-save-fingerprint-matches");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1744,7 +1775,7 @@ mod tests {
     /// the caller's explicit choice to overwrite must go through.
     #[test]
     fn save_document_force_overwrites_despite_stale_fingerprint() {
-        let dir = std::env::temp_dir().join("plume-save-force-overwrite");
+        let dir = std::env::temp_dir().join("mojidori-save-force-overwrite");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.txt");
@@ -1787,7 +1818,7 @@ mod tests {
     /// never a real mismatch.
     #[test]
     fn save_document_skips_check_when_no_expected_fingerprint() {
-        let dir = std::env::temp_dir().join("plume-save-no-expected-fingerprint");
+        let dir = std::env::temp_dir().join("mojidori-save-no-expected-fingerprint");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("new-doc.txt");
@@ -1845,7 +1876,7 @@ mod tests {
     /// straight from the in-memory fixture rather than a second file read.
     #[test]
     fn open_document_large_file_is_bounded_preview() {
-        let (file, data) = write_line_fixture("plume-large-file-bounded-preview", 1_000_000);
+        let (file, data) = write_line_fixture("mojidori-large-file-bounded-preview", 1_000_000);
         assert!(
             data.len() as u64 > LARGE_FILE_THRESHOLD,
             "fixture must exceed the large-file threshold"
@@ -1889,7 +1920,7 @@ mod tests {
     /// content or a different `next_offset` here.
     #[test]
     fn open_document_large_file_agrees_with_full_read_prefix() {
-        let (file, _) = write_line_fixture("plume-large-file-prefix-agreement", 1_000_000);
+        let (file, _) = write_line_fixture("mojidori-large-file-prefix-agreement", 1_000_000);
         let path = file.to_string_lossy().into_owned();
 
         let opened = open_document(path, None, None).unwrap();
@@ -1941,7 +1972,7 @@ mod tests {
     /// though nothing on disk is actually damaged.
     #[test]
     fn open_document_large_utf16le_preview_not_malformed() {
-        let file = write_utf16le_line_fixture("plume-large-utf16le-bom-preview", 600_000, true);
+        let file = write_utf16le_line_fixture("mojidori-large-utf16le-bom-preview", 600_000, true);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -1981,7 +2012,7 @@ mod tests {
     #[test]
     fn open_document_large_utf16le_explicit_reopen_not_malformed() {
         let file =
-            write_utf16le_line_fixture("plume-large-utf16le-explicit-reopen", 600_000, false);
+            write_utf16le_line_fixture("mojidori-large-utf16le-explicit-reopen", 600_000, false);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2078,7 +2109,7 @@ mod tests {
     #[test]
     fn open_document_large_bomless_utf16le_via_ext_hint_not_malformed() {
         let file = write_utf16_nonascii_line_fixture(
-            "plume-large-bomless-utf16le-ext-hint",
+            "mojidori-large-bomless-utf16le-ext-hint",
             600_000,
             "UTF-16LE",
         );
@@ -2171,8 +2202,10 @@ mod tests {
     /// falling back to a statistical guess that is never UTF-16.
     #[test]
     fn open_document_large_bomless_utf16be_via_ext_hint_not_malformed() {
-        let file =
-            write_utf16be_high_byte_0a_fixture("plume-large-bomless-utf16be-ext-hint", 6_000_000);
+        let file = write_utf16be_high_byte_0a_fixture(
+            "mojidori-large-bomless-utf16be-ext-hint",
+            6_000_000,
+        );
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2264,7 +2297,7 @@ mod tests {
     /// a newline and the real decode sees clean UTF-8.
     #[test]
     fn open_document_large_cjk_utf8_multiline_ext_hint_le_not_corrupted() {
-        let file = write_large_cjk_utf8_fixture("plume-large-cjk-utf8-multiline-le", true);
+        let file = write_large_cjk_utf8_fixture("mojidori-large-cjk-utf8-multiline-le", true);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2306,7 +2339,7 @@ mod tests {
     /// byte order the hint names).
     #[test]
     fn open_document_large_cjk_utf8_multiline_ext_hint_be_not_corrupted() {
-        let file = write_large_cjk_utf8_fixture("plume-large-cjk-utf8-multiline-be", true);
+        let file = write_large_cjk_utf8_fixture("mojidori-large-cjk-utf8-multiline-be", true);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2342,7 +2375,7 @@ mod tests {
     /// correct CJK decode and no U+FFFD instead.
     #[test]
     fn open_document_large_cjk_utf8_singleline_ext_hint_not_corrupted() {
-        let file = write_large_cjk_utf8_fixture("plume-large-cjk-utf8-singleline", false);
+        let file = write_large_cjk_utf8_fixture("mojidori-large-cjk-utf8-singleline", false);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2399,7 +2432,7 @@ mod tests {
     #[test]
     fn open_document_large_cjk_utf8_singleline_explicit_utf8_not_corrupted() {
         let file =
-            write_large_cjk_utf8_fixture("plume-large-cjk-utf8-singleline-explicit-utf8", false);
+            write_large_cjk_utf8_fixture("mojidori-large-cjk-utf8-singleline-explicit-utf8", false);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2456,7 +2489,7 @@ mod tests {
     /// genuinely broken file.
     #[test]
     fn open_document_large_explicit_utf8_interior_malformed_still_reported() {
-        let dir = std::env::temp_dir().join("plume-large-explicit-utf8-interior-malformed");
+        let dir = std::env::temp_dir().join("mojidori-large-explicit-utf8-interior-malformed");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("interior-malformed.txt");
@@ -2551,7 +2584,7 @@ mod tests {
     /// gate trims, on this path, regardless of encoding.
     #[test]
     fn open_document_large_big5_singleline_explicit_reopen_not_corrupted() {
-        let file = write_large_big5_fixture("plume-large-big5-singleline");
+        let file = write_large_big5_fixture("mojidori-large-big5-singleline");
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2604,7 +2637,7 @@ mod tests {
     /// about the #165 fix may mask a genuinely broken file.
     #[test]
     fn open_document_large_big5_interior_malformed_still_reported() {
-        let dir = std::env::temp_dir().join("plume-large-big5-interior-malformed");
+        let dir = std::env::temp_dir().join("mojidori-large-big5-interior-malformed");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("interior-malformed.txt");
@@ -2729,7 +2762,7 @@ mod tests {
     fn open_document_large_gb18030_split_after_1_byte_not_corrupted() {
         assert_open_document_large_gb18030_split_not_corrupted(
             1,
-            "plume-large-gb18030-split-after-1",
+            "mojidori-large-gb18030-split-after-1",
         );
     }
 
@@ -2737,7 +2770,7 @@ mod tests {
     fn open_document_large_gb18030_split_after_2_bytes_not_corrupted() {
         assert_open_document_large_gb18030_split_not_corrupted(
             2,
-            "plume-large-gb18030-split-after-2",
+            "mojidori-large-gb18030-split-after-2",
         );
     }
 
@@ -2745,7 +2778,7 @@ mod tests {
     fn open_document_large_gb18030_split_after_3_bytes_not_corrupted() {
         assert_open_document_large_gb18030_split_not_corrupted(
             3,
-            "plume-large-gb18030-split-after-3",
+            "mojidori-large-gb18030-split-after-3",
         );
     }
 
@@ -2760,7 +2793,7 @@ mod tests {
     /// `malformed == true` either way.
     #[test]
     fn open_document_large_windows1252_singleline_explicit_reopen_unaffected_by_legacy_gate() {
-        let dir = std::env::temp_dir().join("plume-large-windows1252-singleline");
+        let dir = std::env::temp_dir().join("mojidori-large-windows1252-singleline");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("windows-1252.txt");
@@ -2796,7 +2829,7 @@ mod tests {
     /// `EXPLAIN_SAMPLE_BYTES` bytes.
     #[test]
     fn explain_detection_large_file_samples_bounded() {
-        let (file, data) = write_line_fixture("plume-explain-large-sample", 14_000);
+        let (file, data) = write_line_fixture("mojidori-explain-large-sample", 14_000);
         assert!(
             data.len() > EXPLAIN_SAMPLE_BYTES,
             "fixture must exceed the diagnostics sample size"
@@ -2860,7 +2893,7 @@ mod tests {
     /// `DetectionExplanation` (does not compile); green after.
     #[test]
     fn explain_detection_large_file_preview_flags_truncated_sample() {
-        let file = write_large_big5_fixture("plume-explain-large-big5-truncated-flag");
+        let file = write_large_big5_fixture("mojidori-explain-large-big5-truncated-flag");
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,
@@ -2939,7 +2972,7 @@ mod tests {
     /// unlike the paging bug this issue fixes for `chunk.rs`.
     #[test]
     fn open_document_large_iso2022jp_preview_not_malformed() {
-        let file = write_iso2022jp_line_fixture("plume-large-iso2022jp-preview", 600_000);
+        let file = write_iso2022jp_line_fixture("mojidori-large-iso2022jp-preview", 600_000);
         let size = std::fs::metadata(&file).unwrap().len();
         assert!(
             size > LARGE_FILE_THRESHOLD,

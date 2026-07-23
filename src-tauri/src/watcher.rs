@@ -1,5 +1,5 @@
 //! File watching for auto-reload. Watched paths that change on disk are
-//! reported to the frontend via the `plume://file-changed` event; deciding
+//! reported to the frontend via the `mojidori://file-changed` event; deciding
 //! whether to reload (and prompting on dirty buffers) is frontend logic.
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -26,7 +26,7 @@ pub fn init<R: Runtime>(app: AppHandle<R>) -> notify::Result<WatcherState> {
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
         if !paths.is_empty() {
-            let _ = app.emit("plume://file-changed", paths);
+            let _ = app.emit("mojidori://file-changed", paths);
         }
     })?;
     Ok(WatcherState {

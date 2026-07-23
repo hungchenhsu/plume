@@ -46,15 +46,15 @@ function basename(path: string): string {
 
 // MRU search-history dropdowns for the query/replacement fields below,
 // backed by the exact same store (searchhistory.ts's shared `searchHistory`
-// singleton, "plume.searchHistory.v1" in localStorage) that the CM6
+// singleton, "mojidori.searchHistory.v1" in localStorage) that the CM6
 // in-editor search panel's wireSearchHistory (editor.ts) reads and writes —
 // a term searched or replaced in either panel becomes selectable in the
 // other's dropdown, with no separate wiring needed here beyond calling the
 // same imported functions. Ids are namespaced "fif-" (distinct from
-// editor.ts's own "plume-find-history" / "plume-replace-history") so both
+// editor.ts's own "mojidori-find-history" / "mojidori-replace-history") so both
 // panels' datalists never collide even if their DOM happened to coexist.
-const FIND_DATALIST_ID = "plume-fif-find-history";
-const REPLACE_DATALIST_ID = "plume-fif-replace-history";
+const FIND_DATALIST_ID = "mojidori-fif-find-history";
+const REPLACE_DATALIST_ID = "mojidori-fif-replace-history";
 
 /** Refills `list`'s `<option>`s from `terms` — mirrors editor.ts's
  *  populateDatalist for the CM6 search panel's own MRU dropdowns. */

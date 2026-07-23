@@ -2068,6 +2068,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mojidori"
+version = "0.7.0"
+dependencies = [
+ "chardetng",
+ "encoding_rs",
+ "notify",
+ "regex",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
+]
+
+[[package]]
 name = "muda"
 version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2550,25 +2569,6 @@ dependencies = [
  "quick-xml",
  "serde",
  "time",
-]
-
-[[package]]
-name = "plume"
-version = "0.7.0"
-dependencies = [
- "chardetng",
- "encoding_rs",
- "notify",
- "regex",
- "serde",
- "serde_json",
- "sys-locale",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-window-state",
 ]
 
 [[package]]

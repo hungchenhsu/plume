@@ -975,9 +975,9 @@ describe("showFindInFiles — search history integration", () => {
     return list ? Array.from(list.querySelectorAll("option")).map((o) => o.value) : [];
   }
   const findOptions = (panel: HTMLElement): string[] =>
-    datalistOptions(panel, "plume-fif-find-history");
+    datalistOptions(panel, "mojidori-fif-find-history");
   const replaceOptions = (panel: HTMLElement): string[] =>
-    datalistOptions(panel, "plume-fif-replace-history");
+    datalistOptions(panel, "mojidori-fif-replace-history");
 
   it("wires the query field to a find-history datalist and the replace field to a replace-history datalist, with ids distinct from each other and from the CM6 editor panel's own datalists", () => {
     showFindInFiles(() => {});
@@ -985,16 +985,16 @@ describe("showFindInFiles — search history integration", () => {
     const queryInput = panel.querySelector('input[type="text"]') as HTMLInputElement;
     const replaceInput = panel.querySelector(".fif-replace-input") as HTMLInputElement;
 
-    expect(queryInput.getAttribute("list")).toBe("plume-fif-find-history");
-    expect(replaceInput.getAttribute("list")).toBe("plume-fif-replace-history");
+    expect(queryInput.getAttribute("list")).toBe("mojidori-fif-find-history");
+    expect(replaceInput.getAttribute("list")).toBe("mojidori-fif-replace-history");
     expect(queryInput.getAttribute("list")).not.toBe(replaceInput.getAttribute("list"));
-    expect(panel.querySelector("#plume-fif-find-history")).not.toBeNull();
-    expect(panel.querySelector("#plume-fif-replace-history")).not.toBeNull();
-    // editor.ts's wireSearchHistory uses "plume-find-history" /
-    // "plume-replace-history" for the CM6 panel's own datalists — these
+    expect(panel.querySelector("#mojidori-fif-find-history")).not.toBeNull();
+    expect(panel.querySelector("#mojidori-fif-replace-history")).not.toBeNull();
+    // editor.ts's wireSearchHistory uses "mojidori-find-history" /
+    // "mojidori-replace-history" for the CM6 panel's own datalists — these
     // must never collide, even if both panels' DOM happened to coexist.
-    expect(queryInput.getAttribute("list")).not.toBe("plume-find-history");
-    expect(replaceInput.getAttribute("list")).not.toBe("plume-replace-history");
+    expect(queryInput.getAttribute("list")).not.toBe("mojidori-find-history");
+    expect(replaceInput.getAttribute("list")).not.toBe("mojidori-replace-history");
   });
 
   it("a term already in the shared history (as if recorded by the CM6 editor panel) appears in the query datalist on open", () => {

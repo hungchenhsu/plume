@@ -1,6 +1,6 @@
 //! Cold-start latency probe (ROADMAP v0.2: "Startup-time budget test").
 //!
-//! Activated only when the `PLUME_STARTUP_PROBE` environment variable is
+//! Activated only when the `MOJIDORI_STARTUP_PROBE` environment variable is
 //! set. In that mode: the frontend invokes [`report_startup_ready`] once
 //! its own startup sequence finishes (preferences loaded, session
 //! restored, pending files opened — see the end of the init IIFE in
@@ -26,13 +26,13 @@ pub fn mark_process_start() {
 }
 
 fn probe_enabled() -> bool {
-    std::env::var_os("PLUME_STARTUP_PROBE").is_some()
+    std::env::var_os("MOJIDORI_STARTUP_PROBE").is_some()
 }
 
 /// Emit a diagnostic checkpoint to stderr in probe mode only. Used to
 /// locate exactly how far native startup progresses on a CI runner where
 /// the app is otherwise silent (frontend JS never executes). No-op unless
-/// `PLUME_STARTUP_PROBE` is set, so normal launches are unaffected. Writes
+/// `MOJIDORI_STARTUP_PROBE` is set, so normal launches are unaffected. Writes
 /// to stderr so it never pollutes the `startup_ms=` line the bench parses.
 pub fn checkpoint(label: &str) {
     if !probe_enabled() {
@@ -52,7 +52,7 @@ fn format_report(elapsed_ms: u128) -> String {
 }
 
 /// Tauri command the frontend calls once its startup sequence completes.
-/// No-op unless `PLUME_STARTUP_PROBE` is set, so normal launches are
+/// No-op unless `MOJIDORI_STARTUP_PROBE` is set, so normal launches are
 /// unaffected.
 #[tauri::command]
 pub fn report_startup_ready() {

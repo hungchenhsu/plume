@@ -392,7 +392,7 @@ mod tests {
 
     fn write_temp(name: &str, content: &[u8]) -> std::path::PathBuf {
         let path =
-            std::env::temp_dir().join(format!("plume-docinfo-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("mojidori-docinfo-{name}-{}", std::process::id()));
         std::fs::write(&path, content).unwrap();
         path
     }
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn document_metadata_errors_on_a_missing_file() {
-        let result = document_metadata("/plume-docinfo-does-not-exist/nope.txt".into());
+        let result = document_metadata("/mojidori-docinfo-does-not-exist/nope.txt".into());
         assert!(result.is_err());
     }
 
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn line_ending_distribution_errors_on_a_missing_file() {
         let result = line_ending_distribution(
-            "/plume-docinfo-does-not-exist/nope.txt".into(),
+            "/mojidori-docinfo-does-not-exist/nope.txt".into(),
             "UTF-8".into(),
         );
         assert!(result.is_err());
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn document_info_snapshot_errors_entirely_when_the_file_does_not_exist() {
         let result = document_info_snapshot(
-            "/plume-docinfo-does-not-exist/nope.txt".into(),
+            "/mojidori-docinfo-does-not-exist/nope.txt".into(),
             None,
             "UTF-8".into(),
         );

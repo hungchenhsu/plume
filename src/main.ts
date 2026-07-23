@@ -438,8 +438,8 @@ const backupFlush = createBackupFlushScheduler<Doc>({
 function updateWindowTitle(): void {
   const doc = tabs.active;
   const title = doc
-    ? `${doc.dirty ? "• " : ""}${doc.title} — Plume`
-    : "Plume";
+    ? `${doc.dirty ? "• " : ""}${doc.title} — Mojidori`
+    : "Mojidori";
   void getCurrentWindow().setTitle(title).catch(() => {
     // Title sync is cosmetic; never surface errors for it.
   });
@@ -3169,7 +3169,7 @@ window.addEventListener("keydown", (event) => {
 });
 
 /**
- * Runs a native-menu command by id. Extracted out of the `plume://menu`
+ * Runs a native-menu command by id. Extracted out of the `mojidori://menu`
  * listener below (ROADMAP.md v0.6 C1) so the Command Palette
  * (src/palette.ts's `showPalette`) can dispatch a selected command by
  * calling this exact function directly — a plain synchronous call, not a
@@ -3538,7 +3538,7 @@ async function openCommandPalette(): Promise<void> {
   showPalette(commands, (id) => dispatchMenuCommand(id));
 }
 
-void listen<string>("plume://menu", (event) => dispatchMenuCommand(event.payload));
+void listen<string>("mojidori://menu", (event) => dispatchMenuCommand(event.payload));
 
 // Hot exit: flush every unsaved buffer to its backup and quit without
 // asking — the next launch restores everything, including untitled tabs.
@@ -3796,7 +3796,7 @@ async function restoreSession(): Promise<void> {
   editor.revealCursor();
   // Fired with `void`, not awaited: these are informational, after the
   // fact, and must not delay takePendingFiles()/openPath() for files an
-  // OS "Open With"/CLI invocation asked Plume to open (issue audit v0.6
+  // OS "Open With"/CLI invocation asked Mojidori to open (issue audit v0.6
   // V2 #1/#2) — the recovery attempts above already ran to completion
   // either way.
   if (unreadableBackups.length > 0) {
@@ -3814,7 +3814,7 @@ async function restoreSession(): Promise<void> {
 }
 
 // Files opened through the OS while the app is already running.
-void listen<string[]>("plume://open-files", async (event) => {
+void listen<string[]>("mojidori://open-files", async (event) => {
   for (const path of event.payload) {
     await openPath(path);
   }
@@ -3828,8 +3828,8 @@ void getCurrentWebview().onDragDropEvent(async (event) => {
   }
 });
 
-// Watched files that changed on disk outside of Plume.
-void listen<string[]>("plume://file-changed", async (event) => {
+// Watched files that changed on disk outside of Mojidori.
+void listen<string[]>("mojidori://file-changed", async (event) => {
   for (const path of event.payload) {
     await handleExternalChange(path);
   }
@@ -3875,7 +3875,7 @@ void (async () => {
     .catch(() => [] as string[]);
   await restoreSession();
   // Files that triggered this launch open last so they end up focused. A
-  // failure here means an OS "Open With"/CLI invocation asked Plume to
+  // failure here means an OS "Open With"/CLI invocation asked Mojidori to
   // open specific files and they simply never arrive, with nothing else
   // pointing at why (v0.6 V2 IPC-error-surfacing audit #3) — void, not
   // awaited, so the dialog can't delay the rest of startup.
@@ -3889,10 +3889,10 @@ void (async () => {
   for (const path of pending) {
     await openPath(path);
   }
-  // Cold-start probe hook: no-op unless PLUME_STARTUP_PROBE=1 (see
+  // Cold-start probe hook: no-op unless MOJIDORI_STARTUP_PROBE=1 (see
   // scripts/startup-bench.mjs). Marks "frontend ready" for the benchmark.
   void reportStartupReady().catch(() => {});
-  // Open-file probe hook: no-op unless PLUME_OPENFILE_PROBE=<path> is set
+  // Open-file probe hook: no-op unless MOJIDORI_OPENFILE_PROBE=<path> is set
   // on the Rust side (see scripts/openfile-bench.mjs). Reuses the exact
   // openPath() codepath a real drag-drop/file-association open takes,
   // timing trigger -> next paint — decoupled from the cold-start budget

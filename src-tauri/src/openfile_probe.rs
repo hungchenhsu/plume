@@ -4,7 +4,7 @@
 //! change to the open path can be measured without the WebView/prefs/
 //! session-restore overhead `startup_probe` already covers.
 //!
-//! Activated only when the `PLUME_OPENFILE_PROBE` environment variable is
+//! Activated only when the `MOJIDORI_OPENFILE_PROBE` environment variable is
 //! set, to the absolute path of the file to open. In that mode: once the
 //! frontend's normal startup sequence completes (preferences loaded,
 //! session restored, pending files opened — see the end of the init IIFE
@@ -26,7 +26,7 @@
 use std::io::Write;
 
 fn probe_path() -> Option<String> {
-    std::env::var("PLUME_OPENFILE_PROBE")
+    std::env::var("MOJIDORI_OPENFILE_PROBE")
         .ok()
         .filter(|value| !value.is_empty())
 }
@@ -46,7 +46,7 @@ fn format_report(elapsed_ms: u64) -> String {
 
 /// Tauri command the frontend calls once the probed file's content has
 /// been opened and rendered, with the elapsed milliseconds it measured
-/// itself. No-op unless `PLUME_OPENFILE_PROBE` is set, so normal opens are
+/// itself. No-op unless `MOJIDORI_OPENFILE_PROBE` is set, so normal opens are
 /// unaffected.
 #[tauri::command]
 pub fn report_openfile_ready(elapsed_ms: f64) {

@@ -20,11 +20,12 @@ Carried over from v0.3 Track D — release & community. Both are blocked
 on a user decision, not on engineering work; full context in the
 archived v0.3 record and in DIRECTION §2/§3.
 
-- [ ] D1 official name — user decision; shortlist re-verified 2026-07-15
-  (evidence lives in the maintainer's local private storage since the
-  repo went public — see DIRECTION §3/D1)
-- [ ] D2 signing + auto-update — blocked on D1 and user-held keys
-  (runbook in the maintainer's local private storage)
+- [x] D1 official name — decided 2026-07-23: **Mojidori** (verification
+  evidence in the maintainer's local private storage — see DIRECTION
+  §3/D1). In-app rename + one-time data-dir migration shipped in this
+  cycle; docs/URL sweep and repo rename tracked as follow-up.
+- [ ] D2 signing + auto-update — D1 resolved; still blocked on
+  user-held keys (runbook in the maintainer's local private storage)
 
 ## Completed cycles
 
