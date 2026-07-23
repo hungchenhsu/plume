@@ -501,7 +501,71 @@ function makeUntitled(): Doc {
  *  the freeze survives a tab switch mid-flush: `showActive` calls
  *  `syncReadOnlyState` on every switch with the *new* tab's own
  *  `isEffectivelyReadOnly`, which alone would silently re-enable typing
- *  on that tab and defeat the freeze. */
+ *  on that tab and defeat the freeze.
+ *
+ *  ENTRY-POINT AUDIT (Codex re-review, 4th round — read this before adding
+ *  any new entry point that changes document content or save-relevant
+ *  metadata): the freeze is only as good as every path that can mutate a
+ *  doc going through `canMutateDocument`/`blockedByReadOnly` (tabs.ts /
+ *  this file) or the CM6 read-only compartment (editor.ts) it also
+ *  reconfigures. Three rounds each found a different *class* of path that
+ *  didn't: (1) native menu/palette commands going straight to CM6
+ *  dispatch instead of through the compartment (runLineOperation/
+ *  saveFlow — fixed via blockedByReadOnly); (2) async flows that passed
+ *  their own entry guard *before* the freeze started and apply their
+ *  result after an await gap the freeze doesn't interrupt (mojibake
+ *  repair wizard, Edit > Normalize — fixed via a re-check at the actual
+ *  apply point, since neither flow's own staleness check — content diff /
+ *  revision diff — can see a freeze that produces neither); (3)
+ *  synchronous status-bar pickers reached by a DOM click listener, never
+ *  through the native menu or CM6 dispatch at all (setLineEnding, Save
+ *  with Encoding in showEncodingMenu).
+ *
+ *  Audit method used to compile this list (repeat it for any future
+ *  addition): `grep -n "nextRevision++\|\.dirty = \|backupFlush\.schedule("
+ *  src/main.ts` — every hit is a doc mutation or something that needs
+ *  hot-exit backup coverage; trace each backward to its UI entry point(s).
+ *  Full result, entry point -> disposition:
+ *    - CM6 onChange listener (real typing) -> not a new entry point, the
+ *      thing the read-only compartment itself blocks; only reachable at
+ *      all when the compartment allows it.
+ *    - runLineOperation (all Edit > Line Operations items, insert_datetime,
+ *      replace_in_selection/replace_all_in_selection) -> guarded via
+ *      blockedByReadOnly (round 1).
+ *    - saveFlow -> guarded via blockedByReadOnly (pre-existing, predates
+ *      this freeze; freeze-aware since canMutateDocument covers it).
+ *    - showMojibakeRepairWizard's apply callback -> guarded via
+ *      blockedByReadOnly at the apply point (round 2).
+ *    - runNormalizeFlow's three editor.replaceContent checkpoints ->
+ *      guarded via normalizeGuardOutcome's "frozen" verdict (round 2).
+ *    - setLineEnding (status-bar line-ending picker) -> guarded via
+ *      blockedByReadOnly; picker items also disabled while frozen (round
+ *      4, no IPC cost unlike a native menu item).
+ *    - showEncodingMenu's "Save with Encoding" action -> guarded via
+ *      blockedByReadOnly; picker items also disabled while frozen (round
+ *      4).
+ *    - reloadFromDisk / applyOpenedForReopen (Reload, Reopen with
+ *      Encoding) -> not guarded, deliberately: both *discard* the live
+ *      buffer and replace it with disk content — they don't create new,
+ *      unbacked content the way every guarded case above does — and both
+ *      already require the user to confirm discarding unsaved changes
+ *      through their own existing dialog, independent of this freeze.
+ *    - Paste / drag-drop into the editor, the @codemirror/search panel's
+ *      own Replace -> not separately guarded: both are native CM6
+ *      commands that already consult `state.readOnly` themselves (see
+ *      editor.ts's `readOnlyExtension` doc comment), so the compartment
+ *      alone covers them.
+ *    - batch_convert / stream_replace (Find/Replace in Files) -> out of
+ *      scope: both write directly to files on disk via a streaming Rust
+ *      command, never touching the live CM6 buffer this freeze/flush is
+ *      about.
+ *    - Tab close/reorder, bookmarks, session/window-state bookkeeping
+ *      (persistSession's other call sites) -> out of scope: none of these
+ *      are document content or save-relevant metadata (what a save would
+ *      write to disk); a tab closing mid-flush is already handled by
+ *      flushWithRevisionRecheck's signature comparison (updaterflush.ts),
+ *      not by blocking the close itself.
+ */
 let updateFreezeActive = false;
 
 /** Sync the editor's CM6 readOnly compartment and the View > Read-Only
@@ -2375,6 +2439,14 @@ function applyOpenedForReopen(doc: Doc, opened: OpenedDocument): void {
 function setLineEnding(lineEnding: string): void {
   const doc = tabs.active;
   if (!doc || doc.lineEnding === lineEnding) return;
+  // ROADMAP.md D2, Codex re-review (4th round) of PR #309: this is a
+  // synchronous, statusbar-picker-triggered save-relevant mutation, not an
+  // async-apply one — same entry-point-audit class as runLineOperation/
+  // showMojibakeRepairWizard, just reached from the status bar instead of
+  // a menu/palette command. See the entry-point audit comment on
+  // `updateFreezeActive`'s declaration for the full list this class
+  // covers and how it was compiled.
+  if (blockedByReadOnly(doc)) return;
   doc.lineEnding = lineEnding;
   // Line ending is passed into saveParams alongside content (runSaveFlow
   // above), so switching it changes what a save will write to disk exactly
@@ -2595,7 +2667,17 @@ function showEncodingMenu(anchor: HTMLElement): void {
       action: () => {
         const toItem = (e: EncodingChoice): Omit<MenuItem, "label" | "header"> => ({
           checked: e.value === doc.encoding && e.withBom === doc.withBom,
+          // Low-cost UI disable (in-DOM popup, no IPC round trip) — see
+          // showLineEndingMenu's own comment for why this differs from
+          // the native-menu items ROADMAP.md D2's earlier rounds skipped
+          // disabling.
+          disabled: updateFreezeActive,
           action: () => {
+            // ROADMAP.md D2, Codex re-review (4th round) of PR #309: same
+            // entry-point-audit class as setLineEnding just above — a
+            // synchronous, statusbar-picker-triggered save-relevant
+            // mutation, guarded the same way.
+            if (blockedByReadOnly(doc)) return;
             // Applied speculatively so the save encodes with the new
             // choice; rolled back if nothing was written (lossy save
             // declined, dialog cancelled, or write failure) so a
@@ -2866,20 +2948,28 @@ function showDecodeWarningMenu(anchor: HTMLElement): void {
 function showLineEndingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
+  // Low-cost UI disable alongside setLineEnding's own runtime guard (this
+  // is an in-DOM popup, not a native OS menu — no IPC round trip needed,
+  // unlike the native menu items ROADMAP.md D2's earlier rounds evaluated
+  // and skipped disabling for that exact cost reason).
+  const disabled = updateFreezeActive;
   showMenu(anchor, [
     {
       label: t("menu.lineEndingLf"),
       checked: doc.lineEnding === "LF",
+      disabled,
       action: () => setLineEnding("LF"),
     },
     {
       label: t("menu.lineEndingCrlf"),
       checked: doc.lineEnding === "CRLF",
+      disabled,
       action: () => setLineEnding("CRLF"),
     },
     {
       label: t("menu.lineEndingCr"),
       checked: doc.lineEnding === "CR",
+      disabled,
       action: () => setLineEnding("CR"),
     },
   ]);

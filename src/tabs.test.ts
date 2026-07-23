@@ -195,6 +195,27 @@ describe("canMutateDocument — async apply-after-freeze scenario", () => {
   });
 });
 
+// ROADMAP.md D2, Codex re-review (4th round) of PR #309: a third class of
+// missed entry point, alongside the menu/palette-dispatch and async-apply
+// ones the two describe blocks above cover — a synchronous status-bar
+// picker (main.ts's setLineEnding, showEncodingMenu's "Save with
+// Encoding") reached by a plain DOM click listener, never through the
+// native menu or CM6 dispatch at all. Same underlying predicate, same
+// reasoning as those two blocks for why the pure-logic layer is what's
+// under test — see updateFreezeActive's own doc comment (main.ts) for the
+// full entry-point audit this round performed.
+describe("canMutateDocument — synchronous status-bar picker scenario", () => {
+  const doc = { truncated: false, userReadOnly: false };
+
+  it("a status-bar picker action (setLineEnding, Save with Encoding) is blocked while frozen, with no async gap involved at all", () => {
+    expect(canMutateDocument(doc, true)).toBe(false);
+  });
+
+  it("the same picker action works again once unfrozen", () => {
+    expect(canMutateDocument(doc, false)).toBe(true);
+  });
+});
+
 describe("TabStore", () => {
   it("activates a doc when it is added", () => {
     const { store } = makeStore();
