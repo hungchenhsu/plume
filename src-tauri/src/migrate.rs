@@ -385,6 +385,50 @@ fn create_dir_matching_permissions(src: &Path, dst: &Path) -> io::Result<()> {
     fs::set_permissions(dst, fs::metadata(src)?.permissions())
 }
 
+/// If `src`'s directory mode is stricter than `dst`'s (`dst` grants at
+/// least one permission bit `src` doesn't), tighten `dst` to exactly
+/// `src`'s mode. Never loosens `dst`: if `dst` is already at least as
+/// strict as `src` — e.g. it's a directory the new install itself
+/// already created, with its own deliberately-chosen permissions, and
+/// `src` merely happens to be more permissive — it's left untouched.
+///
+/// Used when [`merge_dir_recursive`] recurses into a directory *both*
+/// sides already have. Unlike the whole-missing-subtree case
+/// ([`copy_dir_recursive_tracked`] via [`create_dir_matching_permissions`],
+/// which always adopts `src`'s mode outright because `dst` is brand new
+/// there), a *shared* directory might be live app data with permissions
+/// of its own — so this only ever tightens, never blindly overwrites.
+/// Without it, a `0700` source directory's `0644` files would come out
+/// world/group-readable the moment they land inside an existing, more
+/// permissive (e.g. default `0755`) destination directory of the same
+/// name — the files' own permissions are preserved correctly (see
+/// `copy_file_synced`/`copy_file_atomic_no_overwrite`), but a directory
+/// mode wider than intended defeats that protection just the same as if
+/// the files themselves were wide open.
+///
+/// Unix only (`#[cfg(unix)]`; a no-op on Windows, which has no comparable
+/// mode concept). Like [`create_dir_matching_permissions`], this assumes
+/// `src`'s mode still leaves the owner able to write into `dst` — true
+/// for every real directory this module ever copies (its own
+/// config/backup directories) — a source directory stripped of owner
+/// write access would make the subsequent recursive copy into `dst` fail,
+/// but that's not a scenario this module's own data can produce.
+#[cfg(unix)]
+fn tighten_dir_permissions_to_source(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let src_mode = fs::metadata(src)?.permissions().mode() & 0o777;
+    let dst_mode = fs::metadata(dst)?.permissions().mode() & 0o777;
+    if dst_mode & !src_mode != 0 {
+        fs::set_permissions(dst, fs::Permissions::from_mode(src_mode))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn tighten_dir_permissions_to_source(_src: &Path, _dst: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 /// Recursively copy every file and subdirectory of `src` into `dst`,
 /// creating `dst` (and nested subdirectories) as needed, each with `src`'s
 /// own permissions (see [`create_dir_matching_permissions`] — every
@@ -622,12 +666,45 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, M
     }
 
     // `new_dir`, if it exists at all here, was already confirmed empty
-    // above (the `NewAlreadyPresent` check). Clear it explicitly before
-    // the publish rename rather than relying on `fs::rename` to replace an
-    // existing directory implicitly — that behavior isn't portable
-    // (Windows' `MoveFileEx` does not replace an existing directory, even
-    // an empty one, the way POSIX `rename` can).
+    // above (the `NewAlreadyPresent` check) — but that check happened
+    // *before* the (potentially slow) copy above, and nothing since has
+    // held any lock over *ordinary* app writes, only concurrent
+    // *migration* attempts (`migrate_locked`'s OS lock — see the module
+    // doc's Concurrency section). If an earlier instance already gave up
+    // on migration (a `NotStarted` failure) and is now simply running
+    // with fresh state, its regular prefs/session/backup writes don't
+    // hold that lock — so `new_dir` can go from empty to genuinely
+    // populated with live data while this call was busy copying `old_dir`
+    // into `.partial`. Blindly `remove_dir_all`ing it here, trusting the
+    // earlier check, would delete that live data.
+    //
+    // Re-verify right here, immediately before the destructive cleanup,
+    // instead: if `new_dir` now has content, abort the publish rather
+    // than clearing it — `.partial` is discarded, `new_dir` is left
+    // completely untouched, and the caller gets a `NotStarted`-class
+    // error. The next `migrate()` call (the next launch) will see
+    // `new_dir` non-empty and route through `merge_recover` instead,
+    // which converges safely from there (copies in whatever `old_dir`
+    // still has that `new_dir` doesn't, without touching what's already
+    // live).
+    //
+    // This narrows the race to the residual window between this check
+    // and the `remove_dir_all`/`rename` calls immediately below —
+    // microseconds, not the whole copy duration — rather than closing it
+    // outright; that would require ordinary app writes to also hold the
+    // migration lock, out of scope here. An honest, if small, extension
+    // of the same class of limitation the module doc's Concurrency
+    // section already describes.
     if new_dir.exists() {
+        if dir_has_entries(new_dir) {
+            let _ = fs::remove_dir_all(&partial);
+            return Err(MigrationError::NotStarted(format!(
+                "publish aborted: {} gained content during migration (likely \
+                 a concurrently-running instance's normal writes); the next \
+                 launch will merge-recover instead",
+                new_dir.display()
+            )));
+        }
         if let Err(e) = fs::remove_dir_all(new_dir) {
             let _ = fs::remove_dir_all(&partial);
             return Err(MigrationError::NotStarted(format!(
@@ -901,6 +978,12 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
                 // anything else reached via this no-marker-yet retry.
                 progress.touched_dirs.insert(dst_path.clone());
                 record_touched_parent(&mut progress.touched_dirs, &dst_path);
+                // Tighten (never loosen) `dst_path`'s permissions to
+                // match `src_path`'s before recursing into it — see
+                // `tighten_dir_permissions_to_source`'s doc for why a
+                // shared directory needs this too, not just the
+                // whole-missing-subtree case.
+                tighten_dir_permissions_to_source(&src_path, &dst_path)?;
                 merge_dir_recursive(&src_path, &dst_path, progress)?;
             } else if dst_path.exists() {
                 eprintln!(
@@ -1510,6 +1593,78 @@ mod tests {
         );
         assert!(!old_dir.exists());
         assert!(root.join("app.plume.editor.migrated").is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_dir_aborts_publish_if_new_dir_gains_content_during_the_copy() {
+        // Regression: the stale-cleanup `remove_dir_all(new_dir)` right
+        // before publish used to trust the emptiness check from the very
+        // start of the call. Nothing in between holds a lock over
+        // *ordinary* app writes -- only concurrent *migration* attempts
+        // are serialized (`migrate_locked`'s OS lock). If an earlier
+        // instance already gave up on migration (`NotStarted`) and is now
+        // just running normally, its regular prefs/session writes don't
+        // hold that lock, so `new_dir` can go from empty to genuinely
+        // populated with live data while this call is busy copying
+        // `old_dir` into `.partial`. Blindly deleting it at publish time
+        // would destroy that live data.
+        //
+        // Reproduced with a background thread that writes into `new_dir`
+        // as soon as `.partial` appears on disk (i.e. partway through the
+        // copy, well before verification/publish) -- a real, observable
+        // synchronization point rather than a fixed sleep. `old_dir` is
+        // padded with enough files that the copy (and its per-file
+        // `fsync`s) takes measurably longer than the injector's poll
+        // loop, so the write reliably lands before this call reaches its
+        // own re-check.
+        let root = temp_dir("publish-toctou-abort");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+        let partial = partial_dir(&new_dir);
+
+        fs::create_dir_all(&old_dir).unwrap();
+        for i in 0..200 {
+            fs::write(old_dir.join(format!("file-{i}.json")), b"migrated data").unwrap();
+        }
+
+        let new_dir_for_injector = new_dir.clone();
+        let partial_for_injector = partial.clone();
+        let injector = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !partial_for_injector.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    ".partial never appeared -- test setup assumption broke"
+                );
+                std::thread::sleep(std::time::Duration::from_micros(50));
+            }
+            fs::create_dir_all(&new_dir_for_injector).unwrap();
+            fs::write(
+                new_dir_for_injector.join("live.txt"),
+                b"written by a concurrently-running instance",
+            )
+            .unwrap();
+        });
+
+        let result = migrate_dir(&old_dir, &new_dir);
+        injector.join().unwrap();
+
+        assert!(
+            matches!(result, Err(MigrationError::NotStarted(_))),
+            "expected a NotStarted publish-abort, got {result:?}"
+        );
+        // The "concurrently-running instance"'s live file survives.
+        assert_eq!(
+            fs::read(new_dir.join("live.txt")).unwrap(),
+            b"written by a concurrently-running instance"
+        );
+        // .partial was cleaned up, not left behind.
+        assert!(!partial.exists());
+        // old_dir is completely untouched -- this is a NotStarted-class
+        // abort.
+        assert!(old_dir.is_dir());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2277,6 +2432,94 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "expected mode 0700, got {mode:o}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn merge_tightens_a_shared_directorys_permissions_to_a_stricter_source() {
+        // Regression: merging into a directory *both* sides already have
+        // (the recursion branch, not the whole-missing-subtree copy)
+        // never constrained its mode -- a 0700 source `backups/` whose
+        // 0644 files were only actually private because the containing
+        // directory wasn't traversable by other local users would come
+        // out world/group-listable the moment its files landed inside an
+        // existing, more permissive (e.g. default 0755) destination
+        // directory of the same name. The files' own permissions were
+        // already protected correctly; the directory's were not.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("merge-tightens-shared-dir-perms");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(old_dir.join("backups")).unwrap();
+        fs::write(old_dir.join("backups").join("tab-2.bak"), b"new backup").unwrap();
+        fs::set_permissions(old_dir.join("backups"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        fs::create_dir_all(new_dir.join("backups")).unwrap();
+        fs::write(
+            new_dir.join("backups").join("tab-1.bak"),
+            b"existing backup",
+        )
+        .unwrap();
+        fs::set_permissions(new_dir.join("backups"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (files_copied, _, _) = merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(files_copied, 1);
+
+        let mode = fs::metadata(new_dir.join("backups"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "expected tightened mode 0700, got {mode:o}");
+        // The existing file inside is untouched either way.
+        assert_eq!(
+            fs::read(new_dir.join("backups").join("tab-1.bak")).unwrap(),
+            b"existing backup"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn merge_never_loosens_a_shared_directory_stricter_than_source() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("merge-never-loosens-shared-dir-perms");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(old_dir.join("backups")).unwrap();
+        fs::write(old_dir.join("backups").join("tab-2.bak"), b"new backup").unwrap();
+        fs::set_permissions(old_dir.join("backups"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        // The destination directory already has its own, stricter,
+        // deliberately-chosen mode -- e.g. it's the new install's own
+        // freshly created `backups/`, not inherited from anywhere.
+        fs::create_dir_all(new_dir.join("backups")).unwrap();
+        fs::write(
+            new_dir.join("backups").join("tab-1.bak"),
+            b"existing backup",
+        )
+        .unwrap();
+        fs::set_permissions(new_dir.join("backups"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (files_copied, _, _) = merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(files_copied, 1);
+
+        let mode = fs::metadata(new_dir.join("backups"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "destination's own stricter mode must be left alone, got {mode:o}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
