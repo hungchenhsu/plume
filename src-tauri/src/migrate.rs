@@ -208,10 +208,22 @@ fn dir_stats(dir: &Path) -> io::Result<(u64, u64)> {
 /// `ERROR_ACCESS_DENIED` (os error 5) on every write, which is invisible
 /// on Unix (`fsync` on a read-only fd is perfectly legal there) and so
 /// only ever surfaces on Windows.
+///
+/// `File::create` opens `dst` with permissions governed by the process's
+/// own umask (commonly `0644` on Unix), not `src`'s — so once bytes are
+/// copied, `dst`'s permissions are explicitly set to match `src`'s before
+/// the `fsync`. Without this, a user's `0600` config directory or
+/// hot-exit backups would come out of migration world/group-readable,
+/// silently widening access to session and unsaved-buffer content. Cross-
+/// platform: on Unix this restores the mode bits; on Windows the same API
+/// carries the readonly attribute across instead (there's no Unix-style
+/// mode there to widen, but a source file's readonly flag would otherwise
+/// be lost the same way).
 fn copy_file_synced(src: &Path, dst: &Path) -> io::Result<u64> {
     let mut reader = File::open(src)?;
     let mut writer = File::create(dst)?;
     let bytes = io::copy(&mut reader, &mut writer)?;
+    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
     writer.sync_all()?;
     Ok(bytes)
 }
@@ -584,11 +596,16 @@ fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u6
     // Written and synced via the same write-mode handle, not `fs::copy`
     // followed by a fresh read-only `File::open` + `sync_all()` — see
     // `copy_file_synced`'s doc comment for why that combination fails on
-    // Windows (`ERROR_ACCESS_DENIED`) despite working fine on Unix.
+    // Windows (`ERROR_ACCESS_DENIED`) despite working fine on Unix. Source
+    // permissions are copied onto the temp file (same rationale as
+    // `copy_file_synced`) before the rename publishes it under `dst`'s
+    // final name, so the eventual file never has a wider-than-source
+    // window where its permissions came from the process umask instead.
     let write_result = (|| -> io::Result<u64> {
         let mut reader = File::open(src)?;
         let mut writer = File::create(&tmp)?;
         let bytes = io::copy(&mut reader, &mut writer)?;
+        fs::set_permissions(&tmp, fs::metadata(src)?.permissions())?;
         writer.sync_all()?;
         Ok(bytes)
     })();
@@ -1806,6 +1823,71 @@ mod tests {
             .expect("second migrate_locked call did not return -- lock not released")
             .unwrap();
         assert_eq!(second, MigrationOutcome::AlreadyDecided);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn full_transfer_preserves_source_file_permissions() {
+        // Regression: `copy_file_synced` writes via `File::create`, whose
+        // permissions come from the process umask (commonly 0644), not
+        // `src`'s -- without an explicit fix-up, a user's 0600 config
+        // directory would come out of a full-transfer migration
+        // world/group-readable.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("full-transfer-preserves-perms");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        let src = old_dir.join("session.json");
+        fs::write(&src, b"unsaved buffer content").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let outcome = migrate_dir(&old_dir, &new_dir).unwrap();
+        assert!(matches!(outcome, MigrationOutcome::Migrated { .. }));
+
+        let mode = fs::metadata(new_dir.join("session.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "expected mode 0600, got {mode:o}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn merge_recovery_preserves_source_file_permissions() {
+        // Same regression as `full_transfer_preserves_source_file_permissions`,
+        // for `copy_file_atomic_no_overwrite`'s temp-file-then-rename path.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("merge-preserves-perms");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        let src = old_dir.join("session.json");
+        fs::write(&src, b"unsaved buffer content").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // Route to the merge path: new_dir already has unrelated content.
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join(".window-state.json"), b"unrelated").unwrap();
+
+        let (files_copied, _, _) = merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(files_copied, 1);
+
+        let mode = fs::metadata(new_dir.join("session.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "expected mode 0600, got {mode:o}");
 
         let _ = fs::remove_dir_all(&root);
     }
