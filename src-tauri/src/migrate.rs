@@ -270,11 +270,30 @@ fn fsync_dir_tree(root: &Path) {
 #[cfg(not(unix))]
 fn fsync_dir_tree(_root: &Path) {}
 
-/// Recursively copy every file and subdirectory of `src` into `dst`,
-/// creating `dst` (and nested subdirectories) as needed. Each file is
-/// synced individually (see [`copy_file_synced`]).
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+/// `fs::create_dir_all(dst)`, then immediately set `dst`'s permissions to
+/// match `src`'s — closing the window (rather than fixing it up only
+/// after `dst` is fully populated) so a directory whose source is more
+/// restrictive than the process umask is never briefly more permissive
+/// than intended while its contents are being written. `dst` is
+/// necessarily created and owned by this process, so this assumes `src`'s
+/// mode still leaves the owner able to write into it (true for every real
+/// directory this module ever copies — its own config/backup
+/// directories, always created rwx-for-owner by this app or its plugins);
+/// a source directory stripped of owner write access would fail here,
+/// but that's not a scenario this module's own data can produce.
+fn create_dir_matching_permissions(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;
+    fs::set_permissions(dst, fs::metadata(src)?.permissions())
+}
+
+/// Recursively copy every file and subdirectory of `src` into `dst`,
+/// creating `dst` (and nested subdirectories) as needed, each with `src`'s
+/// own permissions (see [`create_dir_matching_permissions`] — every
+/// directory level may have a different mode, so this is done per level,
+/// not just once at the top). Each file is synced individually (see
+/// [`copy_file_synced`], which does the equivalent for file permissions).
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    create_dir_matching_permissions(src, dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -659,7 +678,13 @@ fn copy_dir_recursive_tracked(
     dst: &Path,
     progress: &mut MergeProgress,
 ) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
+    // `create_dir_matching_permissions` is safe to call even when `dst`
+    // already exists (from an interrupted earlier attempt at this same
+    // subtree, per this function's own doc): `create_dir_all` is already
+    // a no-op then, and re-applying `src`'s permissions is idempotent —
+    // including retroactively fixing up a directory an *older*, buggy
+    // build of this code left with umask-derived permissions instead.
+    create_dir_matching_permissions(src, dst)?;
     progress.touched_dirs.insert(dst.to_path_buf());
     // `dst` is itself a brand new entry in *its own* parent's directory
     // listing (e.g. `new_dir` gaining a `backups` entry it didn't have
@@ -1888,6 +1913,73 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "expected mode 0600, got {mode:o}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn full_transfer_preserves_source_directory_permissions() {
+        // Regression: file permissions were fixed (the two tests above),
+        // but directories created via `fs::create_dir_all` still came out
+        // with umask-derived permissions -- a source `backups/` directory
+        // at 0700 (whose 0644 files were only actually private *because*
+        // the containing directory wasn't traversable by other local
+        // users) would come out of migration listable/readable by anyone
+        // on the machine.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("full-transfer-preserves-dir-perms");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(old_dir.join("backups")).unwrap();
+        fs::write(old_dir.join("backups").join("tab-1.bak"), b"unsaved").unwrap();
+        fs::set_permissions(old_dir.join("backups"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        let outcome = migrate_dir(&old_dir, &new_dir).unwrap();
+        assert!(matches!(outcome, MigrationOutcome::Migrated { .. }));
+
+        let mode = fs::metadata(new_dir.join("backups"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "expected mode 0700, got {mode:o}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn merge_recovery_preserves_source_directory_permissions() {
+        // Same regression as `full_transfer_preserves_source_directory_permissions`,
+        // for `copy_dir_recursive_tracked`'s whole-missing-subtree copy in
+        // the merge path.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("merge-preserves-dir-perms");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(old_dir.join("backups")).unwrap();
+        fs::write(old_dir.join("backups").join("tab-1.bak"), b"unsaved").unwrap();
+        fs::set_permissions(old_dir.join("backups"), fs::Permissions::from_mode(0o700)).unwrap();
+
+        // Route to the merge path: new_dir already has unrelated content,
+        // and doesn't have `backups/` at all yet -- a whole-subtree copy.
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join(".window-state.json"), b"unrelated").unwrap();
+
+        let (files_copied, _, _) = merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(files_copied, 1);
+
+        let mode = fs::metadata(new_dir.join("backups"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "expected mode 0700, got {mode:o}");
 
         let _ = fs::remove_dir_all(&root);
     }
