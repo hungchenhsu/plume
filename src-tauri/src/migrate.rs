@@ -196,34 +196,83 @@ fn dir_stats(dir: &Path) -> io::Result<(u64, u64)> {
     Ok((files, bytes))
 }
 
+/// Create `dst` fresh for writing, with permissions that are never wider
+/// than `src_permissions` at any point after this call returns — not even
+/// during the brief window before the caller writes any bytes or calls
+/// `fs::set_permissions` again.
+///
+/// - Unix: `src_permissions`' mode is passed directly to `open()` (via
+///   `OpenOptionsExt::mode`), so `dst` is created with that mode from the
+///   very first instant it exists. The kernel still masks the requested
+///   mode against the process umask, but masking only *removes* bits, so
+///   the result is never more permissive than requested — a `0600`
+///   source can never produce a `dst` that's briefly `0644`. It can,
+///   however, come out *more* restrictive than `src` if the umask clears
+///   bits `src` actually had (e.g. a `0664` source under a `0022` umask
+///   lands at `0644`); callers that care about an exact match still call
+///   `fs::set_permissions` again after writing to restore any bits the
+///   umask stripped — safe to do afterwards specifically because it can
+///   only ever *loosen* back toward `src`'s original mode, never beyond
+///   it, and by then the file's content is already fully written.
+/// - Windows: there's no mode to pass at creation time — only the
+///   coarse-grained readonly attribute, which would also block writing
+///   the copy's own bytes if applied up front. This falls back to a plain
+///   `File::create`; the caller's later `fs::set_permissions` (readonly
+///   attribute only) is the sole mechanism there. Accepted platform
+///   difference: Windows' readonly attribute isn't a confidentiality
+///   boundary the way Unix mode bits are, so there's nothing narrower to
+///   protect during the write window on Windows in the first place.
+#[cfg(unix)]
+fn create_file_no_wider_than_source(
+    dst: &Path,
+    src_permissions: &fs::Permissions,
+) -> io::Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(src_permissions.mode())
+        .open(dst)
+}
+
+#[cfg(not(unix))]
+fn create_file_no_wider_than_source(
+    dst: &Path,
+    _src_permissions: &fs::Permissions,
+) -> io::Result<File> {
+    File::create(dst)
+}
+
 /// Copy `src` to `dst` and `fsync` the destination file before returning,
 /// so a crash immediately after this call can't leave a copy that looks
 /// complete (right length) but has data still sitting in a write cache.
 ///
-/// Writes via a `File::create`d handle and `fsync`s *that same* handle,
-/// rather than `fs::copy` followed by a fresh `File::open(dst)` +
-/// `sync_all()`: on Windows, `FlushFileBuffers` (what `sync_all()` calls
-/// there) requires the handle to have been opened with write access, and a
-/// bare `File::open` is read-only — that combination fails with
-/// `ERROR_ACCESS_DENIED` (os error 5) on every write, which is invisible
-/// on Unix (`fsync` on a read-only fd is perfectly legal there) and so
-/// only ever surfaces on Windows.
+/// Writes via a handle opened by [`create_file_no_wider_than_source`] and
+/// `fsync`s *that same* handle, rather than `fs::copy` followed by a
+/// fresh `File::open(dst)` + `sync_all()`: on Windows, `FlushFileBuffers`
+/// (what `sync_all()` calls there) requires the handle to have been
+/// opened with write access, and a bare `File::open` is read-only — that
+/// combination fails with `ERROR_ACCESS_DENIED` (os error 5) on every
+/// write, which is invisible on Unix (`fsync` on a read-only fd is
+/// perfectly legal there) and so only ever surfaces on Windows.
 ///
-/// `File::create` opens `dst` with permissions governed by the process's
-/// own umask (commonly `0644` on Unix), not `src`'s — so once bytes are
-/// copied, `dst`'s permissions are explicitly set to match `src`'s before
-/// the `fsync`. Without this, a user's `0600` config directory or
-/// hot-exit backups would come out of migration world/group-readable,
-/// silently widening access to session and unsaved-buffer content. Cross-
-/// platform: on Unix this restores the mode bits; on Windows the same API
-/// carries the readonly attribute across instead (there's no Unix-style
-/// mode there to widen, but a source file's readonly flag would otherwise
-/// be lost the same way).
+/// `dst`'s permissions are set to match `src`'s twice: once at creation
+/// (via `create_file_no_wider_than_source`, so `dst` is never wider than
+/// `src` even for the instant before any bytes are written) and once more
+/// after writing (to restore any bits the process umask stripped from the
+/// first attempt, now that content is in place). Without either, a user's
+/// `0600` session/hot-exit-backup file would spend part of migration
+/// readable by every other local user — the first fixes the write-time
+/// window, the second exactness. Cross-platform: on Unix this is mode
+/// bits; on Windows the same `fs::set_permissions` API carries the
+/// readonly attribute across instead.
 fn copy_file_synced(src: &Path, dst: &Path) -> io::Result<u64> {
     let mut reader = File::open(src)?;
-    let mut writer = File::create(dst)?;
+    let src_permissions = fs::metadata(src)?.permissions();
+    let mut writer = create_file_no_wider_than_source(dst, &src_permissions)?;
     let bytes = io::copy(&mut reader, &mut writer)?;
-    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
+    fs::set_permissions(dst, src_permissions)?;
     writer.sync_all()?;
     Ok(bytes)
 }
@@ -615,16 +664,18 @@ fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u6
     // Written and synced via the same write-mode handle, not `fs::copy`
     // followed by a fresh read-only `File::open` + `sync_all()` — see
     // `copy_file_synced`'s doc comment for why that combination fails on
-    // Windows (`ERROR_ACCESS_DENIED`) despite working fine on Unix. Source
-    // permissions are copied onto the temp file (same rationale as
-    // `copy_file_synced`) before the rename publishes it under `dst`'s
-    // final name, so the eventual file never has a wider-than-source
-    // window where its permissions came from the process umask instead.
+    // Windows (`ERROR_ACCESS_DENIED`) despite working fine on Unix. The
+    // temp file is created via `create_file_no_wider_than_source` (never
+    // wider than `src` even for the instant before any bytes land) and
+    // has `src`'s permissions set again after writing (restoring any bits
+    // the umask stripped) before the rename publishes it under `dst`'s
+    // final name — same two-step rationale as `copy_file_synced`.
     let write_result = (|| -> io::Result<u64> {
         let mut reader = File::open(src)?;
-        let mut writer = File::create(&tmp)?;
+        let src_permissions = fs::metadata(src)?.permissions();
+        let mut writer = create_file_no_wider_than_source(&tmp, &src_permissions)?;
         let bytes = io::copy(&mut reader, &mut writer)?;
-        fs::set_permissions(&tmp, fs::metadata(src)?.permissions())?;
+        fs::set_permissions(&tmp, src_permissions)?;
         writer.sync_all()?;
         Ok(bytes)
     })();
@@ -1980,6 +2031,45 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "expected mode 0700, got {mode:o}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn create_file_no_wider_than_source_is_never_more_permissive_at_creation_instant() {
+        // Regression: `copy_file_synced`/`copy_file_atomic_no_overwrite`
+        // used to `File::create` (umask-derived permissions) *then* write
+        // bytes *then* fix up permissions afterwards -- leaving a real
+        // window, while bytes were being written, where a 0600
+        // session/hot-exit-backup file existed on disk at 0644 and was
+        // readable by every other local user. Calling
+        // `create_file_no_wider_than_source` directly (bypassing the
+        // write step entirely) and inspecting the file's mode immediately
+        // proves there's no such window: the file is never wider than its
+        // source, not even for the instant right after creation.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("create-file-no-wider-than-source");
+        let src = root.join("source.txt");
+        fs::write(&src, b"source content").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+        let src_permissions = fs::metadata(&src).unwrap().permissions();
+
+        let dst = root.join("dest.txt");
+        // Created but deliberately never written to -- the mode is
+        // checked at the earliest possible instant.
+        let _file = create_file_no_wider_than_source(&dst, &src_permissions).unwrap();
+
+        let mode = fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode & !0o600,
+            0,
+            "dest file must never be wider than the 0600 source, got mode {mode:o}"
+        );
+        // Under any normal umask, 0600 requests no bits a typical umask
+        // would need to strip, so this should land exactly on 0600.
+        assert_eq!(mode, 0o600, "expected exact mode 0600, got {mode:o}");
 
         let _ = fs::remove_dir_all(&root);
     }
