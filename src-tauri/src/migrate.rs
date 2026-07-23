@@ -587,31 +587,93 @@ fn retire_old_dir(old_dir: &Path) {
 ///
 /// - `old_dir` doesn't exist -> [`MigrationOutcome::NoOldData`]; nothing
 ///   touched.
-/// - `new_dir` exists and already has content ->
-///   [`MigrationOutcome::NewAlreadyPresent`]; nothing touched (this
-///   primitive never overwrites a directory that's already in use — see
-///   [`migrate`] for the marker-aware decision that routes this case to
-///   [`merge_recover`] instead of stopping here).
+/// - `new_dir` exists and already has content *at the moment this is
+///   called* -> [`MigrationOutcome::NewAlreadyPresent`]; nothing touched
+///   (this primitive never overwrites a directory that's already in use —
+///   see [`migrate`] for the marker-aware decision that routes this case
+///   to [`merge_recover`] instead of stopping here).
 /// - Otherwise: recursively copy `old_dir` into a sibling staging directory
 ///   `<new_dir>.partial` (any pre-existing `.partial` is removed first — it
-///   can only be debris from a prior attempt that never finished), verify
-///   the copy there (file count and total bytes match between source and
-///   staging copy), then atomically `rename` the staging directory onto
-///   `new_dir`. Only after that publish succeeds is `old_dir` renamed to
-///   `<old_dir>.migrated` so the pre-migration data is set aside, never
-///   deleted.
+///   can only be debris from a prior attempt that never finished) and
+///   verify the copy there (file count and total bytes match between
+///   source and staging copy). Then, to publish it under `new_dir`'s name:
+///   - If `new_dir` *still* doesn't exist (re-checked right here, not
+///     trusted from the check above — see below for why): one atomic
+///     `rename` of `.partial` onto `new_dir`. Renaming onto a path that
+///     doesn't exist is an unambiguous, ordinary rename on every platform
+///     — no replace semantics enter into it at all.
+///   - If `new_dir` exists by now (regardless of why, or whether it's
+///     empty) [`merge_into_new_dir`] merges `.partial`'s contents into it
+///     instead — the exact same never-overwrite, per-file `hard_link`
+///     machinery [`merge_recover`] uses for `old_dir`, just fed
+///     `.partial` (this run's own verified copy) as the source. `.partial`
+///     is discarded once merged; it was only ever a disposable staging
+///     copy. This returns [`MigrationOutcome::Merged`] instead of
+///     `Migrated` in that case, to say honestly what happened.
 ///
 ///   The copy is staged rather than written into `new_dir` directly so a
 ///   crash or kill mid-copy can never leave a partially-written `new_dir`
 ///   that a later run would mistake for
 ///   [`MigrationOutcome::NewAlreadyPresent`] and treat as "already
-///   migrated" — `new_dir` only ever comes into existence, fully formed,
-///   via that one atomic rename.
-/// - If the copy, verification, or publish fails: any `.partial` staging
-///   directory is removed, `old_dir` is left exactly as found, and
-///   [`MigrationError::NotStarted`] describes the failure. If publish
-///   succeeds but confirming that durably (`fsync`) fails: `new_dir`
-///   already holds the verified data (nothing is rolled back), and
+///   migrated".
+///
+///   **Why re-check and branch, instead of always clearing `new_dir` and
+///   renaming onto it:** the initial check above happens *before* the
+///   (potentially slow) copy, and nothing since holds any lock over
+///   *ordinary* app writes — only concurrent *migration* attempts
+///   (`migrate_locked`'s OS lock; see the module doc's Concurrency
+///   section). If an earlier instance already gave up on migration (a
+///   `NotStarted` failure) and is now simply running with fresh state, its
+///   regular prefs/session/backup writes don't hold that lock, so
+///   `new_dir` can go from empty to genuinely populated with live data —
+///   or even just come into existence — while this call was busy copying
+///   `old_dir` into `.partial`. Earlier versions of this function handled
+///   that by clearing `new_dir` before the rename (first `remove_dir_all`
+///   after a re-check, then the kernel-atomic non-recursive `remove_dir`)
+///   — but *any* delete-then-publish sequence here is fixing the wrong
+///   problem: the live data that raced the copy deserves to be merged in,
+///   not raced against and either destroyed or left to a rename that
+///   might silently replace it (POSIX `rename(2)` can atomically replace
+///   an existing *empty* directory — so even a narrow "check empty, then
+///   rename" gap could still silently swallow a writer's freshly-created,
+///   momentarily-empty `new_dir`). Merging instead of ever
+///   replacing/deleting anything at `new_dir` removes this whole class of
+///   race from the function, rather than narrowing the window.
+///
+///   (Investigated and rejected as an alternative: Unix-only `renameat2`
+///   `RENAME_NOREPLACE` / macOS `renamex_np` `RENAME_EXCL` would give a
+///   truly atomic no-clobber directory rename — but neither is exposed by
+///   `std`, both would need raw libc/unsafe FFI, and neither has a
+///   portable Windows equivalent, so a working solution would still need
+///   this same merge fallback there regardless. Not worth the added
+///   unsafe surface for platforms this project doesn't even ship if the
+///   safe, already-available fallback covers Tier 1 correctly on its
+///   own.)
+///
+///   One residual, vanishingly narrow gap remains, inherent to any
+///   "check absence, then create" sequence without a lock spanning both:
+///   between the re-check finding `new_dir` absent and the `rename` call
+///   immediately after, something could still create it. If that
+///   something is empty at that exact instant, POSIX `rename` could
+///   replace it before it gets used for anything; if non-empty, the
+///   rename simply fails and is handled as a `NotStarted` abort like any
+///   other publish failure. This mirrors the equally narrow gap the
+///   `remove_dir` design this replaced had (two back-to-back syscalls,
+///   no I/O-bound work in between) — empirically confirmed too
+///   unreliable to construct as a deterministic test (a prior attempt at
+///   an analogous gap lost the race to a background writer roughly 1 run
+///   in 10), and not closable without a portable atomic no-clobber
+///   directory-rename primitive, which — as above — doesn't exist in
+///   `std` and isn't worth an unsafe, Tier-1-only libc dependency to add.
+/// - If the copy or verification fails: `.partial` is removed, `old_dir`
+///   is left exactly as found, and [`MigrationError::NotStarted`]
+///   describes the failure. If the merge-publish branch's own copy or
+///   verification fails: same — `.partial` is removed, nothing at
+///   `new_dir` is touched (nothing was ever deleted from it to begin
+///   with), and [`MigrationError::NotStarted`] describes the failure.
+///   Once either publish path (the plain rename or the merge) has
+///   actually landed the data, further failures are durability
+///   *confirmation* failures — nothing is rolled back, and
 ///   [`MigrationError::ConfirmationFailed`] describes the failure instead
 ///   — see that variant's own doc for why the distinction matters.
 pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, MigrationError> {
@@ -670,65 +732,39 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, M
     // *before* the (potentially slow) copy above, and nothing since has
     // held any lock over *ordinary* app writes, only concurrent
     // *migration* attempts (`migrate_locked`'s OS lock — see the module
-    // doc's Concurrency section). If an earlier instance already gave up
-    // on migration (a `NotStarted` failure) and is now simply running
-    // with fresh state, its regular prefs/session/backup writes don't
-    // hold that lock — so `new_dir` can go from empty to genuinely
-    // populated with live data while this call was busy copying `old_dir`
-    // into `.partial`.
-    //
-    // An earlier version of this cleared `new_dir` with a re-check
-    // (`dir_has_entries`) followed by `remove_dir_all` — but that pairing
-    // is itself a "check, then delete" race, just a narrower one: content
-    // written between the re-check and the `remove_dir_all` call would
-    // still be deleted. `fs::remove_dir` (non-recursive `rmdir`/
-    // `RemoveDirectory` — as opposed to `remove_dir_all`) closes this for
-    // real rather than narrowing it: it can only ever succeed on a
-    // directory that is *actually* empty at the exact instant of the
-    // syscall, and fails (`ENOTEMPTY` / the Windows equivalent) — deleting
-    // nothing — otherwise. The emptiness check *is* the delete operation,
-    // at the kernel level; there is no gap left for anything to land in
-    // between them. On failure here, the publish is aborted exactly as
-    // for any other failure in this function: `.partial` is discarded,
-    // `new_dir` (and whatever a live instance put in it) is left
-    // completely untouched, and the caller gets a `NotStarted`-class
-    // error. The next `migrate()` call (the next launch) will see
-    // `new_dir` non-empty and route through `merge_recover` instead,
-    // which converges safely from there.
-    //
-    // (Investigated and rejected: POSIX `rename(2)` can itself atomically
-    // replace an *empty* directory, which would let this skip straight to
-    // the `fs::rename` below on Unix — but Windows' `MoveFileEx` cannot
-    // replace a directory at all, empty or not, with
-    // `MOVEFILE_REPLACE_EXISTING` explicitly documented as unusable when
-    // either path names a directory. Since that path can't be unified
-    // across this project's two Tier 1 platforms, both go through the
-    // same explicit `remove_dir` step instead — cheap on an actually-empty
-    // directory, and identical on both platforms.)
-    //
-    // A further, vanishingly narrow gap remains between this `remove_dir`
-    // succeeding and the `fs::rename` below: something could recreate
-    // `new_dir` in between. If it does, the rename below fails (a
-    // directory can't be renamed onto a non-empty one, and nothing in
-    // this codebase's own write paths ever recreates `new_dir` itself, as
-    // opposed to writing a file inside an already-existing one) and is
-    // already handled the same way, as a `NotStarted` abort — never as a
-    // silent overwrite.
+    // doc's Concurrency section). Re-check right here, not trusted from
+    // that earlier check, and branch on the *current* state — see this
+    // function's own doc comment for the full reasoning (in short: never
+    // delete or replace anything at `new_dir`, merge into it instead if
+    // it's no longer absent).
     if new_dir.exists() {
-        if let Err(e) = fs::remove_dir(new_dir) {
-            let _ = fs::remove_dir_all(&partial);
-            return Err(MigrationError::NotStarted(format!(
-                "publish aborted: {} is no longer empty ({e}); the next \
-                 launch will merge-recover instead",
-                new_dir.display()
-            )));
-        }
+        // Merge-publish: fold `.partial`'s (this run's own, verified)
+        // contents into whatever's now at `new_dir`, exactly like
+        // `merge_recover` does for `old_dir` -- see `merge_into_new_dir`.
+        // `.partial` is a disposable staging copy, safe to discard once
+        // merged (unlike `old_dir`, nothing else ever needs it again).
+        return match merge_into_new_dir(&partial, new_dir) {
+            Ok((files_copied, bytes_copied, files_skipped)) => {
+                let _ = fs::remove_dir_all(&partial);
+                retire_old_dir(old_dir);
+                Ok(MigrationOutcome::Merged {
+                    files_copied,
+                    bytes_copied,
+                    files_skipped,
+                })
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&partial);
+                Err(e)
+            }
+        };
     }
-    // Publish: one atomic rename from the verified staging directory onto
-    // `new_dir`. Both are siblings under the same parent, so this is a
-    // same-volume rename, not a copy — `new_dir` goes from "doesn't exist"
-    // to "fully populated" in a single filesystem operation with no
-    // observable in-between state.
+    // Fast path: `new_dir` is still absent, so a plain rename is an
+    // unambiguous atomic publish -- both are siblings under the same
+    // parent (same-volume rename, not a copy), and renaming onto a
+    // nonexistent path has no replace semantics to worry about at all.
+    // `new_dir` goes from "doesn't exist" to "fully populated" in one
+    // filesystem operation with no observable in-between state.
     if let Err(e) = fs::rename(&partial, new_dir) {
         let _ = fs::remove_dir_all(&partial);
         return Err(MigrationError::NotStarted(format!(
@@ -1078,60 +1114,53 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
     Ok(())
 }
 
-/// Merge-recovery path for [`migrate`]: `new_dir` already has content (see
-/// the module doc for why this can happen without migration ever having
-/// completed) but there's no completion marker, so `old_dir`'s data still
-/// needs recovering — without touching anything already in `new_dir`.
-///
-/// Copies every item [`merge_dir_recursive`] finds missing from `new_dir`,
-/// verifies each copied file is present at its expected length, and only
-/// then retires `old_dir` to `<old_dir>.migrated`.
+/// Merge `source`'s contents into `new_dir` (item by item, via
+/// [`merge_dir_recursive`], never overwriting anything already present),
+/// verify each copied file is present at its expected length, `fsync`
+/// every directory this run touched, and return the resulting counts.
+/// `source` is never modified or removed — that's left to the caller,
+/// since what "consuming" `source` means differs: [`merge_recover`]
+/// retires `old_dir` to `<old_dir>.migrated`, kept forever; [`migrate_dir`]
+/// simply discards its own disposable `.partial` staging copy once merged.
 ///
 /// **No rollback on failure, deliberately — this is not an oversight.**
-/// An earlier version of this function removed every file
-/// `merge_dir_recursive` had copied in so far when a later item in the
-/// same walk failed. That was actively dangerous, not just unnecessary:
-/// every file this function publishes lands via
-/// [`copy_file_atomic_no_overwrite`]'s `hard_link`-based publish, which
-/// only ever succeeds by creating a *new* name — it can never produce a
-/// half-written or incorrect file at `dst`. So a file already recorded in
-/// `progress.copied` when some *other*, unrelated item later fails is
-/// already complete and correct at that moment — there is nothing wrong
-/// with it to undo. But by the time a rollback runs, `new_dir` may no
-/// longer be under this function's control: it can belong to a live,
-/// currently-running install (see [`migrate_locked`]'s doc for why a
-/// live instance and a migration can coexist), and that instance's own,
-/// completely ordinary activity — an autosave, a preferences change —
-/// can legitimately have overwritten that exact path with fresh, real
-/// content *after* this function published it. A path-based
-/// "remove everything I once wrote here" rollback can't distinguish "the
-/// file I created, unmolested" from "someone else's real, newer data
-/// that happens to share the name I used" — it would delete either one.
-/// Simply leaving already-published files in place instead is both safe
-/// (each one is either still exactly what this function wrote, or has
-/// been legitimately superseded by live activity — either way, correct,
-/// complete data) and sufficient: a retry after any failure is
-/// idempotent (`merge_dir_recursive` finds an already-present path and
-/// skips it rather than re-copying), so nothing is lost by not cleaning
-/// up.
+/// An earlier version of this removed every file `merge_dir_recursive`
+/// had copied in so far when a later item in the same walk failed. That
+/// was actively dangerous, not just unnecessary: every file this
+/// publishes lands via [`copy_file_atomic_no_overwrite`]'s `hard_link`-
+/// based publish, which only ever succeeds by creating a *new* name — it
+/// can never produce a half-written or incorrect file at `dst`. So a file
+/// already recorded in `progress.copied` when some *other*, unrelated
+/// item later fails is already complete and correct at that moment —
+/// there is nothing wrong with it to undo. But by the time a rollback
+/// runs, `new_dir` may no longer be under this function's control: it can
+/// belong to a live, currently-running install (see [`migrate_locked`]'s
+/// doc for why a live instance and a migration can coexist), and that
+/// instance's own, completely ordinary activity — an autosave, a
+/// preferences change — can legitimately have overwritten that exact path
+/// with fresh, real content *after* this function published it. A
+/// path-based "remove everything I once wrote here" rollback can't
+/// distinguish "the file I created, unmolested" from "someone else's
+/// real, newer data that happens to share the name I used" — it would
+/// delete either one. Simply leaving already-published files in place
+/// instead is both safe (each one is either still exactly what this
+/// function wrote, or has been legitimately superseded by live activity —
+/// either way, correct, complete data) and sufficient: a retry after any
+/// failure is idempotent (`merge_dir_recursive` finds an already-present
+/// path and skips it rather than re-copying), so nothing is lost by not
+/// cleaning up.
 ///
-/// On a copy or verification failure, `old_dir` is left completely
-/// intact (nothing here ever touches it before the final retirement
-/// step), and [`MigrationError::NotStarted`] describes the failure —
-/// exactly like [`migrate_dir`]'s failure contract, just without a
-/// `new_dir` to clean up (there's no staging directory here: writes land
-/// directly in `new_dir`, since unlike the full-transfer case there's a
-/// live directory to merge into, not an empty one to publish
-/// atomically). If copying and verification both succeed but confirming
-/// that durably (`fsync`) fails: [`MigrationError::ConfirmationFailed`]
-/// describes the failure instead.
-fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), MigrationError> {
+/// On a copy or verification failure, [`MigrationError::NotStarted`]
+/// describes the failure. If copying and verification both succeed but
+/// confirming that durably (`fsync`) fails:
+/// [`MigrationError::ConfirmationFailed`] describes the failure instead.
+fn merge_into_new_dir(source: &Path, new_dir: &Path) -> Result<(u64, u64, u64), MigrationError> {
     let mut progress = MergeProgress::default();
 
-    if let Err(e) = merge_dir_recursive(old_dir, new_dir, &mut progress) {
+    if let Err(e) = merge_dir_recursive(source, new_dir, &mut progress) {
         return Err(MigrationError::NotStarted(format!(
             "failed to merge {} into {}: {e}",
-            old_dir.display(),
+            source.display(),
             new_dir.display()
         )));
     }
@@ -1164,14 +1193,14 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Migr
     // re-copied), so calling this again after a partial `fsync` failure
     // just picks up where it left off.
     //
-    // Unlike migrate_dir's single publish rename (whose containing
-    // directory entry alone tells the whole story), merge-recovery places
-    // files one at a time via per-file renames scattered across
-    // `new_dir`'s own tree — including newly-created nested directories
-    // like `backups/`. Fsyncing only `new_dir`'s parent (below) would
-    // durably record that `new_dir` itself exists, but says nothing about
-    // whether its *interior* directories durably contain the entries this
-    // run just added. Fsync every directory this run actually touched
+    // Unlike a single directory-level publish rename (whose containing
+    // directory entry alone tells the whole story), this places files one
+    // at a time via per-file renames scattered across `new_dir`'s own
+    // tree — including newly-created nested directories like `backups/`.
+    // Fsyncing only `new_dir`'s parent (below) would durably record that
+    // `new_dir` itself exists, but says nothing about whether its
+    // *interior* directories durably contain the entries this run just
+    // added. Fsync every directory this run actually touched
     // (deduplicated) before returning success, so a crash right after
     // can't leave the completion marker (written next, by the caller)
     // durable while one of the files it vouches for has quietly lost its
@@ -1193,13 +1222,24 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Migr
         })?;
     }
 
-    retire_old_dir(old_dir);
-
     Ok((
         progress.files_copied,
         progress.bytes_copied,
         progress.files_skipped,
     ))
+}
+
+/// Merge-recovery path for [`migrate`]: `new_dir` already has content (see
+/// the module doc for why this can happen without migration ever having
+/// completed) but there's no completion marker, so `old_dir`'s data still
+/// needs recovering — without touching anything already in `new_dir`.
+/// Thin wrapper over [`merge_into_new_dir`] (see its doc for the
+/// no-rollback rationale and failure classification) that additionally
+/// retires `old_dir` to `<old_dir>.migrated` once the merge succeeds.
+fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), MigrationError> {
+    let result = merge_into_new_dir(old_dir, new_dir)?;
+    retire_old_dir(old_dir);
+    Ok(result)
 }
 
 /// Runs the full migration decision matrix — see the module doc's table —
@@ -1239,6 +1279,17 @@ pub fn migrate(
         return match migrate_dir(old_dir, new_dir)? {
             outcome @ MigrationOutcome::Migrated { .. } => {
                 write_marker(marker_path, source_identifier, "migrated")
+                    .map_err(MigrationError::ConfirmationFailed)?;
+                Ok(outcome)
+            }
+            // `migrate_dir` takes this instead of `Migrated` when
+            // `new_dir` turned out to no longer be empty by the time it
+            // was ready to publish (a live instance raced it) and had to
+            // merge-publish rather than rename -- see its own doc
+            // comment. Still a successful, marker-worthy outcome, just
+            // reported honestly as what it actually was.
+            outcome @ MigrationOutcome::Merged { .. } => {
+                write_marker(marker_path, source_identifier, "merged-at-publish")
                     .map_err(MigrationError::ConfirmationFailed)?;
                 Ok(outcome)
             }
@@ -1506,10 +1557,18 @@ mod tests {
     }
 
     #[test]
-    fn does_nothing_when_new_dir_exists_but_is_empty() {
-        // An empty new_dir (e.g. Tauri or another plugin created it as a
-        // side effect) should still be treated as "no live data there" and
-        // migrated into, not skipped.
+    fn merges_into_a_pre_existing_empty_new_dir_at_publish_time() {
+        // An empty new_dir that exists from the very start (e.g. Tauri or
+        // another plugin created it as a side effect) is never deleted or
+        // replaced under the current design (see `migrate_dir`'s doc
+        // comment: nothing ever removes/replaces `new_dir`, at any point)
+        // -- it's merged into at publish time instead, exactly like a
+        // `new_dir` that only became non-empty mid-copy. The end result
+        // (`preferences.json` lands in `new_dir`) is the same either way;
+        // this is reported as `Merged` rather than `Migrated` because
+        // that's honestly what happened -- `new_dir` already existed when
+        // publish was reached, so the merge-publish branch ran, even
+        // though it turned out to have nothing to skip.
         let root = temp_dir("new-empty");
         let old_dir = root.join("app.plume.editor");
         let new_dir = root.join("app.mojidori.editor");
@@ -1519,11 +1578,59 @@ mod tests {
         fs::create_dir_all(&new_dir).unwrap();
 
         let outcome = migrate_dir(&old_dir, &new_dir).unwrap();
-        assert!(matches!(
-            outcome,
-            MigrationOutcome::Migrated { files: 1, .. }
-        ));
+        assert!(
+            matches!(
+                outcome,
+                MigrationOutcome::Merged {
+                    files_copied: 1,
+                    files_skipped: 0,
+                    ..
+                }
+            ),
+            "expected a 1-file merge, got {outcome:?}"
+        );
         assert_eq!(fs::read(new_dir.join("preferences.json")).unwrap(), b"old");
+        assert!(!old_dir.exists());
+        assert!(root.join("app.plume.editor.migrated").is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_merges_into_a_pre_existing_empty_new_dir_and_writes_marker() {
+        // Same scenario as the test above, but through the full
+        // `migrate()` orchestrator, confirming the marker gets written
+        // (labeled distinctly, "merged-at-publish") once the merge-publish
+        // branch completes -- this is test (a) from the regression this
+        // whole redesign addresses: a `new_dir` that's empty right at
+        // publish time still converges to a fully-confirmed, marker-backed
+        // completion.
+        let root = temp_dir("migrate-merges-empty-new-dir");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+        let marker = marker_path(&new_dir);
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"old").unwrap();
+        fs::create_dir_all(&new_dir).unwrap();
+
+        let outcome = migrate(&old_dir, &new_dir, &marker, OLD_IDENTIFIER).unwrap();
+        assert!(
+            matches!(
+                outcome,
+                MigrationOutcome::Merged {
+                    files_copied: 1,
+                    files_skipped: 0,
+                    ..
+                }
+            ),
+            "expected a 1-file merge, got {outcome:?}"
+        );
+        assert_eq!(fs::read(new_dir.join("preferences.json")).unwrap(), b"old");
+        assert!(marker.is_file());
+        assert!(fs::read_to_string(&marker)
+            .unwrap()
+            .contains("merged-at-publish"));
         assert!(!old_dir.exists());
 
         let _ = fs::remove_dir_all(&root);
@@ -1657,37 +1764,22 @@ mod tests {
     }
 
     #[test]
-    fn migrate_dir_aborts_publish_if_new_dir_gains_content_during_the_copy() {
-        // Regression: the stale-cleanup right before publish used to
-        // trust the emptiness check from the very start of the call
-        // (`fs::remove_dir_all` after a re-check). Nothing in between
-        // holds a lock over *ordinary* app writes -- only concurrent
-        // *migration* attempts are serialized (`migrate_locked`'s OS
-        // lock). If an earlier instance already gave up on migration
-        // (`NotStarted`) and is now just running normally, its regular
-        // prefs/session writes don't hold that lock, so `new_dir` can go
-        // from empty to genuinely populated with live data while this
-        // call is busy copying `old_dir` into `.partial`.
-        //
-        // Now uses `fs::remove_dir` (non-recursive `rmdir` semantics) at
-        // publish time, not a re-check followed by `remove_dir_all`: it
-        // can only ever succeed on a directory that's actually empty at
-        // the instant of the syscall, and fails without deleting
-        // anything otherwise -- the emptiness check *is* the delete, at
-        // the kernel level, so there's no window left to land content in
-        // between a check and a delete. This test's injector writes into
-        // `new_dir` well before publish is even reached (as soon as
-        // `.partial` appears, partway through the copy), so it exercises
-        // `remove_dir` failing on a non-empty directory -- see
-        // `migrate_dir`'s doc comment for the narrower, sub-microsecond
-        // gap this doesn't (and, by inspection, can't reliably in a test)
-        // cover: something recreating `new_dir` between `remove_dir`
-        // succeeding and the immediately-following `rename`. That failure
-        // path is the same generic "`fs::rename` failed -> abort,
-        // `NotStarted`" handling already exercised elsewhere in this file
-        // (e.g. `leaves_old_dir_intact_when_copy_target_is_unwritable`),
-        // just reached via a different precondition -- not new,
-        // untested logic.
+    fn migrate_dir_merges_into_new_dir_that_gains_live_content_during_the_copy() {
+        // Regression / redesign: earlier versions of this function
+        // cleared `new_dir` before publishing (first `remove_dir_all`
+        // after a re-check, then a kernel-atomic non-recursive
+        // `remove_dir`), aborting the publish if `new_dir` had gained
+        // content by then. Both were still "check, then delete/abort" in
+        // spirit -- fixing the wrong problem, since the live data that
+        // raced the copy deserves to be merged in, not raced against.
+        // `new_dir` is now never deleted or replaced at all: if it exists
+        // by publish time, `.partial`'s contents are merged into it
+        // instead (see `migrate_dir`'s doc comment), using the same
+        // never-overwrite, per-file `hard_link` machinery `merge_recover`
+        // uses for `old_dir`. This is test (b) for that redesign: a live
+        // file in `new_dir` at publish time must survive untouched, and
+        // everything `old_dir` has that `new_dir` doesn't must still
+        // land.
         //
         // Reproduced with a background thread that writes into `new_dir`
         // as soon as `.partial` appears on disk (i.e. partway through the
@@ -1695,9 +1787,9 @@ mod tests {
         // synchronization point rather than a fixed sleep. `old_dir` is
         // padded with enough files that the copy (and its per-file
         // `fsync`s) takes measurably longer than the injector's poll
-        // loop, so the write reliably lands before this call reaches its
-        // own re-check.
-        let root = temp_dir("publish-toctou-abort");
+        // loop, so the write reliably lands before this call reaches
+        // publish.
+        let root = temp_dir("publish-merges-live-content");
         let old_dir = root.join("app.plume.editor");
         let new_dir = root.join("app.mojidori.editor");
         let partial = partial_dir(&new_dir);
@@ -1729,79 +1821,37 @@ mod tests {
         let result = migrate_dir(&old_dir, &new_dir);
         injector.join().unwrap();
 
+        let outcome = result.unwrap();
         assert!(
-            matches!(result, Err(MigrationError::NotStarted(_))),
-            "expected a NotStarted publish-abort, got {result:?}"
+            matches!(
+                outcome,
+                MigrationOutcome::Merged {
+                    files_copied: 200,
+                    files_skipped: 0,
+                    ..
+                }
+            ),
+            "expected a 200-file merge, got {outcome:?}"
         );
-        // The "concurrently-running instance"'s live file survives.
+        // The "concurrently-running instance"'s live file survives,
+        // untouched.
         assert_eq!(
             fs::read(new_dir.join("live.txt")).unwrap(),
             b"written by a concurrently-running instance"
         );
+        // Every migrated file landed too.
+        for i in 0..200 {
+            assert_eq!(
+                fs::read(new_dir.join(format!("file-{i}.json"))).unwrap(),
+                b"migrated data"
+            );
+        }
         // .partial was cleaned up, not left behind.
         assert!(!partial.exists());
-        // old_dir is completely untouched -- this is a NotStarted-class
-        // abort.
-        assert!(old_dir.is_dir());
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    #[ignore = "attempts the sub-microsecond remove_dir-to-rename gap directly; \
-                empirically unreliable (see the doc comment above and this \
-                test's own comment) -- kept, ignored, as a documented record \
-                of the attempt rather than deleted outright"]
-    fn migrate_dir_aborts_publish_if_new_dir_reappears_between_remove_dir_and_rename() {
-        // Attempted, best-effort reproduction of the narrower gap
-        // documented in `migrate_dir`: `fs::remove_dir(new_dir)` succeeds
-        // (it was genuinely empty), then something recreates `new_dir`
-        // before the very next statement, `fs::rename(&partial, new_dir)`,
-        // runs. Unlike the `.partial`-appearing synchronization point used
-        // by the sibling test above (a whole copy operation's worth of
-        // window), there is *no* I/O-bound work between `remove_dir` and
-        // `rename` here -- just two back-to-back syscalls -- so the window
-        // is on the order of a syscall round-trip, not milliseconds. An
-        // injector thread polling `!new_dir.exists()` essentially never
-        // observes it in time before `rename` has already recreated the
-        // name. Left here, `#[ignore]`d, rather than deleted, as a
-        // documented record that this was tried: `cargo test -- --ignored`
-        // will still run it for anyone who wants to see the (usually
-        // failing) result first-hand.
-        let root = temp_dir("publish-recreate-race");
-        let old_dir = root.join("app.plume.editor");
-        let new_dir = root.join("app.mojidori.editor");
-
-        fs::create_dir_all(&old_dir).unwrap();
-        fs::write(old_dir.join("preferences.json"), b"migrated data").unwrap();
-        fs::create_dir_all(&new_dir).unwrap();
-
-        let new_dir_for_injector = new_dir.clone();
-        let injector = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while new_dir_for_injector.exists() {
-                if std::time::Instant::now() > deadline {
-                    return;
-                }
-            }
-            let _ = fs::create_dir_all(&new_dir_for_injector);
-            let _ = fs::write(
-                new_dir_for_injector.join("live.txt"),
-                b"written by a racing writer",
-            );
-        });
-
-        let result = migrate_dir(&old_dir, &new_dir);
-        injector.join().unwrap();
-
-        assert!(
-            matches!(result, Err(MigrationError::NotStarted(_))),
-            "expected a NotStarted abort, got {result:?} -- the injector likely lost the race"
-        );
-        assert_eq!(
-            fs::read(new_dir.join("live.txt")).unwrap(),
-            b"written by a racing writer"
-        );
+        // old_dir is retired -- migration fully succeeded, just via a
+        // merge-publish rather than a plain rename.
+        assert!(!old_dir.exists());
+        assert!(root.join("app.plume.editor.migrated").is_dir());
 
         let _ = fs::remove_dir_all(&root);
     }
