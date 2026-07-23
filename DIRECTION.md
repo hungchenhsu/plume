@@ -39,8 +39,10 @@ as an afterthought. Here they are the identity. Feature decisions should be
 tested against the question: *does this make the editor more trustworthy or
 faster for text files, or is it IDE creep?*
 
-**Branding note:** "Plume" is a development codename, not the product name
-(see Decision Gate D1). Do not use it in outward-facing material.
+**Branding note:** The product's official name is **Mojidori** (decided
+2026-07-23, Decision Gate D1 — see §3/D1). "Plume" was the development
+codename used before the rename; do not use it in new outward-facing
+material.
 
 ## 2. Current state (2026-07-18)
 
@@ -123,20 +125,20 @@ faster for text files, or is it IDE creep?*
   confirmed the earlier visibility flip was deliberate (public repos get
   free Actions CI, and "it's about time"), overriding the original
   keep-private-until-named gate. Consequence: D3 is now *partially*
-  entered out of order — the remaining hygiene items (D1 naming and
-  macOS signing; the archive purge and README pass are done) are
-  outstanding **post-publication** work items rather than
-  preconditions, tracked in §3/D3. The positioning red
+  entered out of order — the remaining hygiene item (macOS signing; D1
+  naming resolved 2026-07-23, see §3/D1; the archive purge and README
+  pass are done) is outstanding **post-publication** work, tracked in
+  §3/D3. The positioning red
   lines (§5-S13) apply with full force now that every file is
   outward-facing. Actions billing on the account remains unfixed but
   moot while public.
 - Contributor onboarding docs live in `docs/dev-setup.md` (macOS +
   Windows); pre-release tagging is delegated to the agent (final
   releases remain user-gated).
-- Open decision gates: naming (D1), signing/updates (D2), distribution
-  (D4) — see §3. D3 (going public) was entered early by user decision
-  on 2026-07-15; its remaining items are post-publication work, not a
-  gate (§3/D3).
+- Open decision gates: signing/updates (D2), distribution (D4) — see §3.
+  D1 (naming) resolved 2026-07-23 (Mojidori) — see §3/D1. D3 (going
+  public) was entered early by user decision on 2026-07-15; its
+  remaining items are post-publication work, not a gate (§3/D3).
 - Known operational constraints and dead ends live in
   [.claude/judgment-overlay.md](.claude/judgment-overlay.md); hard
   architectural constraints in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -149,6 +151,10 @@ four are **user decisions** — a working session prepares the material and
 proposes, but never decides unilaterally.
 
 ### D1 — Official name
+
+**Status: DECIDED (2026-07-23).** The product's official name is
+**Mojidori**; domain, npm, and crates.io placeholders were claimed. The
+process and constraints below are kept for the record.
 
 **Blocks:** going public (D3), distribution (D4), signing identifiers (D2
 partially — bundle ID should be final before certificates are issued).
@@ -222,11 +228,9 @@ Three independent pieces, cheapest first:
 repo is public; the original preconditions below are kept for the
 record but are now **post-publication work items**, not gates:
 
-1. D1 decided and applied — still open (the largest remaining item; the
-   README carries an explicit "Plume is a working codename" notice as
-   the accepted interim treatment while public — honesty over hiding —
-   recorded here as the sanctioned exception to the §1 branding note
-   until the rename lands).
+1. D1 decided and applied — **resolved 2026-07-23** (Mojidori is the
+   official name; README updated accordingly, and the interim "Plume is
+   a working codename" notice referenced below has been retired).
 2. Repo hygiene sweep — archive material relocated out of the repo
    (2026-07-15); README rewritten with an Install section and accuracy
    pass (v0.5 H1); screenshots still owner-pending (agents must not

@@ -1,14 +1,12 @@
 # Contributing
 
-Thanks for your interest in Plume! This project is young and currently
+Thanks for your interest in Mojidori! This project is young and currently
 maintainer-driven, so the process is lightweight — but a few rules below
-are firm. Quick note first: "Plume" is a working codename, not a final
-product name (see the notice atop [README.md](README.md)) — please don't
-build code, docs, or assets that assume the name is permanent.
+are firm.
 
 ## Licensing policy (please read first)
 
-Plume is MIT-licensed. To keep it that way:
+Mojidori is MIT-licensed. To keep it that way:
 
 - **Do not copy or port code from GPL-licensed projects** (or any
   license incompatible with MIT), including other text editors.
@@ -38,7 +36,7 @@ cd src-tauri && cargo test   # Rust core tests
 ## What to work on
 
 - Small, scoped issues carry the
-  [`good first issue`](https://github.com/hungchenhsu/plume/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+  [`good first issue`](https://github.com/hungchenhsu/mojidori/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
   label — the best place to start if you're new to the codebase.
 - Larger feature work is planned in [ROADMAP.md](ROADMAP.md) and is
   currently driven by the maintainer in cycles. Want to pick up a
@@ -49,7 +47,7 @@ cd src-tauri && cargo test   # Rust core tests
   content, silent mojibake) get top priority.
 - Have an idea that isn't on the roadmap? Use the feature request
   template, and read ROADMAP.md's "Explicit non-goals" section first —
-  Plume stays intentionally small, and PRs expanding scope (plugin
+  Mojidori stays intentionally small, and PRs expanding scope (plugin
   systems, project panels, a terminal/debugger/LSP, FTP browsing, etc.)
   are declined regardless of code quality.
 

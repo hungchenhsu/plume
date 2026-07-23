@@ -1,9 +1,9 @@
 # Changelog
 
-All notable changes to Plume are documented in this file.
+All notable changes to Mojidori are documented in this file.
 
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
-Plume is pre-1.0 (alpha); version numbers do not yet carry strict
+Mojidori is pre-1.0 (alpha); version numbers do not yet carry strict
 Semantic Versioning compatibility guarantees.
 
 ## [v0.7.0-alpha.1] - 2026-07-19
@@ -383,11 +383,11 @@ Semantic Versioning compatibility guarantees.
 - Read-only preview mode for files over 10 MB, avoiding WebView freezes
   and accidental overwrites of huge files.
 
-[Unreleased]: https://github.com/hungchenhsu/plume/compare/v0.5.0-alpha.2...HEAD
-[v0.5.0-alpha.2]: https://github.com/hungchenhsu/plume/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
-[v0.5.0-alpha.1]: https://github.com/hungchenhsu/plume/compare/v0.4.0-alpha.1...v0.5.0-alpha.1
-[v0.4.0-alpha.1]: https://github.com/hungchenhsu/plume/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
-[v0.3.0-alpha.1]: https://github.com/hungchenhsu/plume/compare/v0.2.0-alpha.1...v0.3.0-alpha.1
-[v0.2.0-alpha.1]: https://github.com/hungchenhsu/plume/compare/v0.1.0-alpha.7...v0.2.0-alpha.1
-[v0.1.0-alpha.7]: https://github.com/hungchenhsu/plume/compare/v0.1.0-alpha.1...v0.1.0-alpha.7
-[v0.1.0-alpha.1]: https://github.com/hungchenhsu/plume/releases/tag/v0.1.0-alpha.1
+[Unreleased]: https://github.com/hungchenhsu/mojidori/compare/v0.5.0-alpha.2...HEAD
+[v0.5.0-alpha.2]: https://github.com/hungchenhsu/mojidori/compare/v0.5.0-alpha.1...v0.5.0-alpha.2
+[v0.5.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.4.0-alpha.1...v0.5.0-alpha.1
+[v0.4.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.3.0-alpha.1...v0.4.0-alpha.1
+[v0.3.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.2.0-alpha.1...v0.3.0-alpha.1
+[v0.2.0-alpha.1]: https://github.com/hungchenhsu/mojidori/compare/v0.1.0-alpha.7...v0.2.0-alpha.1
+[v0.1.0-alpha.7]: https://github.com/hungchenhsu/mojidori/compare/v0.1.0-alpha.1...v0.1.0-alpha.7
+[v0.1.0-alpha.1]: https://github.com/hungchenhsu/mojidori/releases/tag/v0.1.0-alpha.1

@@ -1,6 +1,6 @@
 # Encoding detection
 
-How Plume decides a file's encoding on open, and — the part that most often
+How Mojidori decides a file's encoding on open, and — the part that most often
 surprises users — which of the 27 encodings in the picker
 (`src/encodings.ts`) that decision can actually *land on by itself*, versus
 which ones only ever come from a BOM, a per-extension default, or a manual
@@ -74,17 +74,17 @@ needs to guess when a page has no charset declared. Its own README documents
 a fixed target set, under "Notes About Encodings":
 <https://github.com/hsivonen/chardetng/blob/master/README.md>
 
-Cross-referencing that list against Plume's 27-entry catalog (verified
+Cross-referencing that list against Mojidori's 27-entry catalog (verified
 directly against the README text, not assumed from an encoding's age or
 byte width — see `MANUAL_ONLY_ENCODINGS`'s doc comment in
 `src/encodings.ts` for the same citation in code):
 
 **Detected** — chardetng's `guess()` can select these on its own from
-content alone, among the 27 Plume actually offers: UTF-8 (only because
-Plume passes `allow_utf8: true`), GBK, Big5, EUC-KR, Shift_JIS, EUC-JP,
+content alone, among the 27 Mojidori actually offers: UTF-8 (only because
+Mojidori passes `allow_utf8: true`), GBK, Big5, EUC-KR, Shift_JIS, EUC-JP,
 windows-1250 through windows-1258, windows-874, ISO-8859-2, ISO-8859-5,
 ISO-8859-7, KOI8-U. (chardetng's target set is actually a little larger
-than this — it also covers ISO-2022-JP and ISO-8859-4/6/8/13, but Plume's
+than this — it also covers ISO-2022-JP and ISO-8859-4/6/8/13, but Mojidori's
 picker excludes all of those outright for reasons unrelated to detection:
 ISO-2022-JP for the stateful-encoding fast-path hazard documented in
 `encodings.ts`, and ISO-8859-4/6/8/13 simply were never added to the
@@ -129,7 +129,7 @@ limitation, just a matter of degree rather than an absolute gap.
 
 **Outside chardetng's target set, but still auto-detected anyway**:
 UTF-16LE/UTF-16BE. The README explicitly excludes them ("Detecting these
-belongs on the BOM layer"), but Plume's own BOM-sniffing layer (ahead of
+belongs on the BOM layer"), but Mojidori's own BOM-sniffing layer (ahead of
 chardetng in the decision order above) detects them whenever a BOM is
 present — the overwhelming common case for real UTF-16 files — so they are
 deliberately *not* in `MANUAL_ONLY_ENCODINGS`. Only a BOM-less UTF-16 file
