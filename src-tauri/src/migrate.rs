@@ -429,6 +429,11 @@ mod tests {
     }
 
     #[test]
+    // Unix-only: Windows ignores FILE_ATTRIBUTE_READONLY on directories,
+    // so a read-only parent does not block child creation and the copy
+    // never fails there. The error path under test is platform-independent
+    // io::Error propagation; unix coverage suffices.
+    #[cfg(unix)]
     fn leaves_old_dir_intact_when_copy_target_is_unwritable() {
         let root = temp_dir("copy-fails");
         let old_dir = root.join("app.plume.editor");
