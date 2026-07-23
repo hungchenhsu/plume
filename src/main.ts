@@ -162,6 +162,7 @@ import {
   updateTextStats,
 } from "./statusbar";
 import {
+  canMutateDocument,
   closeSequentially,
   idsOtherThan,
   idsToTheRightOf,
@@ -1894,19 +1895,38 @@ async function openFileFlow(): Promise<void> {
 }
 
 /**
- * If `doc` is currently read-only (ROADMAP.md v0.4 Track C), shows the
- * matching rejection dialog and returns true — shared by saveFlow and
- * runLineOperation so both entry points reject a blocked save/edit the
- * same way. Truncated (large-file preview) and userReadOnly get distinct
- * messages: writing a preview slice back would destroy the rest of the
- * file, unrelated to anything the user chose, whereas a userReadOnly doc
- * is telling the user exactly how to unlock it (uncheck View >
- * Read-Only). Truncated is checked first — matching
- * isEffectivelyReadOnly's own precedence and the status bar's (see
- * statusbar.ts updateStatusBar) — since a doc can't be edited back to an
- * un-truncated state from here regardless of userReadOnly.
+ * If `doc` cannot be mutated right now (`tabs.ts`'s `canMutateDocument` —
+ * `isEffectivelyReadOnly` plus the update-install freeze, ROADMAP.md D2),
+ * shows the matching rejection dialog and returns true — shared by
+ * saveFlow and runLineOperation so both entry points reject a blocked
+ * save/edit the same way. This is the single call site `canMutateDocument`
+ * exists for; no other call site should re-derive
+ * truncated/userReadOnly/updateFreezeActive on its own (a second,
+ * uncollapsed check site is exactly how a raw CM6 dispatch — e.g.
+ * insert_datetime, a line operation — slipped past the update freeze on
+ * the first review round, since the freeze only ever reconfigured the CM6
+ * read-only compartment those commands never consult). The freeze is
+ * checked first: it is a transient, app-wide condition unrelated to
+ * anything about this specific doc, so its own dedicated message takes
+ * precedence over doc-specific ones. Truncated (large-file preview) and
+ * userReadOnly get distinct messages after that: writing a preview slice
+ * back would destroy the rest of the file, unrelated to anything the user
+ * chose, whereas a userReadOnly doc is telling the user exactly how to
+ * unlock it (uncheck View > Read-Only). Truncated is checked before
+ * userReadOnly — matching isEffectivelyReadOnly's own precedence and the
+ * status bar's (see statusbar.ts updateStatusBar) — since a doc can't be
+ * edited back to an un-truncated state from here regardless of
+ * userReadOnly.
  */
 function blockedByReadOnly(doc: Doc): boolean {
+  if (canMutateDocument(doc, updateFreezeActive)) return false;
+  if (updateFreezeActive) {
+    void messageDialog(t("dialog.updateInProgressMessage"), {
+      title: t("dialog.updateInProgressTitle"),
+      kind: "warning",
+    });
+    return true;
+  }
   if (doc.truncated) {
     // Writing the preview slice back would destroy the rest of the file.
     void messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {

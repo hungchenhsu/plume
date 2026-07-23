@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EditorBuffer } from "./editor";
 import {
+  canMutateDocument,
   closeSequentially,
   DRAG_THRESHOLD_PX,
   idsOtherThan,
@@ -117,6 +118,44 @@ describe("isEffectivelyReadOnly", () => {
 
   it("is true when both truncated and userReadOnly are set", () => {
     expect(isEffectivelyReadOnly({ truncated: true, userReadOnly: true })).toBe(true);
+  });
+});
+
+// ROADMAP.md D2, Codex re-review of PR #309: the update-install freeze's
+// single collapse point (main.ts's blockedByReadOnly, guarding
+// runLineOperation/saveFlow — the same call sites isEffectivelyReadOnly
+// above already backs). Mirrors "insert_datetime / a line operation is
+// blocked while frozen, and works again once unfrozen" at the pure-
+// predicate level, since main.ts's own dispatch wiring isn't unit-testable
+// (it's wired directly into IPC/DOM/editor — same reasoning as
+// sessionpersist.ts's header comment).
+describe("canMutateDocument", () => {
+  const editableDoc = { truncated: false, userReadOnly: false };
+
+  it("is true for an ordinary editable doc when not frozen", () => {
+    expect(canMutateDocument(editableDoc, false)).toBe(true);
+  });
+
+  it("is false for the same doc while the update-install freeze is active — this is the case a raw dispatch (insert_datetime, a line operation) must not slip past", () => {
+    expect(canMutateDocument(editableDoc, true)).toBe(false);
+  });
+
+  it("is true again for the same doc once the freeze is lifted", () => {
+    expect(canMutateDocument(editableDoc, false)).toBe(true);
+  });
+
+  it("stays false while frozen even for a doc that would otherwise be mutable in every other respect", () => {
+    // Redundant with the case above by construction, but pins the
+    // intent explicitly: freeze is an unconditional AND, not something
+    // any doc-level state can override.
+    expect(canMutateDocument({ truncated: false, userReadOnly: false }, true)).toBe(false);
+  });
+
+  it("is false when the doc is already read-only, frozen or not", () => {
+    expect(canMutateDocument({ truncated: true, userReadOnly: false }, false)).toBe(false);
+    expect(canMutateDocument({ truncated: false, userReadOnly: true }, false)).toBe(false);
+    expect(canMutateDocument({ truncated: true, userReadOnly: false }, true)).toBe(false);
+    expect(canMutateDocument({ truncated: false, userReadOnly: true }, true)).toBe(false);
   });
 });
 

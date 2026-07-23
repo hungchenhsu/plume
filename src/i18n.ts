@@ -343,6 +343,12 @@ export interface Messages {
   "dialog.readonlyPreviewMessage": (title: string) => string;
   "dialog.userReadOnlyTitle": string;
   "dialog.userReadOnlyMessage": (title: string) => string;
+  // Update-install freeze (ROADMAP.md D2, Codex re-review of PR #309) —
+  // main.ts's blockedByReadOnly, checked before the truncated/userReadOnly
+  // cases above since it's an app-wide condition unrelated to this
+  // specific doc. See tabs.ts's canMutateDocument doc comment.
+  "dialog.updateInProgressTitle": string;
+  "dialog.updateInProgressMessage": string;
   "dialog.saveFailedTitle": string;
   "dialog.lossyEncodingTitle": string;
   "dialog.lossyEncodingMessage": (encoding: string, count: number) => string;
@@ -816,6 +822,9 @@ const en: Messages = {
   "dialog.userReadOnlyTitle": "Read-only",
   "dialog.userReadOnlyMessage": (title) =>
     `"${title}" is marked read-only. Uncheck View > Read-Only to edit it.`,
+  "dialog.updateInProgressTitle": "Update in Progress",
+  "dialog.updateInProgressMessage":
+    "Mojidori is preparing to install an update and can't be edited right now. Please wait a moment.",
   "dialog.saveFailedTitle": "Save failed",
   "dialog.lossyEncodingTitle": "Encoding warning",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -1217,6 +1226,8 @@ const zhTW: Messages = {
   "dialog.userReadOnlyTitle": "唯讀",
   "dialog.userReadOnlyMessage": (title) =>
     `「${title}」已設為唯讀，取消勾選「檢視 > 唯讀」即可編輯。`,
+  "dialog.updateInProgressTitle": "更新進行中",
+  "dialog.updateInProgressMessage": "Mojidori 正在準備安裝更新，目前無法編輯，請稍候。",
   "dialog.saveFailedTitle": "儲存失敗",
   "dialog.lossyEncodingTitle": "編碼警告",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -1619,6 +1630,9 @@ const ja: Messages = {
   "dialog.userReadOnlyTitle": "読み取り専用",
   "dialog.userReadOnlyMessage": (title) =>
     `「${title}」は読み取り専用に設定されています。「表示 > 読み取り専用」のチェックを外すと編集できます。`,
+  "dialog.updateInProgressTitle": "アップデート準備中",
+  "dialog.updateInProgressMessage":
+    "Mojidori はアップデートのインストールを準備しています。しばらくの間、編集はできません。",
   "dialog.saveFailedTitle": "保存に失敗しました",
   "dialog.lossyEncodingTitle": "エンコーディングに関する警告",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -2015,6 +2029,8 @@ const zhCN: Messages = {
   "dialog.userReadOnlyTitle": "只读",
   "dialog.userReadOnlyMessage": (title) =>
     `“${title}”已设为只读，取消勾选“视图 > 只读”即可编辑。`,
+  "dialog.updateInProgressTitle": "更新进行中",
+  "dialog.updateInProgressMessage": "Mojidori 正在准备安装更新，目前无法编辑，请稍候。",
   "dialog.saveFailedTitle": "保存失败",
   "dialog.lossyEncodingTitle": "编码警告",
   "dialog.lossyEncodingMessage": (encoding, count) =>

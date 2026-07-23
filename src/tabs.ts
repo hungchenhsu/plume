@@ -205,6 +205,31 @@ export function isEffectivelyReadOnly(doc: Pick<Doc, "truncated" | "userReadOnly
   return doc.truncated || doc.userReadOnly;
 }
 
+/**
+ * Whether `doc` may be mutated right now — `isEffectivelyReadOnly` above,
+ * plus the app-wide "an update is being installed" freeze (ROADMAP.md D2,
+ * Codex re-review of PR #309: main.ts's `updateFreezeActive`, held for the
+ * flush-through-install span around src/updater.ts's `promptAndInstall` —
+ * see `UpdaterDeps.freezeForUpdate`'s doc comment there for the keystroke
+ * race this closes). This is the single collapse point every mutating
+ * menu/palette command must route through: the first review round only
+ * froze the CM6 read-only compartment, which `runLineOperation`'s guard
+ * (main.ts's `blockedByReadOnly`) never consulted — a mutation via
+ * `insert_datetime`/a line operation/etc. dispatches a raw CM6 change and
+ * doesn't go through the compartment at all, so it slipped straight past
+ * that freeze. `blockedByReadOnly` is this function's only caller;
+ * anything that needs "can I edit this doc" must go through
+ * `blockedByReadOnly`, never re-derive `truncated`/`userReadOnly` (or now
+ * this freeze) on its own — that duplication is exactly how a second
+ * mutation path got missed the first time.
+ */
+export function canMutateDocument(
+  doc: Pick<Doc, "truncated" | "userReadOnly">,
+  updateFreezeActive: boolean,
+): boolean {
+  return !isEffectivelyReadOnly(doc) && !updateFreezeActive;
+}
+
 export interface TabEvents {
   onSelect(id: number): void;
   onClose(id: number): void;
