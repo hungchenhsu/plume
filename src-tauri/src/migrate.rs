@@ -675,40 +675,51 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, M
     // with fresh state, its regular prefs/session/backup writes don't
     // hold that lock — so `new_dir` can go from empty to genuinely
     // populated with live data while this call was busy copying `old_dir`
-    // into `.partial`. Blindly `remove_dir_all`ing it here, trusting the
-    // earlier check, would delete that live data.
+    // into `.partial`.
     //
-    // Re-verify right here, immediately before the destructive cleanup,
-    // instead: if `new_dir` now has content, abort the publish rather
-    // than clearing it — `.partial` is discarded, `new_dir` is left
+    // An earlier version of this cleared `new_dir` with a re-check
+    // (`dir_has_entries`) followed by `remove_dir_all` — but that pairing
+    // is itself a "check, then delete" race, just a narrower one: content
+    // written between the re-check and the `remove_dir_all` call would
+    // still be deleted. `fs::remove_dir` (non-recursive `rmdir`/
+    // `RemoveDirectory` — as opposed to `remove_dir_all`) closes this for
+    // real rather than narrowing it: it can only ever succeed on a
+    // directory that is *actually* empty at the exact instant of the
+    // syscall, and fails (`ENOTEMPTY` / the Windows equivalent) — deleting
+    // nothing — otherwise. The emptiness check *is* the delete operation,
+    // at the kernel level; there is no gap left for anything to land in
+    // between them. On failure here, the publish is aborted exactly as
+    // for any other failure in this function: `.partial` is discarded,
+    // `new_dir` (and whatever a live instance put in it) is left
     // completely untouched, and the caller gets a `NotStarted`-class
     // error. The next `migrate()` call (the next launch) will see
     // `new_dir` non-empty and route through `merge_recover` instead,
-    // which converges safely from there (copies in whatever `old_dir`
-    // still has that `new_dir` doesn't, without touching what's already
-    // live).
+    // which converges safely from there.
     //
-    // This narrows the race to the residual window between this check
-    // and the `remove_dir_all`/`rename` calls immediately below —
-    // microseconds, not the whole copy duration — rather than closing it
-    // outright; that would require ordinary app writes to also hold the
-    // migration lock, out of scope here. An honest, if small, extension
-    // of the same class of limitation the module doc's Concurrency
-    // section already describes.
+    // (Investigated and rejected: POSIX `rename(2)` can itself atomically
+    // replace an *empty* directory, which would let this skip straight to
+    // the `fs::rename` below on Unix — but Windows' `MoveFileEx` cannot
+    // replace a directory at all, empty or not, with
+    // `MOVEFILE_REPLACE_EXISTING` explicitly documented as unusable when
+    // either path names a directory. Since that path can't be unified
+    // across this project's two Tier 1 platforms, both go through the
+    // same explicit `remove_dir` step instead — cheap on an actually-empty
+    // directory, and identical on both platforms.)
+    //
+    // A further, vanishingly narrow gap remains between this `remove_dir`
+    // succeeding and the `fs::rename` below: something could recreate
+    // `new_dir` in between. If it does, the rename below fails (a
+    // directory can't be renamed onto a non-empty one, and nothing in
+    // this codebase's own write paths ever recreates `new_dir` itself, as
+    // opposed to writing a file inside an already-existing one) and is
+    // already handled the same way, as a `NotStarted` abort — never as a
+    // silent overwrite.
     if new_dir.exists() {
-        if dir_has_entries(new_dir) {
+        if let Err(e) = fs::remove_dir(new_dir) {
             let _ = fs::remove_dir_all(&partial);
             return Err(MigrationError::NotStarted(format!(
-                "publish aborted: {} gained content during migration (likely \
-                 a concurrently-running instance's normal writes); the next \
+                "publish aborted: {} is no longer empty ({e}); the next \
                  launch will merge-recover instead",
-                new_dir.display()
-            )));
-        }
-        if let Err(e) = fs::remove_dir_all(new_dir) {
-            let _ = fs::remove_dir_all(&partial);
-            return Err(MigrationError::NotStarted(format!(
-                "failed to clear pre-existing empty {}: {e}",
                 new_dir.display()
             )));
         }
@@ -1647,17 +1658,36 @@ mod tests {
 
     #[test]
     fn migrate_dir_aborts_publish_if_new_dir_gains_content_during_the_copy() {
-        // Regression: the stale-cleanup `remove_dir_all(new_dir)` right
-        // before publish used to trust the emptiness check from the very
-        // start of the call. Nothing in between holds a lock over
-        // *ordinary* app writes -- only concurrent *migration* attempts
-        // are serialized (`migrate_locked`'s OS lock). If an earlier
-        // instance already gave up on migration (`NotStarted`) and is now
-        // just running normally, its regular prefs/session writes don't
-        // hold that lock, so `new_dir` can go from empty to genuinely
-        // populated with live data while this call is busy copying
-        // `old_dir` into `.partial`. Blindly deleting it at publish time
-        // would destroy that live data.
+        // Regression: the stale-cleanup right before publish used to
+        // trust the emptiness check from the very start of the call
+        // (`fs::remove_dir_all` after a re-check). Nothing in between
+        // holds a lock over *ordinary* app writes -- only concurrent
+        // *migration* attempts are serialized (`migrate_locked`'s OS
+        // lock). If an earlier instance already gave up on migration
+        // (`NotStarted`) and is now just running normally, its regular
+        // prefs/session writes don't hold that lock, so `new_dir` can go
+        // from empty to genuinely populated with live data while this
+        // call is busy copying `old_dir` into `.partial`.
+        //
+        // Now uses `fs::remove_dir` (non-recursive `rmdir` semantics) at
+        // publish time, not a re-check followed by `remove_dir_all`: it
+        // can only ever succeed on a directory that's actually empty at
+        // the instant of the syscall, and fails without deleting
+        // anything otherwise -- the emptiness check *is* the delete, at
+        // the kernel level, so there's no window left to land content in
+        // between a check and a delete. This test's injector writes into
+        // `new_dir` well before publish is even reached (as soon as
+        // `.partial` appears, partway through the copy), so it exercises
+        // `remove_dir` failing on a non-empty directory -- see
+        // `migrate_dir`'s doc comment for the narrower, sub-microsecond
+        // gap this doesn't (and, by inspection, can't reliably in a test)
+        // cover: something recreating `new_dir` between `remove_dir`
+        // succeeding and the immediately-following `rename`. That failure
+        // path is the same generic "`fs::rename` failed -> abort,
+        // `NotStarted`" handling already exercised elsewhere in this file
+        // (e.g. `leaves_old_dir_intact_when_copy_target_is_unwritable`),
+        // just reached via a different precondition -- not new,
+        // untested logic.
         //
         // Reproduced with a background thread that writes into `new_dir`
         // as soon as `.partial` appears on disk (i.e. partway through the
@@ -1713,6 +1743,65 @@ mod tests {
         // old_dir is completely untouched -- this is a NotStarted-class
         // abort.
         assert!(old_dir.is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[ignore = "attempts the sub-microsecond remove_dir-to-rename gap directly; \
+                empirically unreliable (see the doc comment above and this \
+                test's own comment) -- kept, ignored, as a documented record \
+                of the attempt rather than deleted outright"]
+    fn migrate_dir_aborts_publish_if_new_dir_reappears_between_remove_dir_and_rename() {
+        // Attempted, best-effort reproduction of the narrower gap
+        // documented in `migrate_dir`: `fs::remove_dir(new_dir)` succeeds
+        // (it was genuinely empty), then something recreates `new_dir`
+        // before the very next statement, `fs::rename(&partial, new_dir)`,
+        // runs. Unlike the `.partial`-appearing synchronization point used
+        // by the sibling test above (a whole copy operation's worth of
+        // window), there is *no* I/O-bound work between `remove_dir` and
+        // `rename` here -- just two back-to-back syscalls -- so the window
+        // is on the order of a syscall round-trip, not milliseconds. An
+        // injector thread polling `!new_dir.exists()` essentially never
+        // observes it in time before `rename` has already recreated the
+        // name. Left here, `#[ignore]`d, rather than deleted, as a
+        // documented record that this was tried: `cargo test -- --ignored`
+        // will still run it for anyone who wants to see the (usually
+        // failing) result first-hand.
+        let root = temp_dir("publish-recreate-race");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"migrated data").unwrap();
+        fs::create_dir_all(&new_dir).unwrap();
+
+        let new_dir_for_injector = new_dir.clone();
+        let injector = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while new_dir_for_injector.exists() {
+                if std::time::Instant::now() > deadline {
+                    return;
+                }
+            }
+            let _ = fs::create_dir_all(&new_dir_for_injector);
+            let _ = fs::write(
+                new_dir_for_injector.join("live.txt"),
+                b"written by a racing writer",
+            );
+        });
+
+        let result = migrate_dir(&old_dir, &new_dir);
+        injector.join().unwrap();
+
+        assert!(
+            matches!(result, Err(MigrationError::NotStarted(_))),
+            "expected a NotStarted abort, got {result:?} -- the injector likely lost the race"
+        );
+        assert_eq!(
+            fs::read(new_dir.join("live.txt")).unwrap(),
+            b"written by a racing writer"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
