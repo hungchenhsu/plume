@@ -612,6 +612,24 @@ fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u6
     }
 }
 
+/// Record that `path`'s *parent* directory gained a new entry (`path`
+/// itself — a copied-in file, or a freshly created subdirectory) and
+/// therefore needs an `fsync` before this migration step is considered
+/// durable. Call this at every point that creates a filesystem entry
+/// under `new_dir`, so [`merge_recover`]'s final fsync pass never misses
+/// one — see the module doc's Durability section.
+///
+/// This only ever needs to record the *parent*: `path` itself, if it's a
+/// directory, becomes someone else's `parent` in a later call in its own
+/// right (either a file placed inside it, or a further-nested
+/// subdirectory), so its own turn to be recorded happens naturally as the
+/// walk continues.
+fn record_touched_parent(touched_dirs: &mut HashSet<PathBuf>, path: &Path) {
+    if let Some(parent) = path.parent() {
+        touched_dirs.insert(parent.to_path_buf());
+    }
+}
+
 /// Recursively copy every file/subdirectory of `src` into `dst`, used when
 /// merging a subtree that `new_dir` doesn't have at all yet. `dst` may
 /// already partially exist here (not just be freshly created) if a
@@ -626,6 +644,13 @@ fn copy_dir_recursive_tracked(
 ) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     progress.touched_dirs.insert(dst.to_path_buf());
+    // `dst` is itself a brand new entry in *its own* parent's directory
+    // listing (e.g. `new_dir` gaining a `backups` entry it didn't have
+    // before) -- distinct from `dst`'s own interior contents, and easy to
+    // miss: the line above only covers "fsync `dst` so its own future
+    // children are durable", not "fsync whoever `dst` just became a child
+    // of".
+    record_touched_parent(&mut progress.touched_dirs, dst);
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -685,8 +710,8 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
             } else {
                 if let Some(parent) = dst_path.parent() {
                     fs::create_dir_all(parent)?;
-                    progress.touched_dirs.insert(parent.to_path_buf());
                 }
+                record_touched_parent(&mut progress.touched_dirs, &dst_path);
                 match copy_file_atomic_no_overwrite(&src_path, &dst_path)? {
                     Some(bytes) => {
                         progress.copied.push((dst_path, bytes));
@@ -1368,6 +1393,49 @@ mod tests {
             fs::read(new_dir.join(".window-state.json")).unwrap(),
             b"{\"main\":{}}"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_tracks_new_dir_itself_as_touched_when_copying_a_whole_missing_subtree() {
+        // Regression for a gap in the fix above: copying a whole missing
+        // subtree (e.g. `backups/`) into new_dir must also mark `new_dir`
+        // itself as touched -- `backups` is a brand new entry in
+        // *new_dir's own* directory listing, not just a directory whose
+        // own interior needs flushing. Missing this meant a crash right
+        // after a successful, verified, marker-written merge could still
+        // lose the `backups` directory *entry* on Unix (the file data and
+        // the `backups`/`nested` levels themselves were tracked; `new_dir`
+        // -> `backups` was not), with no further retry once the marker
+        // short-circuits every later launch.
+        let root = temp_dir("merge-tracks-new-dir-itself");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(old_dir.join("backups").join("nested")).unwrap();
+        fs::write(
+            old_dir.join("backups").join("nested").join("deep.bak"),
+            b"hot-exit backup content",
+        )
+        .unwrap();
+
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join(".window-state.json"), b"unrelated").unwrap();
+
+        let mut progress = MergeProgress::default();
+        merge_dir_recursive(&old_dir, &new_dir, &mut progress).unwrap();
+
+        assert!(
+            progress.touched_dirs.contains(&new_dir),
+            "new_dir itself must be marked touched -- it gained a new \
+             `backups` entry; touched_dirs was {:?}",
+            progress.touched_dirs
+        );
+        assert!(progress.touched_dirs.contains(&new_dir.join("backups")));
+        assert!(progress
+            .touched_dirs
+            .contains(&new_dir.join("backups").join("nested")));
 
         let _ = fs::remove_dir_all(&root);
     }
