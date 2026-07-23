@@ -768,8 +768,10 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, M
     })
 }
 
-/// Tracks what [`merge_dir_recursive`] has actually written, so a failure
-/// partway through can roll back exactly (and only) what this run added.
+/// Tracks what [`merge_dir_recursive`] has actually written, so
+/// [`merge_recover`] can verify and `fsync` exactly what this run added.
+/// Deliberately *not* used to roll anything back on failure — see
+/// [`merge_recover`]'s doc comment for why that would be actively unsafe.
 #[derive(Default)]
 struct MergeProgress {
     /// `(path written under new_dir, expected length)`.
@@ -802,28 +804,52 @@ fn merge_tmp_path(dst: &Path) -> PathBuf {
 }
 
 /// Copy `src` to `dst` durably and atomically, *without ever overwriting an
-/// existing `dst`*: write to a same-directory temp file
-/// (`<dst-name>.merge-tmp`), `fsync` it, then `rename` it onto `dst` only
-/// if `dst` still doesn't exist.
+/// existing `dst`, even one that appears only after this call has already
+/// started*: write to a same-directory temp file (`<dst-name>.merge-tmp`),
+/// `fsync` it, then publish it under `dst`'s name via `fs::hard_link`
+/// (never `fs::rename` — see why below), which fails atomically, at the
+/// kernel level, if `dst` already exists.
 ///
 /// Unlike [`copy_file_synced`] (used by the full-transfer path, where
 /// files land in a `.partial` staging directory that's wholly discarded
 /// and rebuilt from scratch on any retry), merge-recovery writes directly
-/// into the live `new_dir` — a crash mid-`fs::copy` there would leave a
-/// file that *exists* at its final path but is truncated/incomplete, and
-/// on the next run `merge_dir_recursive`'s "already exists, skip"
-/// never-overwrite rule would then protect that torn file forever, mistaking
-/// it for real data instead of retrying. Landing every file via a
-/// same-named-but-suffixed temp + atomic rename means a crash can only ever
-/// leave the *temp* file torn, never the final one — the final path either
-/// doesn't exist yet (safe to retry) or holds a complete, verified copy.
+/// into the live `new_dir` — a crash mid-copy there would leave a file
+/// that *exists* at its final path but is truncated/incomplete, and on
+/// the next run `merge_dir_recursive`'s "already exists, skip"
+/// never-overwrite rule would then protect that torn file forever,
+/// mistaking it for real data instead of retrying. Landing every file via
+/// a same-named-but-suffixed temp file first means a crash can only ever
+/// leave the *temp* file torn, never the final one — the final path
+/// either doesn't exist yet (safe to retry) or holds a complete, verified
+/// copy.
+///
+/// **Publishing via `hard_link`, not `rename`:** an earlier version of
+/// this function re-checked `dst.exists()` right before publishing and
+/// then called `fs::rename(&tmp, dst)` — but that "check, then rename" is
+/// not itself atomic: `fs::rename` *replaces* an existing destination
+/// unconditionally on every platform this targets (this is documented
+/// behavior — `MOVEFILE_REPLACE_EXISTING` is the flag `std::fs::rename`
+/// passes to `MoveFileEx` on Windows, matching plain POSIX `rename` on
+/// Unix — not an "already safe on Windows" special case). If `new_dir`
+/// belongs to a *live, currently-running* install (see [`migrate_locked`]'s
+/// doc for why that's possible even with the migration lock — this file
+/// isn't a migration artifact, it's something the live app itself might
+/// be writing, e.g. `session.json` on an ordinary save, completely
+/// outside migration's own locking), that instance could create `dst`
+/// in the gap between the check and the rename, and the rename would
+/// silently clobber it with our stale copy. `fs::hard_link` closes this
+/// for real: creating the link and checking "does a name already exist
+/// at `dst`" is a single kernel operation there is no gap to race —
+/// cross-platform (Unix `link()`, Windows `CreateHardLinkW`), so no
+/// `#[cfg]` split is needed. Once the link exists, `tmp`'s own name (now
+/// a second link to the same file) is removed, leaving just `dst`.
 ///
 /// Any pre-existing temp file at the computed path is discarded before
 /// this attempt starts — it can only be debris from an interrupted
-/// previous attempt at this exact file. Returns `Ok(None)` (temp discarded,
-/// nothing written) if `dst` already exists — either found so up front, or
-/// found so in a final check right before the rename — rather than ever
-/// overwriting it.
+/// previous attempt at this exact file. Returns `Ok(None)` (temp
+/// discarded, nothing written) if `dst` already exists — whether found so
+/// up front, in the pre-publish check, or via `hard_link` itself losing
+/// the race — rather than ever overwriting it: live data always wins.
 fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u64>> {
     if dst.exists() {
         return Ok(None);
@@ -838,8 +864,8 @@ fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u6
     // temp file is created via `create_file_no_wider_than_source` (never
     // wider than `src` even for the instant before any bytes land) and
     // has `src`'s permissions set again after writing (restoring any bits
-    // the umask stripped) before the rename publishes it under `dst`'s
-    // final name — same two-step rationale as `copy_file_synced`.
+    // the umask stripped) before publishing under `dst`'s final name —
+    // same two-step rationale as `copy_file_synced`.
     let write_result = (|| -> io::Result<u64> {
         let mut reader = File::open(src)?;
         let src_permissions = fs::metadata(src)?.permissions();
@@ -860,8 +886,21 @@ fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u6
         let _ = fs::remove_file(&tmp);
         return Ok(None);
     }
-    match fs::rename(&tmp, dst) {
-        Ok(()) => Ok(Some(bytes)),
+    // See this function's doc comment for why this is `hard_link`, not
+    // `rename`: only `hard_link` actually fails atomically if `dst` has
+    // appeared since the check above, rather than silently replacing it.
+    match fs::hard_link(&tmp, dst) {
+        Ok(()) => {
+            let _ = fs::remove_file(&tmp);
+            Ok(Some(bytes))
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            // Lost the race: something else (a live instance's own,
+            // unrelated write) created `dst` between our check and this
+            // call. Its data wins; ours is discarded, never overwriting.
+            let _ = fs::remove_file(&tmp);
+            Ok(None)
+        }
         Err(e) => {
             let _ = fs::remove_file(&tmp);
             Err(e)
@@ -1028,18 +1067,6 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
     Ok(())
 }
 
-/// Undo exactly what a failed [`merge_dir_recursive`] run added: remove
-/// every file it copied in. Directories it may have created along the way
-/// (either as merge targets or as part of a whole-subtree copy) are left
-/// in place — they're harmless if empty, and precisely distinguishing "we
-/// created this directory" from "it already existed" adds failure modes
-/// of its own without a safety benefit worth the complexity.
-fn rollback_merge(progress: &MergeProgress) {
-    for (path, _) in &progress.copied {
-        let _ = fs::remove_file(path);
-    }
-}
-
 /// Merge-recovery path for [`migrate`]: `new_dir` already has content (see
 /// the module doc for why this can happen without migration ever having
 /// completed) but there's no completion marker, so `old_dir`'s data still
@@ -1047,23 +1074,50 @@ fn rollback_merge(progress: &MergeProgress) {
 ///
 /// Copies every item [`merge_dir_recursive`] finds missing from `new_dir`,
 /// verifies each copied file is present at its expected length, and only
-/// then retires `old_dir` to `<old_dir>.migrated`. On a copy or
-/// verification failure, the files this run copied in are removed again
-/// (nothing pre-existing in `new_dir` is ever touched either way),
-/// `old_dir` is left completely intact, and
-/// [`MigrationError::NotStarted`] describes the failure — exactly like
-/// [`migrate_dir`]'s failure contract, just without a `new_dir` to clean
-/// up (there's no staging directory here: writes land directly in
-/// `new_dir`, since unlike the full-transfer case there's a live
-/// directory to merge into, not an empty one to publish atomically). If
-/// copying and verification both succeed but confirming that durably
-/// (`fsync`) fails: nothing is rolled back, and
-/// [`MigrationError::ConfirmationFailed`] describes the failure instead.
+/// then retires `old_dir` to `<old_dir>.migrated`.
+///
+/// **No rollback on failure, deliberately — this is not an oversight.**
+/// An earlier version of this function removed every file
+/// `merge_dir_recursive` had copied in so far when a later item in the
+/// same walk failed. That was actively dangerous, not just unnecessary:
+/// every file this function publishes lands via
+/// [`copy_file_atomic_no_overwrite`]'s `hard_link`-based publish, which
+/// only ever succeeds by creating a *new* name — it can never produce a
+/// half-written or incorrect file at `dst`. So a file already recorded in
+/// `progress.copied` when some *other*, unrelated item later fails is
+/// already complete and correct at that moment — there is nothing wrong
+/// with it to undo. But by the time a rollback runs, `new_dir` may no
+/// longer be under this function's control: it can belong to a live,
+/// currently-running install (see [`migrate_locked`]'s doc for why a
+/// live instance and a migration can coexist), and that instance's own,
+/// completely ordinary activity — an autosave, a preferences change —
+/// can legitimately have overwritten that exact path with fresh, real
+/// content *after* this function published it. A path-based
+/// "remove everything I once wrote here" rollback can't distinguish "the
+/// file I created, unmolested" from "someone else's real, newer data
+/// that happens to share the name I used" — it would delete either one.
+/// Simply leaving already-published files in place instead is both safe
+/// (each one is either still exactly what this function wrote, or has
+/// been legitimately superseded by live activity — either way, correct,
+/// complete data) and sufficient: a retry after any failure is
+/// idempotent (`merge_dir_recursive` finds an already-present path and
+/// skips it rather than re-copying), so nothing is lost by not cleaning
+/// up.
+///
+/// On a copy or verification failure, `old_dir` is left completely
+/// intact (nothing here ever touches it before the final retirement
+/// step), and [`MigrationError::NotStarted`] describes the failure —
+/// exactly like [`migrate_dir`]'s failure contract, just without a
+/// `new_dir` to clean up (there's no staging directory here: writes land
+/// directly in `new_dir`, since unlike the full-transfer case there's a
+/// live directory to merge into, not an empty one to publish
+/// atomically). If copying and verification both succeed but confirming
+/// that durably (`fsync`) fails: [`MigrationError::ConfirmationFailed`]
+/// describes the failure instead.
 fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), MigrationError> {
     let mut progress = MergeProgress::default();
 
     if let Err(e) = merge_dir_recursive(old_dir, new_dir, &mut progress) {
-        rollback_merge(&progress);
         return Err(MigrationError::NotStarted(format!(
             "failed to merge {} into {}: {e}",
             old_dir.display(),
@@ -1075,7 +1129,6 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Migr
         match fs::metadata(path) {
             Ok(meta) if meta.len() == *expected_len => {}
             Ok(meta) => {
-                rollback_merge(&progress);
                 return Err(MigrationError::NotStarted(format!(
                     "merge verification mismatch for {}: expected {expected_len} byte(s), found {}",
                     path.display(),
@@ -1083,7 +1136,6 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Migr
                 )));
             }
             Err(e) => {
-                rollback_merge(&progress);
                 return Err(MigrationError::NotStarted(format!(
                     "merge verification failed for {}: {e}",
                     path.display()
@@ -1095,12 +1147,8 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Migr
     // ---- Phase boundary: every file this run copied in has been
     // byte-verified correct. Everything below is a *durability
     // confirmation* step, not a data-correctness one, so failures here
-    // are reported as `ConfirmationFailed`, not `NotStarted` — and
-    // deliberately not `rollback_merge`d either, unlike the copy/verify
-    // failures above: there's nothing wrong to undo, and discarding
-    // good, already-placed data over a possibly-transient `fsync` error
-    // would only make the inevitable retry redo real work. That retry is
-    // safe either way: `merge_dir_recursive` is idempotent (an
+    // are reported as `ConfirmationFailed`, not `NotStarted`. That retry
+    // is safe either way: `merge_dir_recursive` is idempotent (an
     // already-placed file is found to already exist and skipped, not
     // re-copied), so calling this again after a partial `fsync` failure
     // just picks up where it left off.
@@ -1935,6 +1983,89 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn merge_publish_never_overwrites_a_dst_that_appears_after_the_tmp_is_ready() {
+        // Regression: the previous publish step re-checked `dst.exists()`
+        // then called `fs::rename(&tmp, dst)` -- not atomic, since
+        // `fs::rename` *replaces* an existing destination unconditionally
+        // (on every platform this targets, including Windows -- see
+        // `copy_file_atomic_no_overwrite`'s doc comment). A live
+        // instance's own, completely ordinary write (e.g. an autosave)
+        // landing in the gap between that check and the rename would get
+        // silently clobbered by a stale migrated copy. Publishing via
+        // `hard_link` instead fails atomically if `dst` exists by then.
+        //
+        // Reproduced with a background thread that writes into `dst` as
+        // soon as the `.merge-tmp` staging file appears on disk -- inside
+        // the old race window, before the publish step runs.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("merge-publish-toctou");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        let src = old_dir.join("session.json");
+        // Padded so `io::copy` + `set_permissions` + `sync_all` take
+        // measurably longer than the injector thread's poll loop, giving
+        // it a reliable window to land in before the publish step.
+        fs::write(&src, vec![b'x'; 4_000_000]).unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+
+        fs::create_dir_all(&new_dir).unwrap();
+        let dst = new_dir.join("session.json");
+        let tmp = merge_tmp_path(&dst);
+
+        let dst_for_injector = dst.clone();
+        let tmp_for_injector = tmp.clone();
+        let injector = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !tmp_for_injector.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    ".merge-tmp never appeared -- test setup assumption broke"
+                );
+                std::thread::sleep(std::time::Duration::from_micros(50));
+            }
+            fs::write(&dst_for_injector, b"live, freshly-saved content").unwrap();
+        });
+
+        // Exercised through `merge_dir_recursive` (not
+        // `copy_file_atomic_no_overwrite` in isolation) so the full
+        // composed behavior is covered: counted as skipped, and its
+        // parent still recorded for fsync confirmation, exactly as if
+        // `dst` had already existed from the start.
+        let mut progress = MergeProgress::default();
+        merge_dir_recursive(&old_dir, &new_dir, &mut progress).unwrap();
+        injector.join().unwrap();
+
+        // Lost the race, as intended: the stale migrated copy was never
+        // published, and the live content it raced against is untouched.
+        assert_eq!(
+            progress.files_copied, 0,
+            "the stale copy must not count as copied"
+        );
+        assert_eq!(
+            progress.files_skipped, 1,
+            "must be treated as skipped -- live data won the race"
+        );
+        assert!(
+            progress.touched_dirs.contains(&new_dir),
+            "the parent must still be recorded for fsync confirmation even \
+             though the copy lost the race; touched_dirs was {:?}",
+            progress.touched_dirs
+        );
+        assert_eq!(
+            fs::read(&dst).unwrap(),
+            b"live, freshly-saved content",
+            "the live instance's write must win, never be overwritten"
+        );
+        assert!(!tmp.exists(), "the temp file must be cleaned up either way");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn merge_cleans_up_stray_merge_tmp_debris_before_copying() {
         // A `.merge-tmp` file at the computed staging path can only be
         // debris from an interrupted previous attempt at copying this
@@ -2014,8 +2145,19 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn merge_failure_rolls_back_only_what_it_added_and_leaves_old_dir_intact() {
-        let root = temp_dir("merge-failure-rollback");
+    fn merge_failure_keeps_already_published_files_and_converges_on_retry() {
+        // Rewritten from an earlier version of this test that asserted a
+        // *rollback* of already-copied files on failure — that behavior
+        // was removed (see `merge_recover`'s doc comment for why: every
+        // published file is already complete and correct, courtesy of
+        // `copy_file_atomic_no_overwrite`'s hard_link publish, and a
+        // path-based rollback risks deleting a live instance's real data
+        // that happened to land at the same path afterwards). The
+        // contract now is: a failure partway through a merge leaves
+        // whatever was already published exactly as it is, and a later
+        // retry converges (finds it already present, skips it, and picks
+        // up wherever the previous attempt left off).
+        let root = temp_dir("merge-failure-keeps-published");
         let old_dir = root.join("app.plume.editor");
         let new_dir = root.join("app.mojidori.editor");
 
@@ -2030,7 +2172,7 @@ mod tests {
         fs::create_dir_all(old_dir.join("shared_subdir")).unwrap();
         fs::write(
             old_dir.join("shared_subdir").join("blocked.txt"),
-            b"never makes it in",
+            b"eventually makes it in, once permissions are fixed",
         )
         .unwrap();
 
@@ -2056,10 +2198,13 @@ mod tests {
         perms.set_readonly(false);
         fs::set_permissions(new_dir.join("shared_subdir"), perms).unwrap();
 
-        assert!(result.is_err(), "expected an Err, got {result:?}");
+        assert!(
+            matches!(result, Err(MigrationError::NotStarted(_))),
+            "expected a NotStarted Err, got {result:?}"
+        );
 
-        // old_dir is completely intact -- merge failure never touches the
-        // source, and never retires it.
+        // old_dir is completely intact -- a failed merge never touches
+        // (let alone retires) the source.
         assert!(old_dir.is_dir());
         assert_eq!(
             fs::read(old_dir.join("recoverable.json")).unwrap(),
@@ -2067,17 +2212,43 @@ mod tests {
         );
         assert_eq!(
             fs::read(old_dir.join("shared_subdir").join("blocked.txt")).unwrap(),
-            b"never makes it in"
+            b"eventually makes it in, once permissions are fixed"
         );
 
-        // The pre-existing file survives, and whatever this attempt
-        // managed to copy before failing was rolled back rather than left
-        // half-merged.
+        // The pre-existing file survives, and -- the point of this
+        // rewrite -- so does whatever this attempt already published
+        // before the unrelated failure. Nothing is rolled back.
         assert_eq!(
             fs::read(new_dir.join(".window-state.json")).unwrap(),
             b"pre-existing, must survive"
         );
-        assert!(!new_dir.join("recoverable.json").exists());
+        assert_eq!(
+            fs::read(new_dir.join("recoverable.json")).unwrap(),
+            b"copyable on its own",
+            "a file already published before the failure must survive, not be rolled back"
+        );
+
+        // A retry now converges: recoverable.json is found already
+        // present and skipped (not re-copied), and blocked.txt can now
+        // be copied since the permission problem is fixed.
+        let (files_copied, _, files_skipped) = merge_recover(&old_dir, &new_dir).unwrap();
+        assert_eq!(
+            files_copied, 1,
+            "only blocked.txt should still need copying"
+        );
+        assert_eq!(
+            files_skipped, 1,
+            "recoverable.json should be found already present"
+        );
+        assert_eq!(
+            fs::read(new_dir.join("shared_subdir").join("blocked.txt")).unwrap(),
+            b"eventually makes it in, once permissions are fixed"
+        );
+        assert!(
+            !old_dir.exists(),
+            "old_dir is retired once the merge fully converges"
+        );
+        assert!(root.join("app.plume.editor.migrated").is_dir());
 
         let _ = fs::remove_dir_all(&root);
     }
