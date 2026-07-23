@@ -1,8 +1,6 @@
 # Features
 
-> **Plume** is a working codename — the final product name is still to be decided.
-
-Plume is a fast, lightweight, encoding-first text editor. This guide
+Mojidori is a fast, lightweight, encoding-first text editor. This guide
 covers its encoding and large-file tooling feature by feature: what it
 does, how to reach it, and where it stops working. See the
 [README](../README.md) for install and background, and
@@ -17,7 +15,7 @@ every shortcut in one table.
 
 ### Encoding detection
 
-On open, Plume checks in order for a byte-order mark (BOM), runs a
+On open, Mojidori checks in order for a byte-order mark (BOM), runs a
 statistical detector (chardetng) over the file's bytes, falls back to a
 per-extension default if one is set, then UTF-8. Decode errors are always
 surfaced, never silently rendered as clean text.
@@ -56,7 +54,7 @@ A fallback ("always open `.txt` as Big5") for files the detector can't
 confidently place, e.g. legacy Windows codepages with no recognizable
 byte pattern.
 
-- **Trigger:** Preferences… (`Cmd/Ctrl+,`; macOS: Plume application menu;
+- **Trigger:** Preferences… (`Cmd/Ctrl+,`; macOS: Mojidori application menu;
   elsewhere: File menu) → "Per-extension encodings" table.
 - **Behavior:** a hint, not an override — ignored whenever the file has a
   BOM, decodes as confident non-ASCII UTF-8, or would decode with errors
@@ -112,7 +110,7 @@ hex bytes, ASCII gutter — instead of a decoded interpretation.
 
 ### Character-level trust tools
 
-Three ways to see characters Plume would otherwise render invisibly: the
+Three ways to see characters Mojidori would otherwise render invisibly: the
 character inspector shows exactly what one character is, byte for byte;
 "Show Invisibles" renders whitespace and line-ending glyphs; "Suspicious
 Characters" highlights a curated set used in real-world spoofing
@@ -158,7 +156,7 @@ has no equivalent in the document's save encoding.
 
 ### Document Info and line endings
 
-Document Info is a read-only trust panel with everything Plume currently
+Document Info is a read-only trust panel with everything Mojidori currently
 knows about the active document, including a full line-ending breakdown;
 the status bar's line-ending segment is the quick way to change it.
 
@@ -184,10 +182,10 @@ file, so opening a huge file is still instant.
 
 - **Trigger:** automatic, by file size.
 - **Behavior:** the status bar shows a preview badge with its real
-  size. Plume loads 2 MB chunks (up to 8 in memory at once): scrolling
+  size. Mojidori loads 2 MB chunks (up to 8 in memory at once): scrolling
   near either edge of what's loaded quietly pulls in the next chunk, and
   the ◀ / ▶ status-bar buttons page a full chunk at a time manually. Go
-  to Line and bookmarks still reach past the loaded window — Plume builds
+  to Line and bookmarks still reach past the loaded window — Mojidori builds
   a line-offset index on demand ("building line index…" in the status
   bar) and jumps straight to the right chunk.
 - **Limits:** paging (automatic or manual) doesn't work for UTF-16 or
@@ -240,7 +238,7 @@ its own encoding rather than assuming UTF-8.
 
 ## Everyday editing
 
-Beyond encoding, Plume has the basics: multi-cursor selection, code
+Beyond encoding, Mojidori has the basics: multi-cursor selection, code
 folding, indent guides, auto-detected indentation shown in the status
 bar, a line-operations toolbox (sort — including case-insensitive and
 numeric variants — deduplicate, reverse, trim, tab/space conversion,
@@ -283,7 +281,7 @@ competing OS-level accelerator on the same key. These are marked
 | Preferences… | `⌘,` | `Ctrl+,` |
 | Quit | `⌘Q` | *(none)* |
 
-Preferences… lives in the **Plume** application menu on macOS and in the
+Preferences… lives in the **Mojidori** application menu on macOS and in the
 File menu everywhere else — same shortcut either way. Quit has no bound
 accelerator on Windows/Linux; File > Exit still works by menu click, and
 the window's own close control is the usual way out.
@@ -356,6 +354,6 @@ above.
 | Hide | `⌘H` | *(n/a — no Window menu)* |
 | Hide Others | `⌥⌘H` | *(n/a — no Window menu)* |
 
-The Window menu and the "Plume" application menu (which also carries
+The Window menu and the "Mojidori" application menu (which also carries
 these plus About/Services, neither of which has a shortcut) only exist
 on macOS — see the `#[cfg(target_os = "macos")]` guards in `menu.rs`.

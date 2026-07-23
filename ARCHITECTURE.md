@@ -2,7 +2,7 @@
 
 ## Overview
 
-Plume is a Tauri 2 application with a strict split between a Rust core and a web-technology UI running in the platform WebView.
+Mojidori is a Tauri 2 application with a strict split between a Rust core and a web-technology UI running in the platform WebView.
 
 ```
 ┌─────────────────────────────────────────────┐

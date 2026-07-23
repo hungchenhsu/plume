@@ -1,6 +1,8 @@
-# Plume
+# Mojidori
 
-> **Plume** is a working codename — the final product name is still to be decided.
+> **Mojidori** (文字鳥, "letter bird") is the official product name, chosen
+> 2026-07-23 after using "Plume" as a working codename during early
+> development.
 
 A fast, lightweight, open-source text editor. Mac-first, cross-platform, encoding-first.
 
@@ -10,7 +12,7 @@ A fast, lightweight, open-source text editor. Mac-first, cross-platform, encodin
 
 Opening a text file should be instant. Legacy encodings should just work. And the app should feel native on your platform — not like something ported from somewhere else.
 
-Plume is built around three promises:
+Mojidori is built around three promises:
 
 - **Instant.** Cold start to editing in well under a second. Opening a text file is faster than launching an IDE.
 - **Encoding-first.** Reliable detection and explicit, lossless conversion for UTF-8 (with or without BOM), UTF-16, Big5, Shift_JIS, GB18030 and more. No mojibake, no silent corruption. Line endings (LF, CRLF, and mixed) are detected, displayed, and convertible.
@@ -55,7 +57,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full picture.
 
 ## Install
 
-Plume ships as pre-release builds on [GitHub Releases](https://github.com/hungchenhsu/plume/releases) — there is no stable 1.0 yet, and things can change between alphas.
+Mojidori ships as pre-release builds on [GitHub Releases](https://github.com/hungchenhsu/mojidori/releases) — there is no stable 1.0 yet, and things can change between alphas.
 
 Download the build for your platform from the latest release's Assets — macOS: `.dmg` (pick `aarch64` for Apple Silicon or `x64` for Intel); Windows: `.msi` or `.exe`. To build from source instead, see [Development](#development) below.
 

@@ -1,6 +1,6 @@
 # Development environment setup
 
-Everything you need to build and run Plume locally on macOS or Windows
+Everything you need to build and run Mojidori locally on macOS or Windows
 (both Tier 1). Read [CONTRIBUTING.md](../CONTRIBUTING.md) for process and
 code rules; this file is environment only.
 
@@ -24,8 +24,8 @@ devDependencies.
 ## First build
 
 ```sh
-git clone https://github.com/hungchenhsu/plume.git
-cd plume
+git clone https://github.com/hungchenhsu/mojidori.git
+cd mojidori
 npm install
 npm run build     # required once before any cargo command:
                   # tauri::generate_context! needs dist/ to exist
@@ -58,7 +58,7 @@ in [CLAUDE.md](../CLAUDE.md) / [CONTRIBUTING.md](../CONTRIBUTING.md).
   git config --global core.autocrlf false
   ```
 
-  (Tracked: [#48](https://github.com/hungchenhsu/plume/issues/48) will pin
+  (Tracked: [#48](https://github.com/hungchenhsu/mojidori/issues/48) will pin
   this repo-side with `.gitattributes`.)
 - **Shell:** examples in this repo assume a POSIX-ish shell; on Windows,
   PowerShell works for all `npm`/`cargo` commands as written except the
