@@ -506,6 +506,11 @@ export interface Messages {
   "updater.downloadFailedMessage": string;
   "updater.checkFailedTitle": string;
   "updater.checkFailedMessage": string;
+  // Shown when a manual "Check for Updates…" click lands while another
+  // check (background or manual) is already running (ROADMAP.md D2,
+  // Codex re-review of PR #309's in-flight guard).
+  "updater.checkInProgressTitle": string;
+  "updater.checkInProgressMessage": string;
   "updater.upToDateTitle": string;
   "updater.upToDateMessage": string;
   // Shown when flushForExit (main.ts) reports a failed backup/session
@@ -941,6 +946,8 @@ const en: Messages = {
   "updater.downloadFailedMessage": "The update could not be downloaded. Please try again later.",
   "updater.checkFailedTitle": "Update Check Failed",
   "updater.checkFailedMessage": "Could not check for updates. Please check your internet connection.",
+  "updater.checkInProgressTitle": "Check in Progress",
+  "updater.checkInProgressMessage": "An update check is already in progress. Please wait for it to finish.",
   "updater.upToDateTitle": "You're Up to Date",
   "updater.upToDateMessage": "Mojidori is on the latest version.",
   "updater.flushFailedTitle": "Backup Failed",
@@ -1330,6 +1337,8 @@ const zhTW: Messages = {
   "updater.downloadFailedMessage": "無法下載更新，請稍後再試。",
   "updater.checkFailedTitle": "檢查更新失敗",
   "updater.checkFailedMessage": "無法檢查更新，請確認網路連線。",
+  "updater.checkInProgressTitle": "檢查進行中",
+  "updater.checkInProgressMessage": "已有更新檢查正在進行，請稍候。",
   "updater.upToDateTitle": "已是最新版本",
   "updater.upToDateMessage": "Mojidori 目前已是最新版本。",
   "updater.flushFailedTitle": "備份失敗",
@@ -1745,6 +1754,8 @@ const ja: Messages = {
   "updater.downloadFailedMessage": "アップデートをダウンロードできませんでした。しばらくしてから再試行してください。",
   "updater.checkFailedTitle": "アップデートの確認に失敗しました",
   "updater.checkFailedMessage": "アップデートを確認できませんでした。インターネット接続をご確認ください。",
+  "updater.checkInProgressTitle": "確認中",
+  "updater.checkInProgressMessage": "アップデートの確認はすでに進行中です。しばらくお待ちください。",
   "updater.upToDateTitle": "最新の状態です",
   "updater.upToDateMessage": "Mojidori は最新バージョンです。",
   "updater.flushFailedTitle": "バックアップに失敗しました",
@@ -2132,6 +2143,8 @@ const zhCN: Messages = {
   "updater.downloadFailedMessage": "无法下载更新，请稍后重试。",
   "updater.checkFailedTitle": "检查更新失败",
   "updater.checkFailedMessage": "无法检查更新，请确认网络连接。",
+  "updater.checkInProgressTitle": "检查进行中",
+  "updater.checkInProgressMessage": "已有更新检查正在进行，请稍候。",
   "updater.upToDateTitle": "已是最新版本",
   "updater.upToDateMessage": "Mojidori 当前已是最新版本。",
   "updater.flushFailedTitle": "备份失败",

@@ -337,3 +337,77 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     );
   });
 });
+
+// ROADMAP.md D2, Codex re-review of PR #309: the startup background check
+// and a manual File > Check for Updates… click can overlap — without a
+// guard, two concurrent runs would race freeze/unfreeze (a single boolean
+// in main.ts, not a refcount) and, on macOS/Linux, both could reach
+// install/relaunch at once.
+describe("checkForUpdatesAndPrompt — concurrent calls", () => {
+  it("a second call made while the first is still running short-circuits — no duplicate download/install, and the manual caller is told a check is already in progress", async () => {
+    const { deps: deps1 } = makeDeps();
+    const { deps: deps2, flushForExit: flushForExit2 } = makeDeps();
+    const calledCommands: string[] = [];
+    stubInvokeHappyPath(calledCommands);
+    // First call declines at the initial prompt — just needs to still be
+    // "in flight" (inside its own await) when the second call fires;
+    // confirmDialog's pending promise is exactly that in-flight window.
+    let resolveConfirm!: (value: boolean) => void;
+    confirmDialog.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        resolveConfirm = resolve;
+      }),
+    );
+
+    const first = checkForUpdatesAndPrompt(deps1, { silent: true });
+    // Fired synchronously, before `first` has had a chance to resolve —
+    // `first` is definitely still in flight (it's blocked on the
+    // unresolved confirmDialog promise above).
+    const second = checkForUpdatesAndPrompt(deps2, { silent: false });
+
+    resolveConfirm(false); // let the first call finish (declines "Later")
+    await Promise.all([first, second]);
+
+    // "plugin:updater|check" appears exactly once — the second call never
+    // reached its own checkForUpdate() at all; "plugin:resources|close"
+    // is the first call's own decline-path cleanup (see the "declining"
+    // describe block above), not a sign of a second flow having run.
+    expect(calledCommands).toEqual(["plugin:updater|check", "plugin:resources|close"]);
+    expect(flushForExit2).not.toHaveBeenCalled();
+    expect(messageDialog).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ title: "Check in Progress" }),
+    );
+  });
+
+  it("a silent concurrent call is short-circuited without any dialog", async () => {
+    const { deps: deps1 } = makeDeps();
+    const { deps: deps2 } = makeDeps();
+    let resolveConfirm!: (value: boolean) => void;
+    confirmDialog.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        resolveConfirm = resolve;
+      }),
+    );
+    invoke.mockResolvedValueOnce(update); // the first call's own check
+
+    const first = checkForUpdatesAndPrompt(deps1, { silent: true });
+    const second = checkForUpdatesAndPrompt(deps2, { silent: true });
+
+    resolveConfirm(false);
+    await Promise.all([first, second]);
+
+    expect(messageDialog).not.toHaveBeenCalled();
+  });
+
+  it("a check can run again once the first one has fully finished", async () => {
+    invoke.mockResolvedValueOnce(null); // first: no update
+    const { deps } = makeDeps();
+    await checkForUpdatesAndPrompt(deps, { silent: true });
+
+    invoke.mockResolvedValueOnce(null); // second: no update
+    await checkForUpdatesAndPrompt(deps, { silent: true });
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});

@@ -226,9 +226,24 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
   });
 }
 
+/** Guards against the startup background check and a manual File > Check
+ *  for Updates… click overlapping (ROADMAP.md D2, Codex re-review of PR
+ *  #309): `freezeForUpdate`/`unfreezeForUpdate` toggle a single boolean in
+ *  main.ts, not a refcount, so two concurrent runs of `checkForUpdatesAndPrompt`
+ *  would race each other's freeze/unfreeze — one run's `finally` could
+ *  unfreeze the editor while the other is still mid-flush, and on
+ *  macOS/Linux both could reach `install`/`relaunch` at once. Set the
+ *  instant a run actually starts (inside `checkForUpdatesAndPrompt`,
+ *  before anything else) and cleared in that same function's `finally`,
+ *  so it covers every exit path — silent early-returns, the download/
+ *  flush/install failure dialogs, and the eventual `relaunch` — with one
+ *  spot to get right rather than one per branch. */
+let inFlight: Promise<void> | null = null;
+
 /**
  * Check for an update and, if one exists, ask the user before downloading
- * and installing it.
+ * and installing it. See `inFlight` above for the concurrency guard this
+ * applies before doing anything else.
  *
  * `silent: true` (the startup call) never surfaces a dialog for "no update"
  * or "check failed" — offline is the normal state for a local desktop
@@ -238,8 +253,38 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
  * date or when the check itself failed, so a manual click never silently
  * does nothing. The "update available" prompt itself always shows,
  * regardless of `silent`.
+ *
+ * A concurrent call while one is already running never joins it — joining
+ * would mean a manual click made *while* the silent background check is in
+ * flight inherits that check's `silent: true` behavior and shows nothing
+ * even if it turns out there's no update, which is exactly the "a manual
+ * click never silently does nothing" contract above being broken by the
+ * other caller's options. Short-circuiting instead means `silent: false`
+ * can always show its own dialog — here, "a check is already running" —
+ * regardless of what triggered the one in flight.
  */
 export async function checkForUpdatesAndPrompt(
+  deps: UpdaterDeps,
+  options: { silent: boolean },
+): Promise<void> {
+  if (inFlight) {
+    if (!options.silent) {
+      await messageDialog(t("updater.checkInProgressMessage"), {
+        title: t("updater.checkInProgressTitle"),
+      }).catch(() => {});
+    }
+    return;
+  }
+  const run = runCheckForUpdatesAndPrompt(deps, options);
+  inFlight = run;
+  try {
+    await run;
+  } finally {
+    inFlight = null;
+  }
+}
+
+async function runCheckForUpdatesAndPrompt(
   deps: UpdaterDeps,
   options: { silent: boolean },
 ): Promise<void> {
