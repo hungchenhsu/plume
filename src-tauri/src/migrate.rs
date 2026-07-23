@@ -823,6 +823,22 @@ fn copy_dir_recursive_tracked(
 /// - A type mismatch (`old` has a file where `new` has a directory, or
 ///   vice versa) -> skipped entirely; logged, since this shouldn't happen
 ///   in practice and merging through it would be guessing.
+///
+/// Every one of those cases — copied *or* skipped, file *or* directory —
+/// records the relevant parent director(y/ies) into `progress.touched_dirs`
+/// (see [`record_touched_parent`]). This looks redundant for the "already
+/// there" cases at first (nothing was written this call), but it isn't:
+/// [`merge_recover`] only ever gets here because there's no completion
+/// marker yet, which means *nothing* about `new`'s current contents has
+/// been durability-confirmed by this protocol before — including an entry
+/// a previous, interrupted attempt already placed and byte-verified, but
+/// crashed before `fsync`ing. Skipping such an entry without recording it
+/// would mean this retry's final `fsync` pass could end up covering
+/// nothing at all (everything skipped, nothing newly copied), and the
+/// caller would then durably write the completion marker over an entry
+/// whose durability was never actually confirmed. Recording it every time
+/// costs one redundant (but cheap) `fsync` per already-durable entry on a
+/// clean run; the alternative is a real, silent durability gap.
 fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> io::Result<()> {
     for entry in fs::read_dir(old)? {
         let entry = entry?;
@@ -832,6 +848,13 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
 
         if file_type.is_dir() {
             if dst_path.is_dir() {
+                // Shared directory: whether it's always existed or was
+                // itself created (but maybe not yet fsync-confirmed) by
+                // an earlier interrupted attempt, its own entry in *its*
+                // parent's listing needs the same reconfirmation as
+                // anything else reached via this no-marker-yet retry.
+                progress.touched_dirs.insert(dst_path.clone());
+                record_touched_parent(&mut progress.touched_dirs, &dst_path);
                 merge_dir_recursive(&src_path, &dst_path, progress)?;
             } else if dst_path.exists() {
                 eprintln!(
@@ -839,6 +862,7 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
                     src_path.display(),
                     dst_path.display()
                 );
+                record_touched_parent(&mut progress.touched_dirs, &dst_path);
                 let (skipped, _) = dir_stats(&src_path).unwrap_or((0, 0));
                 progress.files_skipped += skipped;
             } else {
@@ -846,6 +870,9 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
             }
         } else if file_type.is_file() {
             if dst_path.exists() {
+                // Already there -- but see this function's doc comment
+                // for why it's recorded as touched anyway.
+                record_touched_parent(&mut progress.touched_dirs, &dst_path);
                 progress.files_skipped += 1;
             } else {
                 if let Some(parent) = dst_path.parent() {
@@ -1598,6 +1625,91 @@ mod tests {
         assert!(progress
             .touched_dirs
             .contains(&new_dir.join("backups").join("nested")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_records_touched_parents_for_skipped_already_present_entries() {
+        // Regression: a retry after a "copied successfully last time, but
+        // fsync failed (or the process was killed) before the marker
+        // could be written" crash finds every file it would have copied
+        // already present, and skips all of them. If skipped entries
+        // weren't tracked, this retry's touched_dirs would end up
+        // completely empty -- no fsync would run at all -- and the
+        // caller would durably write the completion marker over an
+        // entry whose durability was, in fact, never confirmed.
+        let root = temp_dir("merge-records-skipped-parents");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"content").unwrap();
+
+        // Simulate: a previous attempt already copied this file into
+        // new_dir (byte-identical) but crashed before confirming
+        // durability, so no marker exists.
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join("preferences.json"), b"content").unwrap();
+
+        let mut progress = MergeProgress::default();
+        merge_dir_recursive(&old_dir, &new_dir, &mut progress).unwrap();
+
+        assert_eq!(
+            progress.files_copied, 0,
+            "the file should be skipped, not re-copied"
+        );
+        assert_eq!(progress.files_skipped, 1);
+        assert!(
+            progress.touched_dirs.contains(&new_dir),
+            "the skipped file's parent must still be recorded for fsync \
+             confirmation; touched_dirs was {:?}",
+            progress.touched_dirs
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_writes_marker_even_when_every_entry_is_skipped() {
+        // End-to-end: same "already copied, fsync unconfirmed, no
+        // marker" scenario as the test above, but through the real
+        // `migrate()` orchestrator -- confirms the all-skip retry still
+        // runs its fsync pass and reaches `write_marker`, rather than
+        // quietly no-oping through an empty touched_dirs set and leaving
+        // the marker unwritten forever.
+        let root = temp_dir("merge-writes-marker-all-skip");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+        let marker = marker_path(&new_dir);
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"content").unwrap();
+
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join("preferences.json"), b"content").unwrap();
+        assert!(!marker.exists());
+
+        let outcome = migrate(&old_dir, &new_dir, &marker, OLD_IDENTIFIER).unwrap();
+        assert!(
+            matches!(
+                outcome,
+                MigrationOutcome::Merged {
+                    files_copied: 0,
+                    files_skipped: 1,
+                    ..
+                }
+            ),
+            "expected an all-skip merge, got {outcome:?}"
+        );
+        assert!(
+            marker.is_file(),
+            "marker must be written once the retry's fsync pass completes"
+        );
+        assert!(
+            !old_dir.exists(),
+            "old_dir should still be retired once durability is (re)confirmed"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
