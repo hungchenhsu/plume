@@ -304,20 +304,28 @@ fn fsync_dir(_dir: &Path) -> io::Result<()> {
 /// merge-recovery, which must avoid walking `new_dir` wholesale — it can
 /// contain unrelated, possibly large pre-existing live data — and instead
 /// fsyncs only the specific directories it touched).
+///
+/// Propagates the first `fsync` (or `read_dir`) failure it hits rather
+/// than swallowing it: an `Err` here must stop [`migrate_dir`] from
+/// reporting success and its caller from writing the completion marker —
+/// see [`merge_recover`]'s equivalent loop for why silently continuing
+/// would be a real durability hole, not just a cosmetic one.
 #[cfg(unix)]
-fn fsync_dir_tree(root: &Path) {
-    let _ = fsync_dir(root);
-    if let Ok(entries) = fs::read_dir(root) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                fsync_dir_tree(&entry.path());
-            }
+fn fsync_dir_tree(root: &Path) -> io::Result<()> {
+    fsync_dir(root)?;
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            fsync_dir_tree(&entry.path())?;
         }
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn fsync_dir_tree(_root: &Path) {}
+fn fsync_dir_tree(_root: &Path) -> io::Result<()> {
+    Ok(())
+}
 
 /// `fs::create_dir_all(dst)`, then immediately set `dst`'s permissions to
 /// match `src`'s — closing the window (rather than fixing it up only
@@ -421,6 +429,17 @@ fn lock_path(new_dir: &Path) -> PathBuf {
 /// `crate::atomic_write`), then `fsync` the parent directory too (Unix
 /// only — see [`fsync_dir`]) so the rename itself survives a crash right
 /// after this returns.
+///
+/// The parent `fsync`'s failure is propagated as `Err`, not swallowed:
+/// if the marker's own rename isn't confirmed durable, a crash right
+/// after could make the marker vanish on the next launch anyway, but
+/// returning `Ok` here regardless would additionally mean the *caller*
+/// (`migrate`) reports this call a success when it can't actually back
+/// that up. Propagating costs nothing extra — the marker write is safe
+/// to just retry from scratch (`crate::atomic_write` already discards and
+/// recreates its own temp file every call) — and keeps this consistent
+/// with [`migrate_dir`] and [`merge_recover`]'s equivalent `fsync`
+/// failures, which are propagated for the same reason.
 fn write_marker(
     marker_path: &Path,
     source_identifier: &str,
@@ -436,7 +455,13 @@ fn write_marker(
         )
     })?;
     if let Some(parent) = marker_path.parent() {
-        let _ = fsync_dir(parent);
+        fsync_dir(parent).map_err(|e| {
+            format!(
+                "wrote migration marker {} but could not fsync {}: {e}",
+                marker_path.display(),
+                parent.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -578,8 +603,25 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
             new_dir.display()
         ));
     }
+    // From here on, `new_dir` holds the verified, fully-published data —
+    // a failure below is a *durability confirmation* failure, not a data
+    // problem, so neither of the next two steps rolls anything back on
+    // error (there's nothing wrong to undo). Both propagate `Err` instead
+    // of swallowing it, so this call reports failure rather than telling
+    // its caller (`migrate`) it's safe to write the completion marker.
+    // The failure is still safe to retry: `new_dir` is now non-empty, so
+    // a retry routes through `migrate` to `merge_recover` instead of back
+    // here, which will find every file already correctly in place
+    // (skipped, not re-copied) and only needs its own `fsync`s to
+    // succeed to finish confirming durability.
     if let Some(parent) = new_dir.parent() {
-        let _ = fsync_dir(parent);
+        fsync_dir(parent).map_err(|e| {
+            format!(
+                "published {} but could not fsync {}: {e}",
+                new_dir.display(),
+                parent.display()
+            )
+        })?;
     }
     // Fsync every directory *inside* the newly-published tree too (e.g.
     // `new_dir/backups/`) — the parent fsync above only durably records
@@ -588,7 +630,12 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
     // by the size of what this run just migrated (it's exactly the tree
     // that was just published, nothing else), unlike merge-recovery's
     // equivalent step, which must avoid walking `new_dir` wholesale.
-    fsync_dir_tree(new_dir);
+    fsync_dir_tree(new_dir).map_err(|e| {
+        format!(
+            "published {} but could not fsync its interior directories: {e}",
+            new_dir.display()
+        )
+    })?;
 
     retire_old_dir(old_dir);
 
@@ -897,11 +944,33 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Stri
     // can't leave the completion marker (written next, by the caller)
     // durable while one of the files it vouches for has quietly lost its
     // directory entry.
+    //
+    // Any `fsync` failure here is propagated as `Err`, not swallowed:
+    // this loop existed specifically to back up the durability guarantee
+    // the caller relies on before writing the marker, so silently
+    // continuing past a failed `fsync` (e.g. `EIO`/`ENOSPC`) would make
+    // that guarantee false while still reporting success. Deliberately
+    // *not* `rollback_merge`d on this failure, unlike the copy/verify
+    // failures above: every file that got this far was already copied
+    // and byte-verified correct — only the durability *confirmation*
+    // failed, not the data — so there's nothing wrong to undo, and
+    // discarding good, already-placed data over a possibly-transient
+    // `fsync` error would only make the inevitable retry redo real work.
+    // That retry is safe either way: `merge_dir_recursive` is idempotent
+    // (an already-placed file is found to already exist and skipped, not
+    // re-copied), so calling this again after a partial `fsync` failure
+    // just picks up where it left off.
     for dir in &progress.touched_dirs {
-        let _ = fsync_dir(dir);
+        fsync_dir(dir)
+            .map_err(|e| format!("merge succeeded but could not fsync {}: {e}", dir.display()))?;
     }
     if let Some(parent) = new_dir.parent() {
-        let _ = fsync_dir(parent);
+        fsync_dir(parent).map_err(|e| {
+            format!(
+                "merge succeeded but could not fsync {}: {e}",
+                parent.display()
+            )
+        })?;
     }
 
     retire_old_dir(old_dir);
@@ -2070,6 +2139,61 @@ mod tests {
         // Under any normal umask, 0600 requests no bits a typical umask
         // would need to strip, so this should land exactly on 0600.
         assert_eq!(mode, 0o600, "expected exact mode 0600, got {mode:o}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn merge_propagates_fsync_failure_and_never_writes_the_marker() {
+        // Regression: the touched_dirs fsync loop used to swallow errors
+        // (`let _ = fsync_dir(dir);`), so an EIO/ENOSPC-class failure
+        // there would still report success and let the caller write the
+        // completion marker -- permanently short-circuiting every future
+        // launch past ever noticing the durability guarantee wasn't
+        // actually met.
+        //
+        // Reproduced via a real, deterministic (not timing-dependent)
+        // permission configuration: `new_dir` is dropped to `0300`
+        // (write+execute, no read) before the merge. Creating a file
+        // inside it only needs write+execute on the directory, not read,
+        // so the copy and byte-verification steps both succeed --
+        // exactly the "data is fine, only durability confirmation
+        // failed" case this fix is about. The fsync step's `File::open`
+        // on the directory itself does need read, and fails.
+        // `preferences.json` is merged as a top-level loose file, so the
+        // touched directory recorded for it is `new_dir` itself, not a
+        // freshly created subdirectory whose mode this test couldn't
+        // independently control.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("merge-fsync-failure");
+        let old_dir = root.join("app.plume.editor");
+        let new_dir = root.join("app.mojidori.editor");
+
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("preferences.json"), b"real prefs").unwrap();
+
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(new_dir.join(".window-state.json"), b"unrelated").unwrap();
+        fs::set_permissions(&new_dir, fs::Permissions::from_mode(0o300)).unwrap();
+
+        let result = merge_recover(&old_dir, &new_dir);
+
+        // Restore permissions before any assertion/cleanup needs to read
+        // new_dir's contents again.
+        fs::set_permissions(&new_dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(result.is_err(), "expected an Err, got {result:?}");
+
+        // old_dir was never retired -- the function stopped before that
+        // step, exactly because the durability confirmation failed.
+        assert!(old_dir.is_dir());
+        // merge_recover never writes the completion marker itself (only
+        // `migrate()` does, after a successful `merge_recover(...)?` --
+        // unreachable here since this call returned `Err`); asserted
+        // directly rather than only relied on by code inspection.
+        assert!(!marker_path(&new_dir).exists());
 
         let _ = fs::remove_dir_all(&root);
     }
