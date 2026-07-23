@@ -34,9 +34,21 @@ const update = {
   rawJson: {},
 };
 
-function makeDeps(): { deps: UpdaterDeps; flushForExit: ReturnType<typeof vi.fn> } {
+function makeDeps(): {
+  deps: UpdaterDeps;
+  flushForExit: ReturnType<typeof vi.fn>;
+  freezeForUpdate: ReturnType<typeof vi.fn>;
+  unfreezeForUpdate: ReturnType<typeof vi.fn>;
+} {
   const flushForExit = vi.fn().mockResolvedValue(true);
-  return { deps: { flushForExit }, flushForExit };
+  const freezeForUpdate = vi.fn();
+  const unfreezeForUpdate = vi.fn();
+  return {
+    deps: { flushForExit, freezeForUpdate, unfreezeForUpdate },
+    flushForExit,
+    freezeForUpdate,
+    unfreezeForUpdate,
+  };
 }
 
 beforeEach(() => {
@@ -114,10 +126,10 @@ function stubInvokeHappyPath(calledCommands: string[]): void {
 }
 
 describe("checkForUpdatesAndPrompt — update available", () => {
-  it("declining (Later) never downloads, flushes, or installs — but does close the checked update's resource", async () => {
+  it("declining (Later) never downloads, freezes, flushes, or installs — but does close the checked update's resource", async () => {
     invoke.mockResolvedValueOnce(update); // plugin:updater|check
     confirmDialog.mockResolvedValueOnce(false);
-    const { deps, flushForExit } = makeDeps();
+    const { deps, flushForExit, freezeForUpdate, unfreezeForUpdate } = makeDeps();
 
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
@@ -125,13 +137,19 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(invoke).toHaveBeenCalledTimes(2); // check, then resources|close
     expect(invoke).toHaveBeenNthCalledWith(2, "plugin:resources|close", { rid: update.rid });
     expect(flushForExit).not.toHaveBeenCalled();
+    // The freeze window starts after download, not at the initial confirm
+    // — "Later" never reaches it at all.
+    expect(freezeForUpdate).not.toHaveBeenCalled();
+    expect(unfreezeForUpdate).not.toHaveBeenCalled();
   });
 
-  it("accepting downloads, flushes unsaved work, installs, then relaunches — in that order", async () => {
+  it("accepting freezes before flush, flushes, installs, unfreezes, then relaunches — in that order", async () => {
     confirmDialog.mockResolvedValueOnce(true);
-    const { deps, flushForExit } = makeDeps();
+    const { deps, flushForExit, freezeForUpdate, unfreezeForUpdate } = makeDeps();
 
     const order: string[] = [];
+    freezeForUpdate.mockImplementation(() => order.push("freeze"));
+    unfreezeForUpdate.mockImplementation(() => order.push("unfreeze"));
     flushForExit.mockImplementation(async () => {
       order.push("flush");
       return true;
@@ -172,16 +190,18 @@ describe("checkForUpdatesAndPrompt — update available", () => {
         restartAfterInstall: true,
       }),
     );
-    // flush happens strictly between download and install — see
-    // UpdaterDeps.flushForExit's doc comment for why (install never
-    // returns on Windows).
-    expect(order).toEqual(["download", "flush", "install", "relaunch"]);
+    // freeze starts right before flush (not at download, not at the
+    // initial confirm — see freezeForUpdate's doc comment) and unfreeze
+    // runs — via try/finally — before relaunch even on the success path,
+    // where it's harmless (relaunch either tears the process down or
+    // fails into an ordinary, correctly-unfrozen app).
+    expect(order).toEqual(["download", "freeze", "flush", "install", "unfreeze", "relaunch"]);
   });
 
-  it("a failed download shows an error dialog, never flushes or installs, and still closes the checked update's resource", async () => {
+  it("a failed download shows an error dialog, never freezes, flushes, or installs, and still closes the checked update's resource", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
-    const { deps, flushForExit } = makeDeps();
+    const { deps, flushForExit, freezeForUpdate, unfreezeForUpdate } = makeDeps();
     const calledCommands: string[] = [];
     invoke.mockImplementation(async (cmd: string) => {
       calledCommands.push(cmd);
@@ -196,6 +216,8 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(consoleError).toHaveBeenCalled();
     expect(messageDialog).toHaveBeenCalledTimes(1);
     expect(flushForExit).not.toHaveBeenCalled();
+    expect(freezeForUpdate).not.toHaveBeenCalled();
+    expect(unfreezeForUpdate).not.toHaveBeenCalled();
     expect(calledCommands).toEqual([
       "plugin:updater|check",
       "plugin:updater|download",
@@ -203,11 +225,11 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     ]);
   });
 
-  it("when the hot-exit flush fails, defaults to NOT installing (Cancel) — nothing on disk changes, both resources are closed, and the user is asked again next check", async () => {
+  it("when the hot-exit flush fails, defaults to NOT installing (Cancel) — nothing on disk changes, both resources are closed, the editor is unfrozen, and the user is asked again next check", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
     confirmDialog.mockResolvedValueOnce(false); // flush-failed dialog, default Cancel
-    const { deps, flushForExit } = makeDeps();
+    const { deps, flushForExit, freezeForUpdate, unfreezeForUpdate } = makeDeps();
     flushForExit.mockResolvedValueOnce(false);
     const calledCommands: string[] = [];
     stubInvokeHappyPath(calledCommands);
@@ -231,13 +253,17 @@ describe("checkForUpdatesAndPrompt — update available", () => {
       expect.any(String),
       expect.objectContaining({ title: "Backup Failed" }),
     );
+    // Cancel path: the editor must come back out of the frozen state —
+    // this is what the try/finally around freeze/flush/install guarantees.
+    expect(freezeForUpdate).toHaveBeenCalledTimes(1);
+    expect(unfreezeForUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it("a rejected flush is treated the same as a resolved-false one (also defaults to Cancel, also closes both resources)", async () => {
+  it("a rejected flush is treated the same as a resolved-false one (also defaults to Cancel, also closes both resources, also unfreezes)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
     confirmDialog.mockResolvedValueOnce(false);
-    const { deps, flushForExit } = makeDeps();
+    const { deps, flushForExit, unfreezeForUpdate } = makeDeps();
     flushForExit.mockRejectedValueOnce(new Error("disk full"));
     const calledCommands: string[] = [];
     stubInvokeHappyPath(calledCommands);
@@ -248,13 +274,14 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(calledCommands).not.toContain("plugin:process|restart");
     expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: bytesRid });
     expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: update.rid });
+    expect(unfreezeForUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("when the hot-exit flush fails, still installs and relaunches if the user explicitly opts in (Install Anyway)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
     confirmDialog.mockResolvedValueOnce(true); // flush-failed dialog: Install Anyway
-    const { deps, flushForExit } = makeDeps();
+    const { deps, flushForExit, unfreezeForUpdate } = makeDeps();
     flushForExit.mockResolvedValueOnce(false);
     const calledCommands: string[] = [];
     stubInvokeHappyPath(calledCommands);
@@ -267,12 +294,15 @@ describe("checkForUpdatesAndPrompt — update available", () => {
       "plugin:updater|install",
       "plugin:process|restart",
     ]);
+    // Unfreezing before relaunch is harmless on the eventual-success path
+    // too — see the try/finally comment in updater.ts's promptAndInstall.
+    expect(unfreezeForUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it("a failed install shows an error dialog, never relaunches, and closes both resources", async () => {
+  it("a failed install shows an error dialog, never relaunches, closes both resources, and unfreezes", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
-    const { deps } = makeDeps();
+    const { deps, freezeForUpdate, unfreezeForUpdate } = makeDeps();
     const calledCommands: string[] = [];
     invoke.mockImplementation(async (cmd: string) => {
       calledCommands.push(cmd);
@@ -290,6 +320,8 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(calledCommands).not.toContain("plugin:process|restart");
     expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: bytesRid });
     expect(invoke).toHaveBeenCalledWith("plugin:resources|close", { rid: update.rid });
+    expect(freezeForUpdate).toHaveBeenCalledTimes(1);
+    expect(unfreezeForUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("on the macOS/Linux path where install actually returns, relaunch is called after it", async () => {

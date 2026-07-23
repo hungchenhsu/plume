@@ -39,6 +39,20 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # Serialized on purpose (build time cost accepted, correctness
+      # first): tauri-action's updater-JSON upload is a
+      # list-delete-reupload against the *same* `latest.json` release
+      # asset, so parallel legs race each other and one can 404 trying to
+      # delete an asset another leg already deleted
+      # (tauri-apps/tauri-action#1270). The maintainers' actual fix
+      # (commit 98b16097, "add random delay in retries") only adds 1-10s
+      # of jitter between a small, fixed number of retries — it lowers the
+      # collision odds, it doesn't eliminate them for 3 parallel legs —
+      # and there is no built-in serialization or a documented multi-job
+      # merge pattern for this specific race (the one official example
+      # for a *different* race, examples/publish-to-manual-release.yml,
+      # addresses duplicate-release creation, not this asset race).
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest

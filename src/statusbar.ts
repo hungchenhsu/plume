@@ -29,6 +29,7 @@ const warningEl = document.querySelector<HTMLElement>("#status-warning")!;
 const readonlyEl = document.querySelector<HTMLElement>("#status-readonly")!;
 const missingEl = document.querySelector<HTMLElement>("#status-missing")!;
 const indexingEl = document.querySelector<HTMLElement>("#status-indexing")!;
+const updatingEl = document.querySelector<HTMLElement>("#status-updating")!;
 const cursorEl = document.querySelector<HTMLElement>("#status-cursor")!;
 const charInspectorEl = document.querySelector<HTMLButtonElement>(
   "#status-char-inspector",
@@ -216,6 +217,16 @@ export function refreshIndentInfo(): void {
 export function setIndexing(active: boolean): void {
   indexingEl.hidden = !active;
   if (active) indexingEl.textContent = t("statusbar.buildingIndex");
+}
+
+/** Show/hide the "preparing update…" status-bar hint (ROADMAP.md D2 —
+ *  main.ts's freezeForUpdate/unfreezeForUpdate, called from
+ *  src/updater.ts's promptAndInstall around the hot-exit flush that must
+ *  not race a keystroke — see UpdaterDeps.freezeForUpdate's doc comment
+ *  there). Same shape as setIndexing above. */
+export function setUpdating(active: boolean): void {
+  updatingEl.hidden = !active;
+  if (active) updatingEl.textContent = t("statusbar.preparingUpdate");
 }
 
 /** Show/hide the large-file pager buttons. Pass null to hide both. */

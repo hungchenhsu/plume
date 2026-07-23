@@ -128,6 +128,7 @@ import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
 import { shouldTrimTrailingWhitespaceOnSave } from "./trimonsave";
 import { checkForUpdatesAndPrompt, type UpdaterDeps } from "./updater";
+import { flushWithRevisionRecheck } from "./updaterflush";
 import {
   adjustFontSize,
   initPreferences,
@@ -150,6 +151,7 @@ import {
   refreshSuspiciousChars,
   refreshTextStats,
   setIndexing,
+  setUpdating,
   updateCharInspector,
   updateCursor,
   updateIndentInfo,
@@ -489,24 +491,70 @@ function makeUntitled(): Doc {
   };
 }
 
+/** True while the updater flow (src/updater.ts's promptAndInstall, via
+ *  `UpdaterDeps.freezeForUpdate`/`unfreezeForUpdate`) has frozen editing to
+ *  flush hot-exit backups without racing a keystroke (ROADMAP.md D2,
+ *  Codex re-review of PR #309) — see `freezeForUpdate`'s own doc comment
+ *  below for the full race this closes. ORed into `syncReadOnlyState`
+ *  below (not just set once on whichever tab happened to be active) so
+ *  the freeze survives a tab switch mid-flush: `showActive` calls
+ *  `syncReadOnlyState` on every switch with the *new* tab's own
+ *  `isEffectivelyReadOnly`, which alone would silently re-enable typing
+ *  on that tab and defeat the freeze. */
+let updateFreezeActive = false;
+
 /** Sync the editor's CM6 readOnly compartment and the View > Read-Only
  *  native menu item (checked + enabled) to `doc`'s effective read-only
- *  state (ROADMAP.md v0.4 Track C) — called from `showActive` (every tab
- *  switch/open/reload/jump) and from `toggleReadOnly` (the menu action
- *  itself), so both entry points converge on the same doc-derived truth
- *  rather than each separately guessing whether the menu already agrees.
- *  `enabled: !doc.truncated` disables the item entirely for a large-file
- *  preview — its read-only state can never be lifted, so there is nothing
- *  a click on it could legitimately do (see menu.rs `sync_read_only_menu`
- *  and its `CheckMenuItem::set_enabled`). Best-effort like the other
- *  menu-sync IPC calls (syncThemeMenu/retitleMenu): the editor's own
- *  enforcement via setReadOnly is unaffected if this fails. */
+ *  state (ROADMAP.md v0.4 Track C), ORed with `updateFreezeActive` above —
+ *  called from `showActive` (every tab switch/open/reload/jump) and from
+ *  `toggleReadOnly` (the menu action itself), so both entry points
+ *  converge on the same doc-derived truth rather than each separately
+ *  guessing whether the menu already agrees. `enabled: !doc.truncated &&
+ *  !updateFreezeActive` disables the item entirely both for a large-file
+ *  preview (its read-only state can never be lifted) and while frozen
+ *  (clicking Toggle Read-Only mid-freeze would flip `doc.readOnly` itself,
+ *  a real, persisted mutation the freeze has no business allowing) — see
+ *  menu.rs `sync_read_only_menu` and its `CheckMenuItem::set_enabled`.
+ *  Best-effort like the other menu-sync IPC calls (syncThemeMenu/
+ *  retitleMenu): the editor's own enforcement via setReadOnly is
+ *  unaffected if this fails. */
 function syncReadOnlyState(doc: Doc): void {
-  const effective = isEffectivelyReadOnly(doc);
+  const effective = updateFreezeActive || isEffectivelyReadOnly(doc);
   editor.setReadOnly(effective);
-  void syncReadOnlyMenu(effective, !doc.truncated).catch(() => {
+  void syncReadOnlyMenu(effective, !doc.truncated && !updateFreezeActive).catch(() => {
     // Best-effort; see doc comment above.
   });
+}
+
+/** Freeze the editor read-only and show the "Preparing update…" status-bar
+ *  hint (ROADMAP.md D2, Codex re-review of PR #309) — called from
+ *  src/updater.ts's promptAndInstall right before the hot-exit flush that
+ *  must run before `install`. Closes a keystroke-loss race: without this,
+ *  a user could keep typing during `flushForUpdateRestart`'s own `await`
+ *  IPC round trips; anything typed *after* that function's content
+ *  snapshot was taken would exist only in the live buffer, never reach
+ *  the backup or disk, and `plugin:process|restart`/a Windows install's
+ *  `exit(0)` bypass `onCloseRequested` entirely — the same reasoning
+ *  `UpdaterDeps.flushForExit`'s own doc comment (updater.ts) already
+ *  covers for why the flush has to happen explicitly at all. Every path
+ *  out of that flow that does not end in a successful `install` handing
+ *  off to `relaunch` must call `unfreezeForUpdate` — enforced there via
+ *  try/finally, not here. */
+function freezeForUpdate(): void {
+  updateFreezeActive = true;
+  const doc = tabs.active;
+  if (doc) syncReadOnlyState(doc);
+  setUpdating(true);
+}
+
+/** Reverses `freezeForUpdate`. See that function's doc comment for the
+ *  try/finally contract its caller (updater.ts's promptAndInstall) must
+ *  honor. */
+function unfreezeForUpdate(): void {
+  updateFreezeActive = false;
+  const doc = tabs.active;
+  if (doc) syncReadOnlyState(doc);
+  setUpdating(false);
 }
 
 /** Sync the editor view and status bar to the active tab. */
@@ -3547,24 +3595,11 @@ async function openCommandPalette(): Promise<void> {
 
 void listen<string>("mojidori://menu", (event) => dispatchMenuCommand(event.payload));
 
-/** Hot-exit flush for the updater's install-and-restart flow (ROADMAP.md
- *  D2, src/updater.ts's `UpdaterDeps.flushForExit`). Deliberately mirrors —
- *  rather than shares — onCloseRequested's own flush loop just below:
- *  `plugin:process|restart` bypasses onCloseRequested entirely (Tauri's
- *  `request_restart` skips per-window close events), so the updater needs
- *  a flush called explicitly, but onCloseRequested's close-vs-discard
- *  state machine is delicate enough (issue #63) that duplicating a few
- *  lines here is safer than reshaping it to serve a second caller.
- *  `backupFlush.cancel()` mirrors onCloseRequested's own first line — a
- *  pending debounced flush from typing must not race this explicit one.
- *
- *  Unlike onCloseRequested, a failure here doesn't block by itself — it
- *  reports back via the return value (`false` if any backup or the
- *  session write failed) so updater.ts's caller can ask the user whether
- *  to restart anyway, rather than this function silently deciding for
- *  them the way an unconditional relaunch would. */
-async function flushForUpdateRestart(): Promise<boolean> {
-  backupFlush.cancel();
+/** One pass of the updater's hot-exit flush: snapshot and write every
+ *  dirty, non-truncated doc's backup, then persist the session. Split out
+ *  of `flushForUpdateRestart` purely so that function's bounded-retry loop
+ *  can call it more than once without duplicating the loop body. */
+async function runUpdateFlushPass(): Promise<boolean> {
   let ok = true;
   for (const doc of tabs.docs) {
     if (!doc.dirty || doc.truncated) continue;
@@ -3584,7 +3619,65 @@ async function flushForUpdateRestart(): Promise<boolean> {
   return ok;
 }
 
-const updaterDeps: UpdaterDeps = { flushForExit: flushForUpdateRestart };
+/** `(doc.id, doc.revision)` for every open tab, joined into one string —
+ *  cheap enough to compute twice around a flush pass just to diff.
+ *  `doc.revision` (issue #112, `nextRevision` above) already bumps on
+ *  every edit, is what `savecompletion.ts`'s own await-window staleness
+ *  check compares, and is exactly the signal `flushForUpdateRestart`'s own
+ *  re-verification needs: under a correctly-held `freezeForUpdate` this
+ *  should never change mid-pass, an id set changing (a tab opened/closed
+ *  during the flush) is folded in as "changed" too, and the join order
+ *  matching `tabs.docs`'s own iteration order means a pure reorder also
+ *  counts as changed — over-cautious, but a spurious retry is harmless
+ *  where a missed one would defeat the whole point of re-verifying. */
+function updateFlushSignature(): string {
+  return tabs.docs.map((doc) => `${doc.id}:${doc.revision}`).join("|");
+}
+
+/** Hot-exit flush for the updater's install-and-restart flow (ROADMAP.md
+ *  D2, src/updater.ts's `UpdaterDeps.flushForExit`). Deliberately mirrors —
+ *  rather than shares — onCloseRequested's own flush loop just below:
+ *  `plugin:process|restart` bypasses onCloseRequested entirely (Tauri's
+ *  `request_restart` skips per-window close events), so the updater needs
+ *  a flush called explicitly, but onCloseRequested's close-vs-discard
+ *  state machine is delicate enough (issue #63) that duplicating a few
+ *  lines here is safer than reshaping it to serve a second caller.
+ *  `backupFlush.cancel()` mirrors onCloseRequested's own first line — a
+ *  pending debounced flush from typing must not race this explicit one.
+ *
+ *  The caller (updater.ts's promptAndInstall) already holds
+ *  `freezeForUpdate` across this whole call — `flushWithRevisionRecheck`
+ *  (updaterflush.ts) re-verifies that invariant rather than being the
+ *  primary defense against it, retrying up to twice if a doc's signature
+ *  moved between the start and end of a pass, and exhausting the retries
+ *  is folded into the same `false` result an ordinary write failure
+ *  produces, reusing updater.ts's existing flush-failed dialog rather than
+ *  a second, parallel failure path.
+ *
+ *  Unlike onCloseRequested, a failure here doesn't block by itself — it
+ *  reports back via the return value (`false` if any backup or the
+ *  session write failed, or the signature never stabilized) so
+ *  updater.ts's caller can ask the user whether to install anyway, rather
+ *  than this function silently deciding for them the way an unconditional
+ *  install would. */
+async function flushForUpdateRestart(): Promise<boolean> {
+  backupFlush.cancel();
+  return flushWithRevisionRecheck({
+    runPass: runUpdateFlushPass,
+    signature: updateFlushSignature,
+    maxRetries: 2,
+    onRetry: (attempt, maxAttempts) =>
+      console.error(
+        `updater: document state changed during a frozen flush (attempt ${attempt}/${maxAttempts}); retrying`,
+      ),
+  });
+}
+
+const updaterDeps: UpdaterDeps = {
+  flushForExit: flushForUpdateRestart,
+  freezeForUpdate,
+  unfreezeForUpdate,
+};
 
 // Hot exit: flush every unsaved buffer to its backup and quit without
 // asking — the next launch restores everything, including untitled tabs.

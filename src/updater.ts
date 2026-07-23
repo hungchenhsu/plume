@@ -50,6 +50,22 @@ export interface UpdaterDeps {
    *  flushing hot-exit backups foremost — has to happen before `install`,
    *  not after it or after `relaunch`. */
   flushForExit: () => Promise<boolean>;
+  /** Make the editor read-only (and show a "Preparing update…" hint)
+   *  before `flushForExit` is called. Closes a second race on top of the
+   *  one `flushForExit`'s own doc comment covers: `flushForExit` snapshots
+   *  each dirty doc's content before its own `await` IPC round trips, so
+   *  anything typed *during* those awaits would exist only in the live
+   *  buffer, never reach the backup or disk — freezing removes the
+   *  keystroke, not just the exit path, so there is nothing left to lose.
+   *  Called exactly once, right before `flushForExit`, in
+   *  `promptAndInstall` below. */
+  freezeForUpdate: () => void;
+  /** Reverses `freezeForUpdate`. Must run on every path out of the
+   *  freeze/flush/install span that does *not* end in `relaunch` handing
+   *  off to a restarted app — `promptAndInstall` below enforces this with
+   *  try/finally rather than a call at each individual return, so a future
+   *  edit adding another early return there can't forget it. */
+  unfreezeForUpdate: () => void;
 }
 
 async function checkForUpdate(): Promise<UpdateMetadata | null> {
@@ -148,43 +164,58 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
     return;
   }
 
-  const flushed = await deps.flushForExit().catch((error) => {
-    console.error("updater: flushForExit failed", error);
-    return false;
-  });
-  if (!flushed) {
-    // Default is Cancel (both the explicit button and confirmDialog's own
-    // dismiss-as-false behavior): nothing has been installed yet at this
-    // point on any platform, so declining costs nothing but being asked
-    // again next check — installing over a failed backup is the choice
-    // that can actually lose data, so it must be opt-in, never the
-    // fallback.
-    const installAnyway = await confirmDialog(t("updater.flushFailedMessage"), {
-      title: t("updater.flushFailedTitle"),
-      kind: "warning",
-      okLabel: t("updater.installAnyway"),
-      cancelLabel: t("updater.cancelInstall"),
-    }).catch(() => false);
-    if (!installAnyway) {
+  // freezeForUpdate/unfreezeForUpdate bracket the flush-through-install
+  // span specifically (not the confirm dialog above or the download
+  // before it): see freezeForUpdate's doc comment for why the window it
+  // needs to cover starts exactly where flushForExit's own snapshot does.
+  // try/finally, not a call at each return below, so unfreezing can't be
+  // missed by a future added exit path — including the ordinary success
+  // path, where unfreezing before `relaunch` is harmless (relaunch either
+  // tears the process down as it should, or fails and the app is left in
+  // an ordinary, correctly-unfrozen state).
+  deps.freezeForUpdate();
+  try {
+    const flushed = await deps.flushForExit().catch((error) => {
+      console.error("updater: flushForExit failed", error);
+      return false;
+    });
+    if (!flushed) {
+      // Default is Cancel (both the explicit button and confirmDialog's
+      // own dismiss-as-false behavior): nothing has been installed yet at
+      // this point on any platform, so declining costs nothing but being
+      // asked again next check — installing over a failed backup is the
+      // choice that can actually lose data, so it must be opt-in, never
+      // the fallback.
+      const installAnyway = await confirmDialog(t("updater.flushFailedMessage"), {
+        title: t("updater.flushFailedTitle"),
+        kind: "warning",
+        okLabel: t("updater.installAnyway"),
+        cancelLabel: t("updater.cancelInstall"),
+      }).catch(() => false);
+      if (!installAnyway) {
+        await closeResource(bytesRid);
+        await closeResource(update.rid);
+        return;
+      }
+    }
+
+    try {
+      await install(update.rid, bytesRid);
+    } catch (error) {
+      // Windows never reaches here on success (see install's doc
+      // comment) — only a genuine install failure lands in this catch on
+      // any platform.
+      console.error("updater: install failed", error);
+      await messageDialog(t("updater.installFailedMessage"), {
+        title: t("updater.installFailedTitle"),
+        kind: "error",
+      }).catch(() => {});
       await closeResource(bytesRid);
       await closeResource(update.rid);
       return;
     }
-  }
-
-  try {
-    await install(update.rid, bytesRid);
-  } catch (error) {
-    // Windows never reaches here on success (see install's doc comment) —
-    // only a genuine install failure lands in this catch on any platform.
-    console.error("updater: install failed", error);
-    await messageDialog(t("updater.installFailedMessage"), {
-      title: t("updater.installFailedTitle"),
-      kind: "error",
-    }).catch(() => {});
-    await closeResource(bytesRid);
-    await closeResource(update.rid);
-    return;
+  } finally {
+    deps.unfreezeForUpdate();
   }
   // Windows: unreachable, the process already exited inside `install`. No
   // resource cleanup needed past this point on macOS/Linux either — the

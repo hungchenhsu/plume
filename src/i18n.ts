@@ -47,6 +47,7 @@ export interface Messages {
   "statusbar.missingOnDisk": string;
   "statusbar.decodeWarning": string;
   "statusbar.buildingIndex": string;
+  "statusbar.preparingUpdate": string;
   "statusbar.textStats": (words: number, chars: number, lines: number) => string;
   "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
   "statusbar.charInspector": (char: string, codepoint: string) => string;
@@ -536,6 +537,7 @@ const en: Messages = {
   "statusbar.missingOnDisk": "⚠ File deleted from disk",
   "statusbar.decodeWarning": "⚠ decoded with errors",
   "statusbar.buildingIndex": "Building line index…",
+  "statusbar.preparingUpdate": "Preparing update…",
   "statusbar.textStats": (words, chars, lines) =>
     `${words} word${words === 1 ? "" : "s"}, ${chars} char${chars === 1 ? "" : "s"}, ` +
     `${lines} line${lines === 1 ? "" : "s"}`,
@@ -964,6 +966,7 @@ const zhTW: Messages = {
   "statusbar.missingOnDisk": "⚠ 檔案已從磁碟移除",
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
   "statusbar.buildingIndex": "正在建立行號索引…",
+  "statusbar.preparingUpdate": "正在準備更新…",
   "statusbar.textStats": (words, chars, lines) => `${words} 詞、${chars} 字元、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已選取：${words} 詞、${chars} 字元、${lines} 行`,
@@ -1350,6 +1353,7 @@ const ja: Messages = {
   "statusbar.missingOnDisk": "⚠ ディスクから削除されました",
   "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
   "statusbar.buildingIndex": "行番号インデックスを構築中…",
+  "statusbar.preparingUpdate": "アップデートを準備中…",
   "statusbar.textStats": (words, chars, lines) => `${words} 語、${chars} 文字、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
@@ -1761,6 +1765,7 @@ const zhCN: Messages = {
   "statusbar.missingOnDisk": "⚠ 文件已从磁盘删除",
   "statusbar.decodeWarning": "⚠ 解码时发生错误",
   "statusbar.buildingIndex": "正在构建行号索引…",
+  "statusbar.preparingUpdate": "正在准备更新…",
   "statusbar.textStats": (words, chars, lines) => `${words} 词、${chars} 字符、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已选择：${words} 词、${chars} 字符、${lines} 行`,
