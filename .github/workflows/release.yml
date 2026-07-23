@@ -1,9 +1,31 @@
 name: Release
 
-# Pushing a v* tag builds installers for macOS (arm64 + x64) and Windows
-# and attaches them to a draft GitHub release for review before publishing.
-# workflow_dispatch runs the same builds without creating a release, as a
-# pipeline smoke test.
+# Pushing a v* tag builds installers for macOS (arm64 + x64, code-signed
+# and notarized) and Windows (unsigned — OS-level Windows signing is a
+# deferred decision, see ROADMAP.md D2), plus updater artifacts (latest.json
+# + .sig files), and attaches them to a draft GitHub release for the
+# maintainer to review and publish manually — this workflow never publishes
+# a release itself. workflow_dispatch runs the same builds without creating
+# a release, as a pipeline smoke test.
+#
+# macOS signing/notarization and updater-artifact signing both need
+# repository secrets that only exist once the maintainer has provisioned
+# them (see ROADMAP.md D2); until then, the tauri-action step below fails
+# on the macOS legs specifically.
+#
+# .github/workflows/updater-json.yml republishes this release's
+# latest.json to a fixed rolling "updater" release once the maintainer
+# manually publishes it — see that workflow's own header for why
+# (releases/latest/... 404s against an all-prerelease alpha series).
+#
+# Known alpha-period limitation (accepted, not solved here): latest.json's
+# version is tauri.conf.json's plain semver (e.g. 0.8.0), with no alpha
+# suffix baked in — Windows' MSI/NSIS updater packaging doesn't support
+# prerelease version strings, so this can't distinguish alpha.1 from
+# alpha.2 of the same 0.8.0. Two alphas that share a version number never
+# trigger an update between each other; the updater only fires across an
+# actual version bump (0.8.0 -> 0.9.0). Users on an interim alpha get the
+# next real bump, not every alpha in between.
 
 on:
   push:
@@ -17,6 +39,20 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # Serialized on purpose (build time cost accepted, correctness
+      # first): tauri-action's updater-JSON upload is a
+      # list-delete-reupload against the *same* `latest.json` release
+      # asset, so parallel legs race each other and one can 404 trying to
+      # delete an asset another leg already deleted
+      # (tauri-apps/tauri-action#1270). The maintainers' actual fix
+      # (commit 98b16097, "add random delay in retries") only adds 1-10s
+      # of jitter between a small, fixed number of retries — it lowers the
+      # collision odds, it doesn't eliminate them for 3 parallel legs —
+      # and there is no built-in serialization or a documented multi-job
+      # merge pattern for this specific race (the one official example
+      # for a *different* race, examples/publish-to-manual-release.yml,
+      # addresses duplicate-release creation, not this asset race).
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest
@@ -48,13 +84,40 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # macOS notarization authenticates via an App Store Connect API key.
+      # tauri-action/the tauri bundler wants a file path (APPLE_API_KEY_PATH
+      # below), but the key can only be stored in GitHub as base64 text
+      # (the APPLE_API_KEY_CONTENT secret) — decode it back to a .p8 file
+      # here before the build step references its path.
+      - name: Decode Apple API key
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: echo "${{ secrets.APPLE_API_KEY_CONTENT }}" | base64 --decode > "$RUNNER_TEMP/apple_api_key.p8"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization (v2.tauri.app/distribute/sign/macos).
+          # No-ops on the windows-latest leg, which reads none of these.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
+          # Updater artifact signing (v2.tauri.app/plugin/updater) — the
+          # private key's public counterpart is `plugins.updater.pubkey` in
+          # src-tauri/tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # Empty tagName (workflow_dispatch) builds without releasing.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: Plume ${{ github.ref_name }}
+          releaseName: Mojidori ${{ github.ref_name }}
           releaseDraft: true
           prerelease: true
+          # Generates and uploads latest.json + per-bundle .sig files so
+          # src/updater.ts's endpoint (tauri.conf.json) has something to
+          # find once this release is published.
+          uploadUpdaterJson: true
           args: ${{ matrix.args }}

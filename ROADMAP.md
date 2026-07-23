@@ -24,8 +24,19 @@ archived v0.3 record and in DIRECTION §2/§3.
   evidence in the maintainer's local private storage — see DIRECTION
   §3/D1). In-app rename + one-time data-dir migration shipped in this
   cycle; docs/URL sweep and repo rename tracked as follow-up.
-- [ ] D2 signing + auto-update — D1 resolved; still blocked on
-  user-held keys (runbook in the maintainer's local private storage)
+- [x] D2 signing + auto-update — pipeline implemented: `.github/workflows/release.yml`
+  builds/signs/notarizes macOS (arm64 + x64) on tag push, builds Windows
+  unsigned (OS-level Windows signing deferred, no decision yet), uploads
+  updater artifacts, and opens a draft release for the maintainer to
+  publish manually. `tauri-plugin-updater`/`tauri-plugin-process` wired in;
+  the frontend (`src/updater.ts`) checks silently at startup and offers
+  Download & Restart, flushing hot-exit backups before relaunching. Not
+  yet exercised end-to-end — the first real `v*` tag push is this
+  pipeline's actual test. Updater endpoint is a fixed rolling `updater`
+  release (`.github/workflows/updater-json.yml`), not `releases/latest/...`
+  (prerelease alphas would 404 there); known accepted limitation: alphas
+  sharing one version number (e.g. two 0.8.0-alpha.N) never update each
+  other, only an actual version bump does.
 
 ## Completed cycles
 

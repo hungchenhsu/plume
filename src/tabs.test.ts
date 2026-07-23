@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EditorBuffer } from "./editor";
 import {
+  canMutateDocument,
   closeSequentially,
   DRAG_THRESHOLD_PX,
   idsOtherThan,
@@ -117,6 +118,101 @@ describe("isEffectivelyReadOnly", () => {
 
   it("is true when both truncated and userReadOnly are set", () => {
     expect(isEffectivelyReadOnly({ truncated: true, userReadOnly: true })).toBe(true);
+  });
+});
+
+// ROADMAP.md D2, Codex re-review of PR #309: the update-install freeze's
+// single collapse point (main.ts's blockedByReadOnly, guarding
+// runLineOperation/saveFlow — the same call sites isEffectivelyReadOnly
+// above already backs). Mirrors "insert_datetime / a line operation is
+// blocked while frozen, and works again once unfrozen" at the pure-
+// predicate level, since main.ts's own dispatch wiring isn't unit-testable
+// (it's wired directly into IPC/DOM/editor — same reasoning as
+// sessionpersist.ts's header comment).
+describe("canMutateDocument", () => {
+  const editableDoc = { truncated: false, userReadOnly: false };
+
+  it("is true for an ordinary editable doc when not frozen", () => {
+    expect(canMutateDocument(editableDoc, false)).toBe(true);
+  });
+
+  it("is false for the same doc while the update-install freeze is active — this is the case a raw dispatch (insert_datetime, a line operation) must not slip past", () => {
+    expect(canMutateDocument(editableDoc, true)).toBe(false);
+  });
+
+  it("is true again for the same doc once the freeze is lifted", () => {
+    expect(canMutateDocument(editableDoc, false)).toBe(true);
+  });
+
+  it("stays false while frozen even for a doc that would otherwise be mutable in every other respect", () => {
+    // Redundant with the case above by construction, but pins the
+    // intent explicitly: freeze is an unconditional AND, not something
+    // any doc-level state can override.
+    expect(canMutateDocument({ truncated: false, userReadOnly: false }, true)).toBe(false);
+  });
+
+  it("is false when the doc is already read-only, frozen or not", () => {
+    expect(canMutateDocument({ truncated: true, userReadOnly: false }, false)).toBe(false);
+    expect(canMutateDocument({ truncated: false, userReadOnly: true }, false)).toBe(false);
+    expect(canMutateDocument({ truncated: true, userReadOnly: false }, true)).toBe(false);
+    expect(canMutateDocument({ truncated: false, userReadOnly: true }, true)).toBe(false);
+  });
+});
+
+// ROADMAP.md D2, Codex re-review (3rd round) of PR #309: an async flow
+// that already passed its *own* entry guard before the freeze started
+// (mojibake repair's wizard, Edit > Normalize's confirm/representability
+// round trips) must re-check mutability again at its actual apply point —
+// main.ts's showMojibakeRepairWizard now does this via blockedByReadOnly
+// (which calls canMutateDocument), and runNormalizeFlow's
+// normalizeGuardOutcome checks updateFreezeActive before every one of its
+// three `editor.replaceContent` checkpoints, both funneling through this
+// exact function. Narrated as the scenario the review flagged, even
+// though mechanically identical to the cases above: the pure predicate is
+// what's under test, since main.ts's own dispatch/dialog wiring isn't
+// unit-testable (see sessionpersist.ts's header comment for why).
+describe("canMutateDocument — async apply-after-freeze scenario", () => {
+  const doc = { truncated: false, userReadOnly: false };
+
+  it("an async flow that started while mutable is still blocked if the doc is frozen by the time its result is ready to apply", () => {
+    // t0: the flow starts (e.g. showMojibakeRepairWizard/runNormalizeFlow
+    // checks its entry guard) — mutation is allowed.
+    const allowedAtStart = canMutateDocument(doc, false);
+    expect(allowedAtStart).toBe(true);
+
+    // t1: an update-install freeze begins while the flow's own async work
+    // (wizard round trip, confirm dialog, checkRepresentable IPC) is still
+    // in flight — nothing about `doc` itself changed.
+    const frozenBeforeApply = true;
+
+    // t2: the callback/apply point re-checks right before writing —
+    // must now be blocked, regardless of the t0 snapshot.
+    expect(canMutateDocument(doc, frozenBeforeApply)).toBe(false);
+  });
+
+  it("the same flow's apply point succeeds once the freeze has lifted", () => {
+    expect(canMutateDocument(doc, false)).toBe(true);
+  });
+});
+
+// ROADMAP.md D2, Codex re-review (4th round) of PR #309: a third class of
+// missed entry point, alongside the menu/palette-dispatch and async-apply
+// ones the two describe blocks above cover — a synchronous status-bar
+// picker (main.ts's setLineEnding, showEncodingMenu's "Save with
+// Encoding") reached by a plain DOM click listener, never through the
+// native menu or CM6 dispatch at all. Same underlying predicate, same
+// reasoning as those two blocks for why the pure-logic layer is what's
+// under test — see updateFreezeActive's own doc comment (main.ts) for the
+// full entry-point audit this round performed.
+describe("canMutateDocument — synchronous status-bar picker scenario", () => {
+  const doc = { truncated: false, userReadOnly: false };
+
+  it("a status-bar picker action (setLineEnding, Save with Encoding) is blocked while frozen, with no async gap involved at all", () => {
+    expect(canMutateDocument(doc, true)).toBe(false);
+  });
+
+  it("the same picker action works again once unfrozen", () => {
+    expect(canMutateDocument(doc, false)).toBe(true);
   });
 });
 

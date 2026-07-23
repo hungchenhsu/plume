@@ -1,0 +1,58 @@
+name: Publish updater feed
+
+# tauri-plugin-updater's endpoint can't point at
+# .../releases/latest/download/latest.json: release.yml's release is
+# `prerelease: true` (all v0.x are alphas), and GitHub's "latest" release
+# semantics explicitly skip prereleases — so that endpoint would 404
+# forever (ROADMAP.md D2 critic finding). Instead there's one fixed
+# "updater" release (tag `updater`, never itself an alpha/draft) whose
+# latest.json is republished here every time the maintainer manually
+# publishes a real release — this only fires on that user-gated action,
+# never on release.yml's own draft creation, keeping "release is
+# user-gated" intact.
+#
+# If the published release has no latest.json (a manually created release
+# outside release.yml's pipeline), this ends successfully without
+# publishing anything — that's not an error, just nothing to do.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-updater-json:
+    # Guards against the "updater" rolling release's own publish event
+    # (created below, `--latest=false` but still a real, non-draft
+    # release, so it fires `published` too) re-triggering this workflow.
+    if: github.event.release.tag_name != 'updater'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download latest.json from the published release, if present
+        id: download
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ github.event.release.tag_name }}" \
+            --pattern latest.json --dir "$RUNNER_TEMP" --clobber
+
+      - name: Ensure the rolling "updater" release exists
+        if: steps.download.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view updater >/dev/null 2>&1 || gh release create updater \
+            --title "Updater feed" \
+            --notes "Rolling latest.json for the in-app updater. Do not delete." \
+            --latest=false
+
+      - name: Publish latest.json to the rolling "updater" release
+        if: steps.download.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload updater "$RUNNER_TEMP/latest.json" --clobber

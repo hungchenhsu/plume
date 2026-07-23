@@ -127,6 +127,8 @@ import { createSessionPersister } from "./sessionpersist";
 import { runStreamConvert } from "./streamconvert";
 import { showStreamReplace } from "./streamreplace";
 import { shouldTrimTrailingWhitespaceOnSave } from "./trimonsave";
+import { checkForUpdatesAndPrompt, type UpdaterDeps } from "./updater";
+import { flushWithRevisionRecheck } from "./updaterflush";
 import {
   adjustFontSize,
   initPreferences,
@@ -149,6 +151,7 @@ import {
   refreshSuspiciousChars,
   refreshTextStats,
   setIndexing,
+  setUpdating,
   updateCharInspector,
   updateCursor,
   updateIndentInfo,
@@ -159,6 +162,7 @@ import {
   updateTextStats,
 } from "./statusbar";
 import {
+  canMutateDocument,
   closeSequentially,
   idsOtherThan,
   idsToTheRightOf,
@@ -488,24 +492,134 @@ function makeUntitled(): Doc {
   };
 }
 
+/** True while the updater flow (src/updater.ts's promptAndInstall, via
+ *  `UpdaterDeps.freezeForUpdate`/`unfreezeForUpdate`) has frozen editing to
+ *  flush hot-exit backups without racing a keystroke (ROADMAP.md D2,
+ *  Codex re-review of PR #309) — see `freezeForUpdate`'s own doc comment
+ *  below for the full race this closes. ORed into `syncReadOnlyState`
+ *  below (not just set once on whichever tab happened to be active) so
+ *  the freeze survives a tab switch mid-flush: `showActive` calls
+ *  `syncReadOnlyState` on every switch with the *new* tab's own
+ *  `isEffectivelyReadOnly`, which alone would silently re-enable typing
+ *  on that tab and defeat the freeze.
+ *
+ *  ENTRY-POINT AUDIT (Codex re-review, 4th round — read this before adding
+ *  any new entry point that changes document content or save-relevant
+ *  metadata): the freeze is only as good as every path that can mutate a
+ *  doc going through `canMutateDocument`/`blockedByReadOnly` (tabs.ts /
+ *  this file) or the CM6 read-only compartment (editor.ts) it also
+ *  reconfigures. Three rounds each found a different *class* of path that
+ *  didn't: (1) native menu/palette commands going straight to CM6
+ *  dispatch instead of through the compartment (runLineOperation/
+ *  saveFlow — fixed via blockedByReadOnly); (2) async flows that passed
+ *  their own entry guard *before* the freeze started and apply their
+ *  result after an await gap the freeze doesn't interrupt (mojibake
+ *  repair wizard, Edit > Normalize — fixed via a re-check at the actual
+ *  apply point, since neither flow's own staleness check — content diff /
+ *  revision diff — can see a freeze that produces neither); (3)
+ *  synchronous status-bar pickers reached by a DOM click listener, never
+ *  through the native menu or CM6 dispatch at all (setLineEnding, Save
+ *  with Encoding in showEncodingMenu).
+ *
+ *  Audit method used to compile this list (repeat it for any future
+ *  addition): `grep -n "nextRevision++\|\.dirty = \|backupFlush\.schedule("
+ *  src/main.ts` — every hit is a doc mutation or something that needs
+ *  hot-exit backup coverage; trace each backward to its UI entry point(s).
+ *  Full result, entry point -> disposition:
+ *    - CM6 onChange listener (real typing) -> not a new entry point, the
+ *      thing the read-only compartment itself blocks; only reachable at
+ *      all when the compartment allows it.
+ *    - runLineOperation (all Edit > Line Operations items, insert_datetime,
+ *      replace_in_selection/replace_all_in_selection) -> guarded via
+ *      blockedByReadOnly (round 1).
+ *    - saveFlow -> guarded via blockedByReadOnly (pre-existing, predates
+ *      this freeze; freeze-aware since canMutateDocument covers it).
+ *    - showMojibakeRepairWizard's apply callback -> guarded via
+ *      blockedByReadOnly at the apply point (round 2).
+ *    - runNormalizeFlow's three editor.replaceContent checkpoints ->
+ *      guarded via normalizeGuardOutcome's "frozen" verdict (round 2).
+ *    - setLineEnding (status-bar line-ending picker) -> guarded via
+ *      blockedByReadOnly; picker items also disabled while frozen (round
+ *      4, no IPC cost unlike a native menu item).
+ *    - showEncodingMenu's "Save with Encoding" action -> guarded via
+ *      blockedByReadOnly; picker items also disabled while frozen (round
+ *      4).
+ *    - reloadFromDisk / applyOpenedForReopen (Reload, Reopen with
+ *      Encoding) -> not guarded, deliberately: both *discard* the live
+ *      buffer and replace it with disk content — they don't create new,
+ *      unbacked content the way every guarded case above does — and both
+ *      already require the user to confirm discarding unsaved changes
+ *      through their own existing dialog, independent of this freeze.
+ *    - Paste / drag-drop into the editor, the @codemirror/search panel's
+ *      own Replace -> not separately guarded: both are native CM6
+ *      commands that already consult `state.readOnly` themselves (see
+ *      editor.ts's `readOnlyExtension` doc comment), so the compartment
+ *      alone covers them.
+ *    - batch_convert / stream_replace (Find/Replace in Files) -> out of
+ *      scope: both write directly to files on disk via a streaming Rust
+ *      command, never touching the live CM6 buffer this freeze/flush is
+ *      about.
+ *    - Tab close/reorder, bookmarks, session/window-state bookkeeping
+ *      (persistSession's other call sites) -> out of scope: none of these
+ *      are document content or save-relevant metadata (what a save would
+ *      write to disk); a tab closing mid-flush is already handled by
+ *      flushWithRevisionRecheck's signature comparison (updaterflush.ts),
+ *      not by blocking the close itself.
+ */
+let updateFreezeActive = false;
+
 /** Sync the editor's CM6 readOnly compartment and the View > Read-Only
  *  native menu item (checked + enabled) to `doc`'s effective read-only
- *  state (ROADMAP.md v0.4 Track C) — called from `showActive` (every tab
- *  switch/open/reload/jump) and from `toggleReadOnly` (the menu action
- *  itself), so both entry points converge on the same doc-derived truth
- *  rather than each separately guessing whether the menu already agrees.
- *  `enabled: !doc.truncated` disables the item entirely for a large-file
- *  preview — its read-only state can never be lifted, so there is nothing
- *  a click on it could legitimately do (see menu.rs `sync_read_only_menu`
- *  and its `CheckMenuItem::set_enabled`). Best-effort like the other
- *  menu-sync IPC calls (syncThemeMenu/retitleMenu): the editor's own
- *  enforcement via setReadOnly is unaffected if this fails. */
+ *  state (ROADMAP.md v0.4 Track C), ORed with `updateFreezeActive` above —
+ *  called from `showActive` (every tab switch/open/reload/jump) and from
+ *  `toggleReadOnly` (the menu action itself), so both entry points
+ *  converge on the same doc-derived truth rather than each separately
+ *  guessing whether the menu already agrees. `enabled: !doc.truncated &&
+ *  !updateFreezeActive` disables the item entirely both for a large-file
+ *  preview (its read-only state can never be lifted) and while frozen
+ *  (clicking Toggle Read-Only mid-freeze would flip `doc.readOnly` itself,
+ *  a real, persisted mutation the freeze has no business allowing) — see
+ *  menu.rs `sync_read_only_menu` and its `CheckMenuItem::set_enabled`.
+ *  Best-effort like the other menu-sync IPC calls (syncThemeMenu/
+ *  retitleMenu): the editor's own enforcement via setReadOnly is
+ *  unaffected if this fails. */
 function syncReadOnlyState(doc: Doc): void {
-  const effective = isEffectivelyReadOnly(doc);
+  const effective = updateFreezeActive || isEffectivelyReadOnly(doc);
   editor.setReadOnly(effective);
-  void syncReadOnlyMenu(effective, !doc.truncated).catch(() => {
+  void syncReadOnlyMenu(effective, !doc.truncated && !updateFreezeActive).catch(() => {
     // Best-effort; see doc comment above.
   });
+}
+
+/** Freeze the editor read-only and show the "Preparing update…" status-bar
+ *  hint (ROADMAP.md D2, Codex re-review of PR #309) — called from
+ *  src/updater.ts's promptAndInstall right before the hot-exit flush that
+ *  must run before `install`. Closes a keystroke-loss race: without this,
+ *  a user could keep typing during `flushForUpdateRestart`'s own `await`
+ *  IPC round trips; anything typed *after* that function's content
+ *  snapshot was taken would exist only in the live buffer, never reach
+ *  the backup or disk, and `plugin:process|restart`/a Windows install's
+ *  `exit(0)` bypass `onCloseRequested` entirely — the same reasoning
+ *  `UpdaterDeps.flushForExit`'s own doc comment (updater.ts) already
+ *  covers for why the flush has to happen explicitly at all. Every path
+ *  out of that flow that does not end in a successful `install` handing
+ *  off to `relaunch` must call `unfreezeForUpdate` — enforced there via
+ *  try/finally, not here. */
+function freezeForUpdate(): void {
+  updateFreezeActive = true;
+  const doc = tabs.active;
+  if (doc) syncReadOnlyState(doc);
+  setUpdating(true);
+}
+
+/** Reverses `freezeForUpdate`. See that function's doc comment for the
+ *  try/finally contract its caller (updater.ts's promptAndInstall) must
+ *  honor. */
+function unfreezeForUpdate(): void {
+  updateFreezeActive = false;
+  const doc = tabs.active;
+  if (doc) syncReadOnlyState(doc);
+  setUpdating(false);
 }
 
 /** Sync the editor view and status bar to the active tab. */
@@ -1845,19 +1959,38 @@ async function openFileFlow(): Promise<void> {
 }
 
 /**
- * If `doc` is currently read-only (ROADMAP.md v0.4 Track C), shows the
- * matching rejection dialog and returns true — shared by saveFlow and
- * runLineOperation so both entry points reject a blocked save/edit the
- * same way. Truncated (large-file preview) and userReadOnly get distinct
- * messages: writing a preview slice back would destroy the rest of the
- * file, unrelated to anything the user chose, whereas a userReadOnly doc
- * is telling the user exactly how to unlock it (uncheck View >
- * Read-Only). Truncated is checked first — matching
- * isEffectivelyReadOnly's own precedence and the status bar's (see
- * statusbar.ts updateStatusBar) — since a doc can't be edited back to an
- * un-truncated state from here regardless of userReadOnly.
+ * If `doc` cannot be mutated right now (`tabs.ts`'s `canMutateDocument` —
+ * `isEffectivelyReadOnly` plus the update-install freeze, ROADMAP.md D2),
+ * shows the matching rejection dialog and returns true — shared by
+ * saveFlow and runLineOperation so both entry points reject a blocked
+ * save/edit the same way. This is the single call site `canMutateDocument`
+ * exists for; no other call site should re-derive
+ * truncated/userReadOnly/updateFreezeActive on its own (a second,
+ * uncollapsed check site is exactly how a raw CM6 dispatch — e.g.
+ * insert_datetime, a line operation — slipped past the update freeze on
+ * the first review round, since the freeze only ever reconfigured the CM6
+ * read-only compartment those commands never consult). The freeze is
+ * checked first: it is a transient, app-wide condition unrelated to
+ * anything about this specific doc, so its own dedicated message takes
+ * precedence over doc-specific ones. Truncated (large-file preview) and
+ * userReadOnly get distinct messages after that: writing a preview slice
+ * back would destroy the rest of the file, unrelated to anything the user
+ * chose, whereas a userReadOnly doc is telling the user exactly how to
+ * unlock it (uncheck View > Read-Only). Truncated is checked before
+ * userReadOnly — matching isEffectivelyReadOnly's own precedence and the
+ * status bar's (see statusbar.ts updateStatusBar) — since a doc can't be
+ * edited back to an un-truncated state from here regardless of
+ * userReadOnly.
  */
 function blockedByReadOnly(doc: Doc): boolean {
+  if (canMutateDocument(doc, updateFreezeActive)) return false;
+  if (updateFreezeActive) {
+    void messageDialog(t("dialog.updateInProgressMessage"), {
+      title: t("dialog.updateInProgressTitle"),
+      kind: "warning",
+    });
+    return true;
+  }
   if (doc.truncated) {
     // Writing the preview slice back would destroy the rest of the file.
     void messageDialog(t("dialog.readonlyPreviewMessage", doc.title), {
@@ -2306,6 +2439,14 @@ function applyOpenedForReopen(doc: Doc, opened: OpenedDocument): void {
 function setLineEnding(lineEnding: string): void {
   const doc = tabs.active;
   if (!doc || doc.lineEnding === lineEnding) return;
+  // ROADMAP.md D2, Codex re-review (4th round) of PR #309: this is a
+  // synchronous, statusbar-picker-triggered save-relevant mutation, not an
+  // async-apply one — same entry-point-audit class as runLineOperation/
+  // showMojibakeRepairWizard, just reached from the status bar instead of
+  // a menu/palette command. See the entry-point audit comment on
+  // `updateFreezeActive`'s declaration for the full list this class
+  // covers and how it was compiled.
+  if (blockedByReadOnly(doc)) return;
   doc.lineEnding = lineEnding;
   // Line ending is passed into saveParams alongside content (runSaveFlow
   // above), so switching it changes what a save will write to disk exactly
@@ -2353,6 +2494,14 @@ function setLineEnding(lineEnding: string): void {
  *   silently overwrite the user's newer edits with a rebuild of stale
  *   content (issue #93). Since the user is still on this tab, this case
  *   surfaces a dialog rather than failing silently.
+ * - The doc became blocked (ROADMAP.md D2, Codex re-review of PR #309):
+ *   the update-install freeze doesn't touch `editor.content()` (it blocks
+ *   edits, it produces none to compare), so `isMojibakeSnapshotStale`
+ *   alone can't see it — the content still matches `snapshot` even while
+ *   frozen. Checked via `blockedByReadOnly`, the same single guard
+ *   `runLineOperation`/`saveFlow` already share, rather than re-deriving
+ *   `updateFreezeActive` (or truncated/userReadOnly, which this callback
+ *   never re-checked either, before this fix) here on its own.
  */
 function showMojibakeRepairWizard(): void {
   const doc = tabs.active;
@@ -2368,6 +2517,7 @@ function showMojibakeRepairWizard(): void {
       });
       return;
     }
+    if (blockedByReadOnly(doc)) return;
     editor.replaceContent(repaired);
   });
 }
@@ -2517,7 +2667,17 @@ function showEncodingMenu(anchor: HTMLElement): void {
       action: () => {
         const toItem = (e: EncodingChoice): Omit<MenuItem, "label" | "header"> => ({
           checked: e.value === doc.encoding && e.withBom === doc.withBom,
+          // Low-cost UI disable (in-DOM popup, no IPC round trip) — see
+          // showLineEndingMenu's own comment for why this differs from
+          // the native-menu items ROADMAP.md D2's earlier rounds skipped
+          // disabling.
+          disabled: updateFreezeActive,
           action: () => {
+            // ROADMAP.md D2, Codex re-review (4th round) of PR #309: same
+            // entry-point-audit class as setLineEnding just above — a
+            // synchronous, statusbar-picker-triggered save-relevant
+            // mutation, guarded the same way.
+            if (blockedByReadOnly(doc)) return;
             // Applied speculatively so the save encodes with the new
             // choice; rolled back if nothing was written (lossy save
             // declined, dialog cancelled, or write failure) so a
@@ -2788,20 +2948,28 @@ function showDecodeWarningMenu(anchor: HTMLElement): void {
 function showLineEndingMenu(anchor: HTMLElement): void {
   const doc = tabs.active;
   if (!doc) return;
+  // Low-cost UI disable alongside setLineEnding's own runtime guard (this
+  // is an in-DOM popup, not a native OS menu — no IPC round trip needed,
+  // unlike the native menu items ROADMAP.md D2's earlier rounds evaluated
+  // and skipped disabling for that exact cost reason).
+  const disabled = updateFreezeActive;
   showMenu(anchor, [
     {
       label: t("menu.lineEndingLf"),
       checked: doc.lineEnding === "LF",
+      disabled,
       action: () => setLineEnding("LF"),
     },
     {
       label: t("menu.lineEndingCrlf"),
       checked: doc.lineEnding === "CRLF",
+      disabled,
       action: () => setLineEnding("CRLF"),
     },
     {
       label: t("menu.lineEndingCr"),
       checked: doc.lineEnding === "CR",
+      disabled,
       action: () => setLineEnding("CR"),
     },
   ]);
@@ -2996,7 +3164,7 @@ function isUnicodeEncoding(encoding: string): boolean {
   return encoding === "UTF-8" || encoding.startsWith("UTF-16");
 }
 
-type NormalizeGuardOutcome = "apply" | "silent" | "notify";
+type NormalizeGuardOutcome = "apply" | "silent" | "notify" | "frozen";
 
 /**
  * Re-validate `guard` (captured at the very start of `runNormalizeFlow`,
@@ -3023,10 +3191,22 @@ type NormalizeGuardOutcome = "apply" | "silent" | "notify";
  * the active tab, but its revision moved (asyncguard.ts's "edited",
  * overwhelmingly a keystroke) — the user is still looking right at this
  * tab and just confirmed an operation, so silently discarding it with no
- * explanation would be confusing; the caller shows a dialog.
+ * explanation would be confusing; the caller shows a dialog. "frozen": the
+ * update-install freeze (ROADMAP.md D2, Codex re-review of PR #309) is
+ * active — checked *before* `validateIdentity` since freezing never moves
+ * `doc.revision` (it blocks edits, it doesn't produce one), so the
+ * revision check alone would have no way to notice it and would wrongly
+ * report "apply". A second, uncollapsed apply point that skipped this is
+ * exactly how the previous review round's fix — freezing the CM6
+ * compartment plus `blockedByReadOnly` — still missed this flow's own
+ * `editor.replaceContent`, which sits *after* an async confirm/IPC gap and
+ * never re-derives `canMutateDocument` on its own; this function is now
+ * where that re-derivation lives for every one of `runNormalizeFlow`'s
+ * three checkpoints.
  */
 function normalizeGuardOutcome(guard: GuardIdentity, doc: Doc): NormalizeGuardOutcome {
   if (tabs.activeId !== guard.id) return "silent";
+  if (updateFreezeActive) return "frozen";
   const verdict = validateIdentity(guard, doc, tabs.docs.includes(doc));
   if (verdict === "apply") return "apply";
   if (verdict === "closed") return "silent";
@@ -3109,6 +3289,12 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
         kind: "warning",
       });
     }
+    if (outcome === "frozen") {
+      void messageDialog(t("dialog.updateInProgressMessage"), {
+        title: t("dialog.updateInProgressTitle"),
+        kind: "warning",
+      });
+    }
     if (outcome !== "apply") return;
 
     if (!isUnicodeEncoding(doc.encoding)) {
@@ -3117,6 +3303,12 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
       if (outcome === "notify") {
         void messageDialog(t("dialog.normalizeStaleMessage"), {
           title: t("dialog.normalizeStaleTitle"),
+          kind: "warning",
+        });
+      }
+      if (outcome === "frozen") {
+        void messageDialog(t("dialog.updateInProgressMessage"), {
+          title: t("dialog.updateInProgressTitle"),
           kind: "warning",
         });
       }
@@ -3142,6 +3334,12 @@ async function runNormalizeFlow(form: NormalizeForm): Promise<void> {
         if (outcome === "notify") {
           void messageDialog(t("dialog.normalizeStaleMessage"), {
             title: t("dialog.normalizeStaleTitle"),
+            kind: "warning",
+          });
+        }
+        if (outcome === "frozen") {
+          void messageDialog(t("dialog.updateInProgressMessage"), {
+            title: t("dialog.updateInProgressTitle"),
             kind: "warning",
           });
         }
@@ -3481,6 +3679,12 @@ function dispatchMenuCommand(id: string): void {
       });
       break;
     }
+    // ROADMAP.md D2 signing + auto-update: same flow the startup
+    // background check runs, but non-silent — see updater.ts's own doc
+    // comment on checkForUpdatesAndPrompt's `silent` option.
+    case "check_for_updates":
+      void checkForUpdatesAndPrompt(updaterDeps, { silent: false });
+      break;
     case "print": {
       // Defensive no-doc guard (ROADMAP.md v0.6 C1 palette dispatch-safety
       // audit, this function's own doc comment above) — structurally
@@ -3539,6 +3743,90 @@ async function openCommandPalette(): Promise<void> {
 }
 
 void listen<string>("mojidori://menu", (event) => dispatchMenuCommand(event.payload));
+
+/** One pass of the updater's hot-exit flush: snapshot and write every
+ *  dirty, non-truncated doc's backup, then persist the session. Split out
+ *  of `flushForUpdateRestart` purely so that function's bounded-retry loop
+ *  can call it more than once without duplicating the loop body. */
+async function runUpdateFlushPass(): Promise<boolean> {
+  let ok = true;
+  for (const doc of tabs.docs) {
+    if (!doc.dirty || doc.truncated) continue;
+    const content = doc.id === tabs.activeId ? editor.content() : contentOf(doc.buffer);
+    const flushed = await backups.flush(doc, content).catch(() => false);
+    if (!flushed) {
+      console.error(`updater: backup flush failed for ${doc.title}`);
+      ok = false;
+    }
+  }
+  try {
+    await sessionPersist.persist();
+  } catch (error) {
+    console.error("updater: session persist failed", error);
+    ok = false;
+  }
+  return ok;
+}
+
+/** `(doc.id, doc.revision)` for every open tab, joined into one string —
+ *  cheap enough to compute twice around a flush pass just to diff.
+ *  `doc.revision` (issue #112, `nextRevision` above) already bumps on
+ *  every edit, is what `savecompletion.ts`'s own await-window staleness
+ *  check compares, and is exactly the signal `flushForUpdateRestart`'s own
+ *  re-verification needs: under a correctly-held `freezeForUpdate` this
+ *  should never change mid-pass, an id set changing (a tab opened/closed
+ *  during the flush) is folded in as "changed" too, and the join order
+ *  matching `tabs.docs`'s own iteration order means a pure reorder also
+ *  counts as changed — over-cautious, but a spurious retry is harmless
+ *  where a missed one would defeat the whole point of re-verifying. */
+function updateFlushSignature(): string {
+  return tabs.docs.map((doc) => `${doc.id}:${doc.revision}`).join("|");
+}
+
+/** Hot-exit flush for the updater's install-and-restart flow (ROADMAP.md
+ *  D2, src/updater.ts's `UpdaterDeps.flushForExit`). Deliberately mirrors —
+ *  rather than shares — onCloseRequested's own flush loop just below:
+ *  `plugin:process|restart` bypasses onCloseRequested entirely (Tauri's
+ *  `request_restart` skips per-window close events), so the updater needs
+ *  a flush called explicitly, but onCloseRequested's close-vs-discard
+ *  state machine is delicate enough (issue #63) that duplicating a few
+ *  lines here is safer than reshaping it to serve a second caller.
+ *  `backupFlush.cancel()` mirrors onCloseRequested's own first line — a
+ *  pending debounced flush from typing must not race this explicit one.
+ *
+ *  The caller (updater.ts's promptAndInstall) already holds
+ *  `freezeForUpdate` across this whole call — `flushWithRevisionRecheck`
+ *  (updaterflush.ts) re-verifies that invariant rather than being the
+ *  primary defense against it, retrying up to twice if a doc's signature
+ *  moved between the start and end of a pass, and exhausting the retries
+ *  is folded into the same `false` result an ordinary write failure
+ *  produces, reusing updater.ts's existing flush-failed dialog rather than
+ *  a second, parallel failure path.
+ *
+ *  Unlike onCloseRequested, a failure here doesn't block by itself — it
+ *  reports back via the return value (`false` if any backup or the
+ *  session write failed, or the signature never stabilized) so
+ *  updater.ts's caller can ask the user whether to install anyway, rather
+ *  than this function silently deciding for them the way an unconditional
+ *  install would. */
+async function flushForUpdateRestart(): Promise<boolean> {
+  backupFlush.cancel();
+  return flushWithRevisionRecheck({
+    runPass: runUpdateFlushPass,
+    signature: updateFlushSignature,
+    maxRetries: 2,
+    onRetry: (attempt, maxAttempts) =>
+      console.error(
+        `updater: document state changed during a frozen flush (attempt ${attempt}/${maxAttempts}); retrying`,
+      ),
+  });
+}
+
+const updaterDeps: UpdaterDeps = {
+  flushForExit: flushForUpdateRestart,
+  freezeForUpdate,
+  unfreezeForUpdate,
+};
 
 // Hot exit: flush every unsaved buffer to its backup and quit without
 // asking — the next launch restores everything, including untitled tabs.
@@ -3906,4 +4194,13 @@ void (async () => {
     const elapsedMs = performance.now() - openStart;
     void reportOpenfileReady(elapsedMs).catch(() => {});
   }
+  // ROADMAP.md D2 signing + auto-update: a background check, deferred
+  // behind a delay so it can never compete with the startup-critical work
+  // above (session restore, pending-file opens, the cold-start probe) —
+  // startup-bench.mjs times against that work finishing, not this.
+  // Silent: offline is the normal state for a local desktop editor, not
+  // an error to surface unprompted (see updater.ts's own doc comment).
+  setTimeout(() => {
+    void checkForUpdatesAndPrompt(updaterDeps, { silent: true });
+  }, 5000);
 })();

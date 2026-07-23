@@ -727,9 +727,22 @@ pub fn run() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
 
+    // Auto-update (ROADMAP.md D2), desktop only (Windows/Linux/macOS) per
+    // the plugin's own docs — same gate as tauri-plugin-window-state above.
+    // The frontend drives the whole check/prompt/download/relaunch flow
+    // (src/updater.ts) via raw `invoke("plugin:updater|...")` calls rather
+    // than a Rust-side command, so registration here is all this plugin
+    // needs; `tauri.conf.json`'s `plugins.updater` config (pubkey +
+    // endpoints) supplies the rest.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Lets the updater flow (src/updater.ts) relaunch the app after
+        // installing a downloaded update (ROADMAP.md D2).
+        .plugin(tauri_plugin_process::init())
         .manage(PendingFiles(Mutex::new(existing_paths_from_args(
             std::env::args(),
         ))))

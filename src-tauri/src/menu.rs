@@ -78,6 +78,17 @@ const LABELS: &[(&str, &str, &str, &str, &str)] = &[
         "環境設定…",
         "首选项…",
     ),
+    // ROADMAP.md D2 signing + auto-update: opens the same check/prompt
+    // flow the startup background check runs (src/updater.ts), but
+    // synchronously surfaces "you're up to date" / "check failed" too —
+    // a manual click that silently does nothing would read as broken.
+    (
+        "check_for_updates",
+        "Check for Updates…",
+        "檢查更新…",
+        "アップデートを確認…",
+        "检查更新…",
+    ),
     ("edit", "Edit", "編輯", "編集", "编辑"),
     (
         "select_next_occurrence",
@@ -516,6 +527,15 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             // the item being disabled (see docinfo.ts's own doc comment for
             // why that choice was made over a disabled menu item).
             &MenuItemBuilder::with_id("document_info", l("document_info")).build(app)?,
+        )
+        .separator()
+        .item(
+            // ROADMAP.md D2 signing + auto-update: no accelerator, matches
+            // insert_datetime/document_info's own "opens a dialog, no
+            // further native flow, Command Palette is enough" precedent.
+            // Placed in File (not the macOS app_menu, unlike Preferences)
+            // so both platforms get it from one unconditional item() call.
+            &MenuItemBuilder::with_id("check_for_updates", l("check_for_updates")).build(app)?,
         );
     #[cfg(not(target_os = "macos"))]
     let file = file.separator().item(
@@ -1000,6 +1020,7 @@ pub fn retitle_menu<R: Runtime>(app: AppHandle<R>, locale: String) -> Result<(),
             "reopen_closed_tab",
             "print",
             "document_info",
+            "check_for_updates",
             "preferences",
         ] {
             if let Some(item) = file.get(id).and_then(|item| item.as_menuitem().cloned()) {
@@ -1525,6 +1546,17 @@ mod tests {
             label("replace_all_in_selection", "zh-CN"),
             "在选取范围内全部替换"
         );
+    }
+
+    // ROADMAP.md D2 signing + auto-update: the File menu's new
+    // "check_for_updates" item id, pinned across all four languages --
+    // same rationale as insert_datetime's dedicated test above.
+    #[test]
+    fn label_returns_the_correct_check_for_updates_text_for_every_language() {
+        assert_eq!(label("check_for_updates", "en"), "Check for Updates…");
+        assert_eq!(label("check_for_updates", "zh-TW"), "檢查更新…");
+        assert_eq!(label("check_for_updates", "ja"), "アップデートを確認…");
+        assert_eq!(label("check_for_updates", "zh-CN"), "检查更新…");
     }
 
     #[test]

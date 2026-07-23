@@ -47,6 +47,7 @@ export interface Messages {
   "statusbar.missingOnDisk": string;
   "statusbar.decodeWarning": string;
   "statusbar.buildingIndex": string;
+  "statusbar.preparingUpdate": string;
   "statusbar.textStats": (words: number, chars: number, lines: number) => string;
   "statusbar.textStatsSelection": (words: number, chars: number, lines: number) => string;
   "statusbar.charInspector": (char: string, codepoint: string) => string;
@@ -342,6 +343,12 @@ export interface Messages {
   "dialog.readonlyPreviewMessage": (title: string) => string;
   "dialog.userReadOnlyTitle": string;
   "dialog.userReadOnlyMessage": (title: string) => string;
+  // Update-install freeze (ROADMAP.md D2, Codex re-review of PR #309) —
+  // main.ts's blockedByReadOnly, checked before the truncated/userReadOnly
+  // cases above since it's an app-wide condition unrelated to this
+  // specific doc. See tabs.ts's canMutateDocument doc comment.
+  "dialog.updateInProgressTitle": string;
+  "dialog.updateInProgressMessage": string;
   "dialog.saveFailedTitle": string;
   "dialog.lossyEncodingTitle": string;
   "dialog.lossyEncodingMessage": (encoding: string, count: number) => string;
@@ -486,6 +493,37 @@ export interface Messages {
   "encoding.group.cyrillic": string;
   "encoding.group.other": string;
 
+  // Auto-update (ROADMAP.md D2) — src/updater.ts's checkForUpdatesAndPrompt.
+  // availableMessage's "backed up automatically" clause is only true
+  // because updater.ts's flushForExit call actually runs before relaunch
+  // (see UpdaterDeps' doc comment there) — keep this wording in sync with
+  // that behavior if it ever changes.
+  "updater.availableTitle": string;
+  "updater.availableMessage": (version: string) => string;
+  "updater.downloadAndRestart": string;
+  "updater.later": string;
+  "updater.downloadFailedTitle": string;
+  "updater.downloadFailedMessage": string;
+  "updater.checkFailedTitle": string;
+  "updater.checkFailedMessage": string;
+  // Shown when a manual "Check for Updates…" click lands while another
+  // check (background or manual) is already running (ROADMAP.md D2,
+  // Codex re-review of PR #309's in-flight guard).
+  "updater.checkInProgressTitle": string;
+  "updater.checkInProgressMessage": string;
+  "updater.upToDateTitle": string;
+  "updater.upToDateMessage": string;
+  // Shown when flushForExit (main.ts) reports a failed backup/session
+  // write, before install is called — installAnyway/cancelInstall back a
+  // two-choice dialog whose default is Cancel (see updater.ts's
+  // promptAndInstall).
+  "updater.flushFailedTitle": string;
+  "updater.flushFailedMessage": string;
+  "updater.installAnyway": string;
+  "updater.cancelInstall": string;
+  "updater.installFailedTitle": string;
+  "updater.installFailedMessage": string;
+
   "common.loading": string;
 }
 
@@ -510,6 +548,7 @@ const en: Messages = {
   "statusbar.missingOnDisk": "⚠ File deleted from disk",
   "statusbar.decodeWarning": "⚠ decoded with errors",
   "statusbar.buildingIndex": "Building line index…",
+  "statusbar.preparingUpdate": "Preparing update…",
   "statusbar.textStats": (words, chars, lines) =>
     `${words} word${words === 1 ? "" : "s"}, ${chars} char${chars === 1 ? "" : "s"}, ` +
     `${lines} line${lines === 1 ? "" : "s"}`,
@@ -788,6 +827,9 @@ const en: Messages = {
   "dialog.userReadOnlyTitle": "Read-only",
   "dialog.userReadOnlyMessage": (title) =>
     `"${title}" is marked read-only. Uncheck View > Read-Only to edit it.`,
+  "dialog.updateInProgressTitle": "Update in Progress",
+  "dialog.updateInProgressMessage":
+    "Mojidori is preparing to install an update and can't be edited right now. Please wait a moment.",
   "dialog.saveFailedTitle": "Save failed",
   "dialog.lossyEncodingTitle": "Encoding warning",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -895,6 +937,27 @@ const en: Messages = {
   "encoding.group.cyrillic": "Cyrillic",
   "encoding.group.other": "Other",
 
+  "updater.availableTitle": "Update Available",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} is available. Any unsaved changes will be backed up automatically before restarting.`,
+  "updater.downloadAndRestart": "Download and Restart",
+  "updater.later": "Later",
+  "updater.downloadFailedTitle": "Update Failed",
+  "updater.downloadFailedMessage": "The update could not be downloaded. Please try again later.",
+  "updater.checkFailedTitle": "Update Check Failed",
+  "updater.checkFailedMessage": "Could not check for updates. Please check your internet connection.",
+  "updater.checkInProgressTitle": "Check in Progress",
+  "updater.checkInProgressMessage": "An update check is already in progress. Please wait for it to finish.",
+  "updater.upToDateTitle": "You're Up to Date",
+  "updater.upToDateMessage": "Mojidori is on the latest version.",
+  "updater.flushFailedTitle": "Backup Failed",
+  "updater.flushFailedMessage":
+    "Some unsaved changes could not be backed up before installing this update, which restarts Mojidori. You can install anyway, or cancel and save your work first — you'll be asked again the next time Mojidori checks for updates.",
+  "updater.installAnyway": "Install Anyway",
+  "updater.cancelInstall": "Cancel",
+  "updater.installFailedTitle": "Update Failed",
+  "updater.installFailedMessage": "The update could not be installed. Please try again later.",
+
   "common.loading": "Loading…",
 };
 
@@ -919,6 +982,7 @@ const zhTW: Messages = {
   "statusbar.missingOnDisk": "⚠ 檔案已從磁碟移除",
   "statusbar.decodeWarning": "⚠ 解碼時發生錯誤",
   "statusbar.buildingIndex": "正在建立行號索引…",
+  "statusbar.preparingUpdate": "正在準備更新…",
   "statusbar.textStats": (words, chars, lines) => `${words} 詞、${chars} 字元、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已選取：${words} 詞、${chars} 字元、${lines} 行`,
@@ -1169,6 +1233,8 @@ const zhTW: Messages = {
   "dialog.userReadOnlyTitle": "唯讀",
   "dialog.userReadOnlyMessage": (title) =>
     `「${title}」已設為唯讀，取消勾選「檢視 > 唯讀」即可編輯。`,
+  "dialog.updateInProgressTitle": "更新進行中",
+  "dialog.updateInProgressMessage": "Mojidori 正在準備安裝更新，目前無法編輯，請稍候。",
   "dialog.saveFailedTitle": "儲存失敗",
   "dialog.lossyEncodingTitle": "編碼警告",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -1262,6 +1328,27 @@ const zhTW: Messages = {
   "encoding.group.cyrillic": "西里爾",
   "encoding.group.other": "其他",
 
+  "updater.availableTitle": "有可用更新",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} 已可更新。重新啟動前，任何未儲存的變更都會自動備份。`,
+  "updater.downloadAndRestart": "下載並重新啟動",
+  "updater.later": "稍後",
+  "updater.downloadFailedTitle": "更新失敗",
+  "updater.downloadFailedMessage": "無法下載更新，請稍後再試。",
+  "updater.checkFailedTitle": "檢查更新失敗",
+  "updater.checkFailedMessage": "無法檢查更新，請確認網路連線。",
+  "updater.checkInProgressTitle": "檢查進行中",
+  "updater.checkInProgressMessage": "已有更新檢查正在進行，請稍候。",
+  "updater.upToDateTitle": "已是最新版本",
+  "updater.upToDateMessage": "Mojidori 目前已是最新版本。",
+  "updater.flushFailedTitle": "備份失敗",
+  "updater.flushFailedMessage":
+    "部分未儲存的變更在安裝此更新前無法備份，安裝後 Mojidori 會重新啟動。您可以仍要安裝，或取消並先儲存您的工作——下次 Mojidori 檢查更新時會再次詢問。",
+  "updater.installAnyway": "仍要安裝",
+  "updater.cancelInstall": "取消",
+  "updater.installFailedTitle": "更新失敗",
+  "updater.installFailedMessage": "無法安裝更新，請稍後再試。",
+
   "common.loading": "載入中…",
 };
 
@@ -1286,6 +1373,7 @@ const ja: Messages = {
   "statusbar.missingOnDisk": "⚠ ディスクから削除されました",
   "statusbar.decodeWarning": "⚠ デコードエラーが発生しました",
   "statusbar.buildingIndex": "行番号インデックスを構築中…",
+  "statusbar.preparingUpdate": "アップデートを準備中…",
   "statusbar.textStats": (words, chars, lines) => `${words} 語、${chars} 文字、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `選択範囲：${words} 語、${chars} 文字、${lines} 行`,
@@ -1551,6 +1639,9 @@ const ja: Messages = {
   "dialog.userReadOnlyTitle": "読み取り専用",
   "dialog.userReadOnlyMessage": (title) =>
     `「${title}」は読み取り専用に設定されています。「表示 > 読み取り専用」のチェックを外すと編集できます。`,
+  "dialog.updateInProgressTitle": "アップデート準備中",
+  "dialog.updateInProgressMessage":
+    "Mojidori はアップデートのインストールを準備しています。しばらくの間、編集はできません。",
   "dialog.saveFailedTitle": "保存に失敗しました",
   "dialog.lossyEncodingTitle": "エンコーディングに関する警告",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -1654,6 +1745,27 @@ const ja: Messages = {
   "encoding.group.cyrillic": "キリル文字",
   "encoding.group.other": "その他",
 
+  "updater.availableTitle": "アップデートがあります",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} が利用可能です。再起動前に、未保存の変更は自動的にバックアップされます。`,
+  "updater.downloadAndRestart": "ダウンロードして再起動",
+  "updater.later": "後で",
+  "updater.downloadFailedTitle": "アップデートに失敗しました",
+  "updater.downloadFailedMessage": "アップデートをダウンロードできませんでした。しばらくしてから再試行してください。",
+  "updater.checkFailedTitle": "アップデートの確認に失敗しました",
+  "updater.checkFailedMessage": "アップデートを確認できませんでした。インターネット接続をご確認ください。",
+  "updater.checkInProgressTitle": "確認中",
+  "updater.checkInProgressMessage": "アップデートの確認はすでに進行中です。しばらくお待ちください。",
+  "updater.upToDateTitle": "最新の状態です",
+  "updater.upToDateMessage": "Mojidori は最新バージョンです。",
+  "updater.flushFailedTitle": "バックアップに失敗しました",
+  "updater.flushFailedMessage":
+    "このアップデートをインストールする前に、一部の未保存の変更をバックアップできませんでした。インストールすると Mojidori が再起動します。このままインストールするか、キャンセルして作業を保存してください——次回のアップデート確認時に再度お尋ねします。",
+  "updater.installAnyway": "このままインストール",
+  "updater.cancelInstall": "キャンセル",
+  "updater.installFailedTitle": "アップデートに失敗しました",
+  "updater.installFailedMessage": "アップデートをインストールできませんでした。しばらくしてから再試行してください。",
+
   "common.loading": "読み込み中…",
 };
 
@@ -1678,6 +1790,7 @@ const zhCN: Messages = {
   "statusbar.missingOnDisk": "⚠ 文件已从磁盘删除",
   "statusbar.decodeWarning": "⚠ 解码时发生错误",
   "statusbar.buildingIndex": "正在构建行号索引…",
+  "statusbar.preparingUpdate": "正在准备更新…",
   "statusbar.textStats": (words, chars, lines) => `${words} 词、${chars} 字符、${lines} 行`,
   "statusbar.textStatsSelection": (words, chars, lines) =>
     `已选择：${words} 词、${chars} 字符、${lines} 行`,
@@ -1927,6 +2040,8 @@ const zhCN: Messages = {
   "dialog.userReadOnlyTitle": "只读",
   "dialog.userReadOnlyMessage": (title) =>
     `“${title}”已设为只读，取消勾选“视图 > 只读”即可编辑。`,
+  "dialog.updateInProgressTitle": "更新进行中",
+  "dialog.updateInProgressMessage": "Mojidori 正在准备安装更新，目前无法编辑，请稍候。",
   "dialog.saveFailedTitle": "保存失败",
   "dialog.lossyEncodingTitle": "编码警告",
   "dialog.lossyEncodingMessage": (encoding, count) =>
@@ -2018,6 +2133,27 @@ const zhCN: Messages = {
   "encoding.group.centralEuropean": "中欧",
   "encoding.group.cyrillic": "西里尔",
   "encoding.group.other": "其他",
+
+  "updater.availableTitle": "有可用更新",
+  "updater.availableMessage": (version) =>
+    `Mojidori ${version} 已可更新。重新启动前，任何未保存的更改都会自动备份。`,
+  "updater.downloadAndRestart": "下载并重新启动",
+  "updater.later": "稍后",
+  "updater.downloadFailedTitle": "更新失败",
+  "updater.downloadFailedMessage": "无法下载更新，请稍后重试。",
+  "updater.checkFailedTitle": "检查更新失败",
+  "updater.checkFailedMessage": "无法检查更新，请确认网络连接。",
+  "updater.checkInProgressTitle": "检查进行中",
+  "updater.checkInProgressMessage": "已有更新检查正在进行，请稍候。",
+  "updater.upToDateTitle": "已是最新版本",
+  "updater.upToDateMessage": "Mojidori 当前已是最新版本。",
+  "updater.flushFailedTitle": "备份失败",
+  "updater.flushFailedMessage":
+    "部分未保存的更改在安装此更新前无法备份，安装后 Mojidori 会重新启动。您可以仍然安装，或取消并先保存您的工作——下次 Mojidori 检查更新时会再次询问。",
+  "updater.installAnyway": "仍然安装",
+  "updater.cancelInstall": "取消",
+  "updater.installFailedTitle": "更新失败",
+  "updater.installFailedMessage": "无法安装更新，请稍后重试。",
 
   "common.loading": "加载中…",
 };
