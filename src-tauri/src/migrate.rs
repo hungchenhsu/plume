@@ -99,6 +99,7 @@
 //! lock check is implemented); mitigated operationally by telling users
 //! in release notes to close the old install before launching this one.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -173,9 +174,20 @@ fn dir_stats(dir: &Path) -> io::Result<(u64, u64)> {
 /// Copy `src` to `dst` and `fsync` the destination file before returning,
 /// so a crash immediately after this call can't leave a copy that looks
 /// complete (right length) but has data still sitting in a write cache.
+///
+/// Writes via a `File::create`d handle and `fsync`s *that same* handle,
+/// rather than `fs::copy` followed by a fresh `File::open(dst)` +
+/// `sync_all()`: on Windows, `FlushFileBuffers` (what `sync_all()` calls
+/// there) requires the handle to have been opened with write access, and a
+/// bare `File::open` is read-only — that combination fails with
+/// `ERROR_ACCESS_DENIED` (os error 5) on every write, which is invisible
+/// on Unix (`fsync` on a read-only fd is perfectly legal there) and so
+/// only ever surfaces on Windows.
 fn copy_file_synced(src: &Path, dst: &Path) -> io::Result<u64> {
-    let bytes = fs::copy(src, dst)?;
-    File::open(dst)?.sync_all()?;
+    let mut reader = File::open(src)?;
+    let mut writer = File::create(dst)?;
+    let bytes = io::copy(&mut reader, &mut writer)?;
+    writer.sync_all()?;
     Ok(bytes)
 }
 
@@ -183,7 +195,10 @@ fn copy_file_synced(src: &Path, dst: &Path) -> io::Result<u64> {
 /// durable across a crash, not just the renamed file/dir's own contents.
 /// Unix only — Windows has no portable directory-handle-flush API; this is
 /// documented best-effort there, relying solely on the file-level
-/// `sync_all()` calls that already happen before any such rename.
+/// `sync_all()` calls that already happen before any such rename. (Unlike
+/// [`copy_file_synced`]'s pitfall above, this one specific case is fine as
+/// a read-only `File::open`: it's `#[cfg(unix)]`-only and never runs on
+/// Windows at all, so the write-handle requirement never applies to it.)
 #[cfg(unix)]
 fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
@@ -193,6 +208,30 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
 fn fsync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
+
+/// Recursively `fsync` every directory under (and including) `root`, so
+/// every directory-entry within the tree — not just `root`'s own entry in
+/// *its* parent — survives a crash. Unix only, see [`fsync_dir`]. Used
+/// after [`migrate_dir`]'s publish rename, where `root` is the
+/// just-published `new_dir`: the whole tree is what this run just wrote,
+/// so walking all of it is bounded by the migration's own size (unlike
+/// merge-recovery, which must avoid walking `new_dir` wholesale — it can
+/// contain unrelated, possibly large pre-existing live data — and instead
+/// fsyncs only the specific directories it touched).
+#[cfg(unix)]
+fn fsync_dir_tree(root: &Path) {
+    let _ = fsync_dir(root);
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                fsync_dir_tree(&entry.path());
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn fsync_dir_tree(_root: &Path) {}
 
 /// Recursively copy every file and subdirectory of `src` into `dst`,
 /// creating `dst` (and nested subdirectories) as needed. Each file is
@@ -416,6 +455,14 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationOutcome, S
     if let Some(parent) = new_dir.parent() {
         let _ = fsync_dir(parent);
     }
+    // Fsync every directory *inside* the newly-published tree too (e.g.
+    // `new_dir/backups/`) — the parent fsync above only durably records
+    // that `new_dir` itself exists, not that its interior directories
+    // durably contain the entries the copy just wrote into them. Bounded
+    // by the size of what this run just migrated (it's exactly the tree
+    // that was just published, nothing else), unlike merge-recovery's
+    // equivalent step, which must avoid walking `new_dir` wholesale.
+    fsync_dir_tree(new_dir);
 
     retire_old_dir(old_dir);
 
@@ -434,6 +481,13 @@ struct MergeProgress {
     files_copied: u64,
     bytes_copied: u64,
     files_skipped: u64,
+    /// Every directory that received a new entry (a copied file, or a
+    /// freshly created subdirectory) during this run, deduplicated. Each
+    /// gets `fsync`'d before [`merge_recover`] hands back success, so a
+    /// crash right after can't leave the *directory entry* for a
+    /// successfully-copied, successfully-verified file un-persisted —
+    /// see the module doc's Durability section.
+    touched_dirs: HashSet<PathBuf>,
 }
 
 /// Suffix for the per-file staging temp used while merge-copying a single
@@ -481,11 +535,24 @@ fn copy_file_atomic_no_overwrite(src: &Path, dst: &Path) -> io::Result<Option<u6
     let tmp = merge_tmp_path(dst);
     let _ = fs::remove_file(&tmp);
 
-    let bytes = fs::copy(src, &tmp)?;
-    if let Err(e) = File::open(&tmp).and_then(|f| f.sync_all()) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
+    // Written and synced via the same write-mode handle, not `fs::copy`
+    // followed by a fresh read-only `File::open` + `sync_all()` — see
+    // `copy_file_synced`'s doc comment for why that combination fails on
+    // Windows (`ERROR_ACCESS_DENIED`) despite working fine on Unix.
+    let write_result = (|| -> io::Result<u64> {
+        let mut reader = File::open(src)?;
+        let mut writer = File::create(&tmp)?;
+        let bytes = io::copy(&mut reader, &mut writer)?;
+        writer.sync_all()?;
+        Ok(bytes)
+    })();
+    let bytes = match write_result {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
     if dst.exists() {
         let _ = fs::remove_file(&tmp);
         return Ok(None);
@@ -512,6 +579,7 @@ fn copy_dir_recursive_tracked(
     progress: &mut MergeProgress,
 ) -> io::Result<()> {
     fs::create_dir_all(dst)?;
+    progress.touched_dirs.insert(dst.to_path_buf());
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -571,6 +639,7 @@ fn merge_dir_recursive(old: &Path, new: &Path, progress: &mut MergeProgress) -> 
             } else {
                 if let Some(parent) = dst_path.parent() {
                     fs::create_dir_all(parent)?;
+                    progress.touched_dirs.insert(parent.to_path_buf());
                 }
                 match copy_file_atomic_no_overwrite(&src_path, &dst_path)? {
                     Some(bytes) => {
@@ -652,6 +721,21 @@ fn merge_recover(old_dir: &Path, new_dir: &Path) -> Result<(u64, u64, u64), Stri
         }
     }
 
+    // Unlike migrate_dir's single publish rename (whose containing
+    // directory entry alone tells the whole story), merge-recovery places
+    // files one at a time via per-file renames scattered across
+    // `new_dir`'s own tree — including newly-created nested directories
+    // like `backups/`. Fsyncing only `new_dir`'s parent (below) would
+    // durably record that `new_dir` itself exists, but says nothing about
+    // whether its *interior* directories durably contain the entries this
+    // run just added. Fsync every directory this run actually touched
+    // (deduplicated) before returning success, so a crash right after
+    // can't leave the completion marker (written next, by the caller)
+    // durable while one of the files it vouches for has quietly lost its
+    // directory entry.
+    for dir in &progress.touched_dirs {
+        let _ = fsync_dir(dir);
+    }
     if let Some(parent) = new_dir.parent() {
         let _ = fsync_dir(parent);
     }
