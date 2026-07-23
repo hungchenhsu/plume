@@ -91,8 +91,26 @@ describe("checkForUpdatesAndPrompt — check() fails", () => {
   });
 });
 
+const bytesRid = 42;
+
+/** Default invoke stub for the "update available" describe block: `check`
+ *  resolves the update, `download` resolves a bytes resource id, `install`
+ *  and `restart` resolve to nothing — matching the real plugin commands'
+ *  return shapes (verified against tauri-apps/plugins-workspace v2
+ *  plugins/updater/src/commands.rs: `download` returns `ResourceId`,
+ *  `install` returns `()`). Tests override specific commands with
+ *  `mockImplementationOnce`/rejects as needed. */
+function stubInvokeHappyPath(calledCommands: string[]): void {
+  invoke.mockImplementation(async (cmd: string) => {
+    calledCommands.push(cmd);
+    if (cmd === "plugin:updater|check") return update;
+    if (cmd === "plugin:updater|download") return bytesRid;
+    return undefined;
+  });
+}
+
 describe("checkForUpdatesAndPrompt — update available", () => {
-  it("declining (Later) never downloads, flushes, or relaunches", async () => {
+  it("declining (Later) never downloads, flushes, installs, or relaunches", async () => {
     invoke.mockResolvedValueOnce(update); // plugin:updater|check
     confirmDialog.mockResolvedValueOnce(false);
     const { deps, flushForExit } = makeDeps();
@@ -104,7 +122,7 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(flushForExit).not.toHaveBeenCalled();
   });
 
-  it("accepting downloads, flushes unsaved work, then relaunches — in that order", async () => {
+  it("accepting downloads, flushes unsaved work, installs, then relaunches — in that order", async () => {
     confirmDialog.mockResolvedValueOnce(true);
     const { deps, flushForExit } = makeDeps();
 
@@ -115,8 +133,12 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     });
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "plugin:updater|check") return update;
-      if (cmd === "plugin:updater|download_and_install") {
+      if (cmd === "plugin:updater|download") {
         order.push("download");
+        return bytesRid;
+      }
+      if (cmd === "plugin:updater|install") {
+        order.push("install");
         return undefined;
       }
       if (cmd === "plugin:process|restart") {
@@ -129,25 +151,32 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
     expect(invoke).toHaveBeenCalledWith(
-      "plugin:updater|download_and_install",
+      "plugin:updater|download",
+      expect.objectContaining({ rid: update.rid, onEvent: expect.any(FakeChannel) }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "plugin:updater|install",
       expect.objectContaining({
-        rid: update.rid,
+        updateRid: update.rid,
+        bytesRid,
         restartAfterInstall: false,
-        onEvent: expect.any(FakeChannel),
       }),
     );
-    expect(order).toEqual(["download", "flush", "relaunch"]);
+    // flush happens strictly between download and install — see
+    // UpdaterDeps.flushForExit's doc comment for why (install never
+    // returns on Windows).
+    expect(order).toEqual(["download", "flush", "install", "relaunch"]);
   });
 
-  it("a failed download shows an error dialog and never flushes or relaunches", async () => {
+  it("a failed download shows an error dialog and never flushes, installs, or relaunches", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true);
     const { deps, flushForExit } = makeDeps();
+    const calledCommands: string[] = [];
     invoke.mockImplementation(async (cmd: string) => {
+      calledCommands.push(cmd);
       if (cmd === "plugin:updater|check") return update;
-      if (cmd === "plugin:updater|download_and_install") {
-        throw new Error("network error");
-      }
+      if (cmd === "plugin:updater|download") throw new Error("network error");
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -156,28 +185,21 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     expect(consoleError).toHaveBeenCalled();
     expect(messageDialog).toHaveBeenCalledTimes(1);
     expect(flushForExit).not.toHaveBeenCalled();
-    expect(invoke).not.toHaveBeenCalledWith("plugin:process|restart", expect.anything());
+    expect(calledCommands).toEqual(["plugin:updater|check", "plugin:updater|download"]);
   });
 
-  it("when the hot-exit flush fails, defaults to NOT relaunching (Cancel) — the update stays downloaded and installs on the next natural restart", async () => {
+  it("when the hot-exit flush fails, defaults to NOT installing (Cancel) — nothing on disk changes, and the user is asked again next check", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
     confirmDialog.mockResolvedValueOnce(false); // flush-failed dialog, default Cancel
     const { deps, flushForExit } = makeDeps();
     flushForExit.mockResolvedValueOnce(false);
     const calledCommands: string[] = [];
-    invoke.mockImplementation(async (cmd: string) => {
-      calledCommands.push(cmd);
-      if (cmd === "plugin:updater|check") return update;
-      return undefined;
-    });
+    stubInvokeHappyPath(calledCommands);
 
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
-    expect(calledCommands).toEqual([
-      "plugin:updater|check",
-      "plugin:updater|download_and_install",
-    ]);
+    expect(calledCommands).toEqual(["plugin:updater|check", "plugin:updater|download"]);
     expect(confirmDialog).toHaveBeenCalledTimes(2);
     expect(confirmDialog).toHaveBeenNthCalledWith(
       2,
@@ -193,36 +215,63 @@ describe("checkForUpdatesAndPrompt — update available", () => {
     const { deps, flushForExit } = makeDeps();
     flushForExit.mockRejectedValueOnce(new Error("disk full"));
     const calledCommands: string[] = [];
-    invoke.mockImplementation(async (cmd: string) => {
-      calledCommands.push(cmd);
-      if (cmd === "plugin:updater|check") return update;
-      return undefined;
-    });
+    stubInvokeHappyPath(calledCommands);
 
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
+    expect(calledCommands).not.toContain("plugin:updater|install");
     expect(calledCommands).not.toContain("plugin:process|restart");
   });
 
-  it("when the hot-exit flush fails, still relaunches if the user explicitly opts in (Restart Anyway)", async () => {
+  it("when the hot-exit flush fails, still installs and relaunches if the user explicitly opts in (Install Anyway)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     confirmDialog.mockResolvedValueOnce(true); // "Download and Restart"
-    confirmDialog.mockResolvedValueOnce(true); // flush-failed dialog: Restart Anyway
+    confirmDialog.mockResolvedValueOnce(true); // flush-failed dialog: Install Anyway
     const { deps, flushForExit } = makeDeps();
     flushForExit.mockResolvedValueOnce(false);
     const calledCommands: string[] = [];
-    invoke.mockImplementation(async (cmd: string) => {
-      calledCommands.push(cmd);
-      if (cmd === "plugin:updater|check") return update;
-      return undefined;
-    });
+    stubInvokeHappyPath(calledCommands);
 
     await checkForUpdatesAndPrompt(deps, { silent: true });
 
     expect(calledCommands).toEqual([
       "plugin:updater|check",
-      "plugin:updater|download_and_install",
+      "plugin:updater|download",
+      "plugin:updater|install",
       "plugin:process|restart",
     ]);
+  });
+
+  it("a failed install shows an error dialog and never relaunches", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    confirmDialog.mockResolvedValueOnce(true);
+    const { deps } = makeDeps();
+    const calledCommands: string[] = [];
+    invoke.mockImplementation(async (cmd: string) => {
+      calledCommands.push(cmd);
+      if (cmd === "plugin:updater|check") return update;
+      if (cmd === "plugin:updater|download") return bytesRid;
+      if (cmd === "plugin:updater|install") throw new Error("installer failed");
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    await checkForUpdatesAndPrompt(deps, { silent: true });
+
+    expect(consoleError).toHaveBeenCalled();
+    expect(messageDialog).toHaveBeenCalledTimes(1);
+    expect(calledCommands).not.toContain("plugin:process|restart");
+  });
+
+  it("on the macOS/Linux path where install actually returns, relaunch is called after it", async () => {
+    confirmDialog.mockResolvedValueOnce(true);
+    const { deps } = makeDeps();
+    const calledCommands: string[] = [];
+    stubInvokeHappyPath(calledCommands);
+
+    await checkForUpdatesAndPrompt(deps, { silent: true });
+
+    expect(calledCommands.indexOf("plugin:updater|install")).toBeLessThan(
+      calledCommands.indexOf("plugin:process|restart"),
+    );
   });
 });

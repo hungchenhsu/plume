@@ -17,8 +17,8 @@ import { t } from "./i18n";
  *  `invoke("plugin:updater|check")` resolves to (serde
  *  `rename_all = "camelCase"`), not the `@tauri-apps/plugin-updater`
  *  `Update` class this module deliberately doesn't depend on (see module
- *  doc comment). `rid` is the resource id later commands (`download_and_install`)
- *  reference to operate on this same checked update. */
+ *  doc comment). `rid` is the resource id `download` below reads to fetch
+ *  this same checked update. */
 interface UpdateMetadata {
   rid: number;
   currentVersion: string;
@@ -37,15 +37,18 @@ export interface UpdaterDeps {
    *  session; resolves `true` when everything landed, `false` when any
    *  backup or the session write failed (never rejects — a thrown error
    *  is treated the same as `false` by `promptAndInstall` below).
-   *  `plugin:process|restart` calls Tauri's `request_restart`, which skips
-   *  every window's `onCloseRequested` listener entirely (it restarts on
-   *  the next `RuntimeRunEvent::Exit`, not through the per-window
-   *  close-request path main.ts's own hot-exit flush hangs off) — without
-   *  this call, an update-triggered relaunch could silently drop unsaved
-   *  edits despite the app's hot-exit promise. A `false` result makes
-   *  `promptAndInstall` ask the user before relaunching anyway, rather
-   *  than silently relaunching over a failed backup — see
-   *  `updater.flushFailedMessage`. */
+   *
+   *  Must run, and its `false` case must be handled, strictly *before*
+   *  `install` is called below — never after. `install` (`plugin:updater|install`)
+   *  never returns on Windows: the plugin launches the platform installer
+   *  via `ShellExecuteW` and then calls `std::process::exit(0)` in the same
+   *  Rust command handler
+   *  (github.com/tauri-apps/plugins-workspace, v2, plugins/updater/src/updater.rs,
+   *  `install_inner`'s `#[cfg(windows)]` branch) — nothing after that
+   *  `invoke` call, in this module or anywhere else in the frontend, ever
+   *  runs on Windows. Anything meant to happen on every platform —
+   *  flushing hot-exit backups foremost — has to happen before `install`,
+   *  not after it or after `relaunch`. */
   flushForExit: () => Promise<boolean>;
 }
 
@@ -53,20 +56,44 @@ async function checkForUpdate(): Promise<UpdateMetadata | null> {
   return invoke<UpdateMetadata | null>("plugin:updater|check", {});
 }
 
-async function downloadAndInstall(rid: number): Promise<void> {
-  // download_and_install's `onEvent` channel is a required argument on the
-  // Rust side (progress reporting); this flow has no progress UI, so the
-  // channel is constructed but never given an `onmessage` handler.
+/** Downloads the update's bytes into a Rust-side resource and returns its
+ *  id — `install` below needs both this and the original `check` resource
+ *  id to actually install it. Split from `install` (rather than the
+ *  combined `plugin:updater|download_and_install`) specifically so
+ *  `flushForExit` can run, and its failure dialog be resolved, in the gap
+ *  between the two — see `UpdaterDeps.flushForExit`'s doc comment for why
+ *  that gap has to exist at all. */
+async function download(rid: number): Promise<number> {
+  // The `onEvent` channel is a required argument on the Rust side
+  // (progress reporting); this flow has no progress UI, so the channel is
+  // constructed but never given an `onmessage` handler.
   const onEvent = new Channel<unknown>();
-  await invoke("plugin:updater|download_and_install", {
-    rid,
-    onEvent,
-    // This module drives the restart itself (after flushForExit), not the
-    // plugin — see promptAndInstall below.
+  return invoke<number>("plugin:updater|download", { rid, onEvent });
+}
+
+/** Installs a previously downloaded update. Returns on macOS/Linux;
+ *  **never returns on Windows** — see `UpdaterDeps.flushForExit`'s doc
+ *  comment. Every side effect this flow needs on every platform must
+ *  already be done by the time this is called. */
+async function install(updateRid: number, bytesRid: number): Promise<void> {
+  await invoke("plugin:updater|install", {
+    updateRid,
+    bytesRid,
+    // This module drives the restart itself on the platforms where
+    // `install` actually returns to it (see `relaunch` below) — no need
+    // for the plugin to also do it internally. Ignored entirely on
+    // macOS/Linux and only affects the installer's own launch args on
+    // Windows (which has already `exit(0)`'d us by the time it would
+    // matter here either way).
     restartAfterInstall: false,
   });
 }
 
+/** Only ever reached on macOS/Linux — see `install`'s doc comment. Kept
+ *  unconditional (not platform-gated) rather than dead-code-guarded: on
+ *  Windows this call site is simply never reached, so gating it would add
+ *  a platform check with nothing to actually branch on from the frontend
+ *  side. */
 async function relaunch(): Promise<void> {
   await invoke("plugin:process|restart");
 }
@@ -79,10 +106,11 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
   }).catch(() => false);
   if (!proceed) return;
 
+  let bytesRid: number;
   try {
-    await downloadAndInstall(update.rid);
+    bytesRid = await download(update.rid);
   } catch (error) {
-    console.error("updater: download_and_install failed", error);
+    console.error("updater: download failed", error);
     await messageDialog(t("updater.downloadFailedMessage"), {
       title: t("updater.downloadFailedTitle"),
       kind: "error",
@@ -96,18 +124,33 @@ async function promptAndInstall(update: UpdateMetadata, deps: UpdaterDeps): Prom
   });
   if (!flushed) {
     // Default is Cancel (both the explicit button and confirmDialog's own
-    // dismiss-as-false behavior): the update is already downloaded and
-    // installed on disk, so declining costs nothing but a later restart —
-    // relaunching over a failed backup is the choice that can actually
-    // lose data, so it must be opt-in, never the fallback.
-    const restartAnyway = await confirmDialog(t("updater.flushFailedMessage"), {
+    // dismiss-as-false behavior): nothing has been installed yet at this
+    // point on any platform, so declining costs nothing but being asked
+    // again next check — installing over a failed backup is the choice
+    // that can actually lose data, so it must be opt-in, never the
+    // fallback.
+    const installAnyway = await confirmDialog(t("updater.flushFailedMessage"), {
       title: t("updater.flushFailedTitle"),
       kind: "warning",
-      okLabel: t("updater.restartAnyway"),
-      cancelLabel: t("updater.cancelRestart"),
+      okLabel: t("updater.installAnyway"),
+      cancelLabel: t("updater.cancelInstall"),
     }).catch(() => false);
-    if (!restartAnyway) return;
+    if (!installAnyway) return;
   }
+
+  try {
+    await install(update.rid, bytesRid);
+  } catch (error) {
+    // Windows never reaches here on success (see install's doc comment) —
+    // only a genuine install failure lands in this catch on any platform.
+    console.error("updater: install failed", error);
+    await messageDialog(t("updater.installFailedMessage"), {
+      title: t("updater.installFailedTitle"),
+      kind: "error",
+    }).catch(() => {});
+    return;
+  }
+  // Windows: unreachable, the process already exited inside `install`.
   await relaunch().catch((error) => {
     console.error("updater: relaunch failed", error);
   });

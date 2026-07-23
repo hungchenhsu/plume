@@ -502,12 +502,15 @@ export interface Messages {
   "updater.upToDateTitle": string;
   "updater.upToDateMessage": string;
   // Shown when flushForExit (main.ts) reports a failed backup/session
-  // write — restartAnyway/cancelRestart back a two-choice dialog whose
-  // default is Cancel (see updater.ts's promptAndInstall).
+  // write, before install is called — installAnyway/cancelInstall back a
+  // two-choice dialog whose default is Cancel (see updater.ts's
+  // promptAndInstall).
   "updater.flushFailedTitle": string;
   "updater.flushFailedMessage": string;
-  "updater.restartAnyway": string;
-  "updater.cancelRestart": string;
+  "updater.installAnyway": string;
+  "updater.cancelInstall": string;
+  "updater.installFailedTitle": string;
+  "updater.installFailedMessage": string;
 
   "common.loading": string;
 }
@@ -931,9 +934,11 @@ const en: Messages = {
   "updater.upToDateMessage": "Mojidori is on the latest version.",
   "updater.flushFailedTitle": "Backup Failed",
   "updater.flushFailedMessage":
-    "Some unsaved changes could not be backed up before restarting. The downloaded update will still be installed the next time Mojidori starts — you can restart now anyway, or cancel and save your work first.",
-  "updater.restartAnyway": "Restart Anyway",
-  "updater.cancelRestart": "Cancel",
+    "Some unsaved changes could not be backed up before installing this update, which restarts Mojidori. You can install anyway, or cancel and save your work first — you'll be asked again the next time Mojidori checks for updates.",
+  "updater.installAnyway": "Install Anyway",
+  "updater.cancelInstall": "Cancel",
+  "updater.installFailedTitle": "Update Failed",
+  "updater.installFailedMessage": "The update could not be installed. Please try again later.",
 
   "common.loading": "Loading…",
 };
@@ -1315,9 +1320,11 @@ const zhTW: Messages = {
   "updater.upToDateMessage": "Mojidori 目前已是最新版本。",
   "updater.flushFailedTitle": "備份失敗",
   "updater.flushFailedMessage":
-    "部分未儲存的變更在重新啟動前無法備份。已下載的更新仍會在 Mojidori 下次啟動時安裝——您可以仍要重新啟動，或取消並先儲存您的工作。",
-  "updater.restartAnyway": "仍要重新啟動",
-  "updater.cancelRestart": "取消",
+    "部分未儲存的變更在安裝此更新前無法備份，安裝後 Mojidori 會重新啟動。您可以仍要安裝，或取消並先儲存您的工作——下次 Mojidori 檢查更新時會再次詢問。",
+  "updater.installAnyway": "仍要安裝",
+  "updater.cancelInstall": "取消",
+  "updater.installFailedTitle": "更新失敗",
+  "updater.installFailedMessage": "無法安裝更新，請稍後再試。",
 
   "common.loading": "載入中…",
 };
@@ -1724,9 +1731,11 @@ const ja: Messages = {
   "updater.upToDateMessage": "Mojidori は最新バージョンです。",
   "updater.flushFailedTitle": "バックアップに失敗しました",
   "updater.flushFailedMessage":
-    "再起動前に一部の未保存の変更をバックアップできませんでした。ダウンロード済みのアップデートは次回 Mojidori 起動時にインストールされます——このまま再起動するか、キャンセルして作業を保存してください。",
-  "updater.restartAnyway": "このまま再起動",
-  "updater.cancelRestart": "キャンセル",
+    "このアップデートをインストールする前に、一部の未保存の変更をバックアップできませんでした。インストールすると Mojidori が再起動します。このままインストールするか、キャンセルして作業を保存してください——次回のアップデート確認時に再度お尋ねします。",
+  "updater.installAnyway": "このままインストール",
+  "updater.cancelInstall": "キャンセル",
+  "updater.installFailedTitle": "アップデートに失敗しました",
+  "updater.installFailedMessage": "アップデートをインストールできませんでした。しばらくしてから再試行してください。",
 
   "common.loading": "読み込み中…",
 };
@@ -2106,9 +2115,11 @@ const zhCN: Messages = {
   "updater.upToDateMessage": "Mojidori 当前已是最新版本。",
   "updater.flushFailedTitle": "备份失败",
   "updater.flushFailedMessage":
-    "部分未保存的更改在重新启动前无法备份。已下载的更新仍会在 Mojidori 下次启动时安装——您可以仍然重新启动，或取消并先保存您的工作。",
-  "updater.restartAnyway": "仍然重新启动",
-  "updater.cancelRestart": "取消",
+    "部分未保存的更改在安装此更新前无法备份，安装后 Mojidori 会重新启动。您可以仍然安装，或取消并先保存您的工作——下次 Mojidori 检查更新时会再次询问。",
+  "updater.installAnyway": "仍然安装",
+  "updater.cancelInstall": "取消",
+  "updater.installFailedTitle": "更新失败",
+  "updater.installFailedMessage": "无法安装更新，请稍后重试。",
 
   "common.loading": "加载中…",
 };
